@@ -1,0 +1,22 @@
+[project]
+name = "trend-range"
+version = "0.0.1"
+description = "期货趋势跟踪 / 震荡 / 综合策略实证研究（基于 ssquant）"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "pandas",
+    "numpy",
+    "requests",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+# 自动发现本项目自有的包；ssquant 作为子模块单独 pip install -e ./ssquant
+# 新增 trend_following/oscillation/combined 等目录会自动被发现，无需改这里
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["shared*", "trend_following*", "oscillation*", "combined*"]
+exclude = ["ssquant*", "tests*", "docs*", "data_cache*"]

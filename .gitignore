@@ -1,0 +1,39 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ===== 虚拟环境 / 密钥 =====
+.env
+.venv/
+venv/
+env/
+
+# ===== 数据缓存与产物（ssquant 运行时生成，勿提交）=====
+data_cache/
+live_data/
+sample_data/
+data_export/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# ===== 回测报告 / 日志 / 可视化产物 =====
+results/
+backtest_results/
+reports/
+output/
+*.log
+
+# ===== IDE / OS =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,3 @@
+[submodule "ssquant"]
+	path = ssquant
+	url = git@github.com:songshuquant/ssquant.git
