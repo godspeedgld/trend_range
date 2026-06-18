@@ -12,6 +12,18 @@ dependencies = [
     "plotly",       # data_viz 交互式图表
 ]
 
+# 可选依赖：用 pip 的 extras 语法安装，如 pip install -e .[bigquant]
+# 注意 bigquant 需要 Python 3.11 + 它的私有源，故单独成组、非默认安装。
+# 安装命令（需用 BigQuant 源）：
+#   pip install -e .[bigquant] -i https://pypi.bigquant.com/simple/
+[project.optional-dependencies]
+bigquant = [
+    "bigquant",  # BigQuant SDK（数据查询 DAI / 本地回测）；需 Python 3.11 + 私有源
+]
+tushare = [
+    "tushare",   # Tushare Pro（期货日线/主力映射）；需账号 + 2000 积分
+]
+
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
