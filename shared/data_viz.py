@@ -32,6 +32,19 @@ _FEATURE_LABEL = {
     "log_return": "对数收益率",
 }
 
+# 统计特征 → 中文显示名（return_stats 表）
+_STAT_LABEL = {
+    "count": "样本数", "mean": "均值", "std": "标准差",
+    "min": "最小值", "q25": "25%分位", "q50": "中位数", "q75": "75%分位", "max": "最大值",
+    "skew": "偏度", "kurt": "峰度(超额)",
+}
+
+# 柱状图参考线：特征 → 标准值（偏度/峰度/均值 以 0 为基准；标准差不画）
+_REF_LINE = {"skew": 0.0, "kurt": 0.0, "mean": 0.0}
+
+# 统计特征表名（与 trend_following.check_trend_valid.STATS_TABLE 一致）
+STATS_TABLE = "return_stats"
+
 
 def plot_feature(symbol, start_date=None, end_date=None, feature="log_return", period="1d"):
     """读取 symbol 在指定 period 表里的 feature，画折线，输出 HTML 到 results/。
@@ -101,7 +114,110 @@ def plot_feature(symbol, start_date=None, end_date=None, feature="log_return", p
     return out
 
 
+def plot_stats_table(period="1d"):
+    """读取 return_stats，画统计特征表格（列=特征，行=品种），输出 HTML。
+
+    Args:
+        period: "1d" / "week" / "mon"
+
+    Returns:
+        生成的 HTML 文件路径；无数据返回 None。
+    """
+    if not RETURNS_DB.exists():
+        print(f"[data_viz] 收益率库不存在: {RETURNS_DB}")
+        return None
+    conn = sqlite3.connect(str(RETURNS_DB))
+    try:
+        df = pd.read_sql(f'SELECT * FROM "{STATS_TABLE}" WHERE period = ?', conn, params=(period,))
+    finally:
+        conn.close()
+    if df.empty:
+        print(f"[data_viz] {STATS_TABLE} 无 {period} 数据，请先 calc_return_stats")
+        return None
+
+    df = df.sort_values("symbol").reset_index(drop=True)
+    stat_cols = ["count", "mean", "std", "min", "q25", "q50", "q75", "max", "skew", "kurt"]
+    header = ["symbol", "category"] + [_STAT_LABEL[c] for c in stat_cols]
+
+    cells = [df["symbol"].tolist(), df["category"].tolist()]
+    for c in stat_cols:
+        if c == "count":
+            cells.append([int(v) for v in df[c]])
+        elif c in ("skew", "kurt"):
+            cells.append([f"{v:.4f}" for v in df[c]])
+        else:
+            cells.append([f"{v:.6f}" for v in df[c]])
+
+    fig = go.Figure(data=[go.Table(
+        header=dict(values=[f"<b>{h}</b>" for h in header],
+                    fill_color="paleturquoise", align="center", height=26),
+        cells=dict(values=cells, align="center", height=22),
+    )])
+    fig.update_layout(title=f"{period} 收益率统计特征（共 {len(df)} 个品种）", template="plotly_white")
+
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    out = RESULTS_DIR / f"stats_table_{period}.html"
+    fig.write_html(str(out))
+    print(f"[data_viz] 已输出: {out}  ({len(df)} 个品种)")
+    return out
+
+
+def plot_stats_bar(period="1d", feature="std"):
+    """读取 return_stats，画某统计特征的柱状图（横轴=品种，纵轴=特征值），输出 HTML。
+
+    偏度 / 峰度 / 均值 会在 y=0 处画红色虚线参考；标准差不画参考线。
+
+    Args:
+        period:  "1d" / "week" / "mon"
+        feature: "std" / "skew" / "kurt" / "mean" / ...
+
+    Returns:
+        生成的 HTML 文件路径；无数据返回 None。
+    """
+    if not RETURNS_DB.exists():
+        print(f"[data_viz] 收益率库不存在: {RETURNS_DB}")
+        return None
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", str(feature)):
+        raise ValueError(f"feature 不是合法列名: {feature!r}")
+
+    conn = sqlite3.connect(str(RETURNS_DB))
+    try:
+        df = pd.read_sql(f'SELECT symbol, "{feature}" FROM "{STATS_TABLE}" WHERE period = ?',
+                         conn, params=(period,))
+    except sqlite3.OperationalError as e:
+        print(f"[data_viz] 读取失败: {e}")
+        return None
+    finally:
+        conn.close()
+    if df.empty:
+        print(f"[data_viz] {STATS_TABLE} 无 {period} 数据，请先 calc_return_stats")
+        return None
+
+    df = df.sort_values(feature, ascending=False).reset_index(drop=True)
+    label = _STAT_LABEL.get(feature, feature)
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=df["symbol"], y=df[feature], name=label,
+                         marker_color="steelblue"))
+    if feature in _REF_LINE:
+        fig.add_hline(y=_REF_LINE[feature], line_dash="dash", line_color="red",
+                      annotation_text=f"参考线 y={_REF_LINE[feature]}",
+                      annotation_position="top left")
+    fig.update_layout(
+        title=f"{period} · {label}",
+        xaxis_title="品种", yaxis_title=label,
+        template="plotly_white",
+    )
+
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    out = RESULTS_DIR / f"stats_{period}_{feature}.html"
+    fig.write_html(str(out))
+    print(f"[data_viz] 已输出: {out}  ({len(df)} 个品种)")
+    return out
+
+
 if __name__ == "__main__":
-    # 自测：rb 日线对数收益折线
-    plot_feature("rb", start_date="2024-01-01", end_date="2024-06-30",
-                 feature="log_return", period="1d")
+    # 自测：统计特征表格 + 柱状图（std/skew/kurt）
+    plot_stats_table(period="1d")
+    for feat in ("std", "skew", "kurt"):
+        plot_stats_bar(period="1d", feature=feat)

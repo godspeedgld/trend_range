@@ -7,8 +7,9 @@
 ----
 - 低流动性品种忽略（见 ``no_use_symbols``）。
 - 对数收益率按周期分别落表（见 ``return_tables``），存入
-  ``data_cache/returns.db``（SQLite 长表，列：datetime / symbol / log_return，
-  主键 (datetime, symbol)，重跑同品种会覆盖）。
+  ``data_cache/returns.db``（SQLite 长表，列：datetime / symbol / category / log_return，
+  主键 (datetime, symbol)；category 为品种板块，来自 shared.sector.get_category；
+  重跑同品种会覆盖）。
 
 周期取数说明
 ------------
@@ -25,9 +26,16 @@ import numpy as np
 import pandas as pd
 
 from shared.data_fetcher import fetch_klines
+from shared.sector import get_category
 
-# 低流动性品种忽略：纤维板 / 双胶纸 / 线材 / 胶合板 / 强麦 / 早籼稻 / 普麦 / 粳稻 / 粳米
-no_use_symbols = ["fb", "op", "wr", "bb", "wh", "ri", "pm", "jr", "rr"]
+# 低流动性 / 近僵尸 / 特殊品种忽略（大小写不敏感）：
+#   纤维板 / 双胶纸 / 线材 / 胶合板 / 强麦 / 早籼稻 / 普麦 / 粳稻 / 粳米
+no_use_symbols = [
+    "fb", "op", "wr", "bb", "wh", "ri", "pm", "jr", "rr",
+    "rs",       # 油菜籽（流动性低）
+    "zc",       # 动力煤（流动性极低）
+    "l_f", "pp_f", "v_f",  # 月均价期货（特殊合约，不适合趋势研究）
+]
 
 # 对数收益率落表名（月 / 周 / 日 / 1小时 / 30分钟）
 return_tables = ["mon_return", "week_return", "1d_return", "1h_return", "30m_return"]
@@ -95,6 +103,7 @@ def calc_log_return(symbol, start_date="1999-01-01", end_date=None, period="1d")
     out = pd.DataFrame({
         "datetime": df.index.strftime("%Y-%m-%d %H:%M:%S"),
         "symbol": symbol,
+        "category": get_category(symbol),
         "log_return": df["log_return"].astype(float),
     })
     _save_returns(out, table)
@@ -104,20 +113,122 @@ def calc_log_return(symbol, start_date="1999-01-01", end_date=None, period="1d")
 
 
 def _save_returns(df: pd.DataFrame, table: str) -> None:
-    """把对数收益率写入 SQLite 长表，按 (datetime, symbol) 主键去重覆盖。"""
+    """把对数收益率写入 SQLite 长表，按 (datetime, symbol) 主键去重覆盖。
+
+    含 category（板块）列，来自 shared.sector.get_category。"""
     RETURNS_DB.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(RETURNS_DB))
     try:
         cur = conn.cursor()
         cur.execute(
             f'CREATE TABLE IF NOT EXISTS "{table}" ('
-            'datetime TEXT, symbol TEXT, log_return REAL,'
+            'datetime TEXT, symbol TEXT, category TEXT, log_return REAL,'
             'PRIMARY KEY (datetime, symbol))'
         )
-        rows = [tuple(r) for r in df[["datetime", "symbol", "log_return"]].to_numpy()]
+        rows = [tuple(r) for r in df[["datetime", "symbol", "category", "log_return"]].to_numpy()]
         cur.executemany(
-            f'INSERT OR REPLACE INTO "{table}" (datetime, symbol, log_return) VALUES (?,?,?)',
+            f'INSERT OR REPLACE INTO "{table}" (datetime, symbol, category, log_return) VALUES (?,?,?,?)',
             rows,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# 统计特征表：return_stats
+STATS_TABLE = "return_stats"
+# period → 收益率表名（与 _PERIOD_MAP 的表名一致）
+_STATS_SOURCE = {"1d": "1d_return", "week": "week_return", "mon": "mon_return"}
+
+
+def calc_return_stats(period="1d", symbol=None):
+    """计算各品种指定周期对数收益率的统计特征，存入 return_stats 表。
+
+    从对应的收益率表（1d_return / week_return / mon_return）读取，按 symbol 分组
+    计算：count / mean / std / min / 25% / 50% / 75% / max / skew / kurt，
+    并附带 start_date / end_date / period / symbol / category。
+
+    Args:
+        period: "1d" / "week" / "mon"
+        symbol: 仅计算该品种；None 则计算该表内全部品种
+
+    Returns:
+        int: 写入的行数（= 计算的品种数）。
+    """
+    if period not in _STATS_SOURCE:
+        raise ValueError(f"period 仅支持 {list(_STATS_SOURCE)}，收到 {period!r}")
+    src = _STATS_SOURCE[period]
+
+    if not RETURNS_DB.exists():
+        print(f"[calc_return_stats] 无收益率库 {RETURNS_DB}，请先 calc_log_return")
+        return 0
+    conn = sqlite3.connect(str(RETURNS_DB))
+    try:
+        if symbol:
+            df = pd.read_sql(f'SELECT * FROM "{src}" WHERE symbol = ?', conn, params=(symbol,))
+        else:
+            df = pd.read_sql(f'SELECT * FROM "{src}"', conn)
+    finally:
+        conn.close()
+
+    if df.empty:
+        print(f"[calc_return_stats] {period}({src}) 无数据")
+        return 0
+
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    rows = []
+    for sym, g in df.groupby("symbol"):
+        r = g["log_return"].astype(float).dropna()
+        if r.empty:
+            continue
+        q = r.quantile([0.25, 0.5, 0.75])
+        rows.append({
+            "symbol": sym,
+            "category": g["category"].dropna().iloc[0] if g["category"].notna().any() else None,
+            "period": period,
+            "start_date": g["datetime"].min().strftime("%Y-%m-%d"),
+            "end_date": g["datetime"].max().strftime("%Y-%m-%d"),
+            "count": int(r.count()),
+            "mean": float(r.mean()),
+            "std": float(r.std()),
+            "min": float(r.min()),
+            "q25": float(q.loc[0.25]),
+            "q50": float(q.loc[0.50]),
+            "q75": float(q.loc[0.75]),
+            "max": float(r.max()),
+            "skew": float(r.skew()),
+            "kurt": float(r.kurt()),  # 超额峰度（Fisher），正态=0
+        })
+    out = pd.DataFrame(rows)
+    if out.empty:
+        print(f"[calc_return_stats] {period} 无有效样本")
+        return 0
+    _save_return_stats(out)
+    print(f"[calc_return_stats] {period} → {STATS_TABLE}: {len(out)} 个品种")
+    return len(out)
+
+
+def _save_return_stats(df: pd.DataFrame) -> None:
+    """把统计特征写入 return_stats 表，按 (symbol, period) 主键覆盖。"""
+    RETURNS_DB.parent.mkdir(parents=True, exist_ok=True)
+    cols = ["symbol", "category", "period", "start_date", "end_date",
+            "count", "mean", "std", "min", "q25", "q50", "q75", "max", "skew", "kurt"]
+    conn = sqlite3.connect(str(RETURNS_DB))
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f'CREATE TABLE IF NOT EXISTS "{STATS_TABLE}" ('
+            'symbol TEXT, category TEXT, period TEXT, '
+            'start_date TEXT, end_date TEXT, '
+            'count INTEGER, mean REAL, std REAL, min REAL, '
+            'q25 REAL, q50 REAL, q75 REAL, max REAL, skew REAL, kurt REAL, '
+            'PRIMARY KEY (symbol, period))'
+        )
+        ph = ", ".join("?" for _ in cols)
+        cn = ", ".join(f'"{c}"' for c in cols)
+        rows = [tuple(r) for r in df[cols].to_numpy()]
+        cur.executemany(
+            f'INSERT OR REPLACE INTO "{STATS_TABLE}" ({cn}) VALUES ({ph})', rows
         )
         conn.commit()
     finally:
