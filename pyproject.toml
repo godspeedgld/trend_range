@@ -8,6 +8,8 @@ dependencies = [
     "pandas",
     "numpy",
     "requests",
+    "statsmodels",  # TSMOM 面板回归的 HAC（Newey-West）标准误
+    "plotly",       # data_viz 交互式图表
 ]
 
 [build-system]

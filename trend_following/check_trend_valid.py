@@ -126,8 +126,12 @@ def _save_returns(df: pd.DataFrame, table: str) -> None:
             'PRIMARY KEY (datetime, symbol))'
         )
         rows = [tuple(r) for r in df[["datetime", "symbol", "category", "log_return"]].to_numpy()]
+        # 用 UPSERT：主键冲突时只更新 category/log_return，保留 volatility 等其它列。
+        # （INSERT OR REPLACE 会删整行重建，把 volatility 清成 NULL）
         cur.executemany(
-            f'INSERT OR REPLACE INTO "{table}" (datetime, symbol, category, log_return) VALUES (?,?,?,?)',
+            f'INSERT INTO "{table}" (datetime, symbol, category, log_return) VALUES (?,?,?,?) '
+            f'ON CONFLICT(datetime, symbol) DO UPDATE SET '
+            f'category=excluded.category, log_return=excluded.log_return',
             rows,
         )
         conn.commit()
@@ -235,8 +239,220 @@ def _save_return_stats(df: pd.DataFrame) -> None:
         conn.close()
 
 
+def ema_volatility(returns, delta=None, com=60, annualize=252):
+    """指数加权波动率（AQR/Hurst TSMOM 风格，类单变量 GARCH）。
+
+    对【滞后】平方收益做指数加权，估计每个时点的事前年化波动率：
+
+        r̄_t   = Σ_i w_i · r_{t-1-i}                 （指数加权平均收益，滞后）
+        s²_t   = annualize · Σ_i w_i · (r_{t-1-i} − r̄_t)²
+        s_t    = √s²_t                               （年化波动率）
+
+    权重 w_i = (1−d)·d^i（i=0,1,2,…），归一化；重心 COM = d/(1−d)。
+    论文取 COM=60 天、annualize=261；本函数默认 com=60、annualize=252
+    （与本项目其他年化口径一致，可改）。
+
+    无前视偏差：σ_t 由 r_{t-1}, r_{t-2}, ... 估计（**不含 r_t**），
+    可直接配 r_t 使用。out[0] 因无前期数据为 NaN。
+
+    Args:
+        returns:   对数收益率序列（pd.Series 或 1D array，按时间正序）。
+        delta:     衰减因子 d。None 时由 com 反推：d = com/(com+1)。
+        com:       权重重心（天数），delta=None 时生效。默认 60。
+        annualize: 年化系数（一年的观测数）。默认 252。
+
+    Returns:
+        pd.Series：与输入等长的事前年化波动率 σ_t（配 r_t 用；前期权重未铺满为 NaN）。
+    """
+    r = pd.Series(returns, dtype="float64").reset_index(drop=True)
+    n = len(r)
+    if n == 0:
+        return pd.Series(dtype="float64")
+
+    # 由重心推 delta：COM = d/(1−d)  =>  d = COM/(COM+1)
+    d = (com / (com + 1)) if delta is None else float(delta)
+    if not 0 < d < 1:
+        raise ValueError(f"delta 需在 (0,1)，得到 {d}")
+
+    # 权重 (1−d)·d^i，截断到与序列等长（i=0..n-1）；已归一化（Σ=1 当 i→∞）
+    i = np.arange(n)
+    w = (1 - d) * np.power(d, i)  # shape (n,)
+
+    # 指数加权平均收益 r̄_t（对每个 t，用 t 及之前的收益，权重按 i=0 在 t）
+    # 用卷积：r̄_t = Σ_{i=0..t} w_i · r_{t-i}
+    # 等价于 pandas ewm(alpha=1-d, adjust=True).mean()，但这里显式按公式实现。
+    r_arr = r.to_numpy()
+    var_ew = np.full(n, np.nan)
+    # out[t] = 事前 σ_t，配 r_t 用；由 r_{t-1}, r_{t-2}, ... 估计（不含 r_t，无前视）
+    for t in range(1, n):
+        j = t - 1                            # 最新可用收益下标（= t-1）
+        wt = w[: j + 1]                      # 权重 i=0..j
+        rt = r_arr[j::-1]                    # r_{t-1}, r_{t-2}, ..., r_0
+        s = wt.sum()
+        if s <= 0:
+            continue
+        wt = wt / s                          # 归一化（前期权重和<1）
+        m = (wt * rt).sum()                  # 指数加权平均收益 r̄_t
+        var = (wt * (rt - m) ** 2).sum()     # 加权方差
+        var_ew[t] = var
+
+    vol = np.sqrt(var_ew * annualize)
+    out = pd.Series(vol, index=r.index, name="ema_vol")
+
+    # 前期权重未铺满（归一化前权重和明显<1）视为不可靠，置 NaN
+    # 阈值：权重和达到 ~0.99 对应约 2·COM 个观测
+    warmup = int(np.ceil(np.log(1 - 0.99) / np.log(d)))  # Σw≈0.99 所需点数
+    if warmup < n:
+        out.iloc[:warmup] = np.nan
+    return out
+
+
+def calc_volatility(symbol, period="1d", delta=None, com=60, annualize=252):
+    """计算单品种 EMA 事前波动率 σ_t，写回收益表的 volatility 列。
+
+    读取该 symbol 已入库的对数收益（按时间正序），调用 ema_volatility 算 σ_t，
+    UPDATE 到对应行的 volatility 列（σ_t 配 r_t）。**不改动 log_return / category**。
+    表若无 volatility 列会自动 ALTER 补上（迁移旧表）。
+
+    Args:
+        symbol:              品种代码
+        period:              "1d" / "week" / "mon" / "1h" / "30m"
+        delta/com/annualize: 透传给 ema_volatility
+
+    Returns:
+        int: 写入的非空波动率点数；无数据返回 0。
+    """
+    if period not in _PERIOD_MAP:
+        raise ValueError(f"period 仅支持 {list(_PERIOD_MAP)}，收到 {period!r}")
+    table = _PERIOD_MAP[period][1]
+
+    if not RETURNS_DB.exists():
+        print(f"[calc_volatility] 无收益率库 {RETURNS_DB}，请先 calc_log_return")
+        return 0
+    conn = sqlite3.connect(str(RETURNS_DB))
+    try:
+        cur = conn.cursor()
+        _ensure_column(cur, table, "volatility", "REAL")
+        rows = cur.execute(
+            f'SELECT datetime, log_return FROM "{table}" WHERE symbol = ? ORDER BY datetime',
+            (symbol,),
+        ).fetchall()
+        if not rows:
+            print(f"[calc_volatility] {symbol} {period} 无收益数据，跳过")
+            return 0
+        dts = [r[0] for r in rows]
+        rets = pd.Series([r[1] for r in rows], dtype="float64")
+        vol = ema_volatility(rets, delta=delta, com=com, annualize=annualize)
+        upd = [(None if pd.isna(v) else float(v), dt, symbol) for dt, v in zip(dts, vol)]
+        cur.executemany(
+            f'UPDATE "{table}" SET volatility = ? WHERE datetime = ? AND symbol = ?', upd
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    n_valid = int(vol.notna().sum())
+    print(f"[calc_volatility] {symbol} {period} → {table}.volatility: {n_valid} 点")
+    return n_valid
+
+
+def _ensure_column(cur, table, column, sql_type):
+    """若表缺少某列则 ALTER 补上（用于给旧收益表加 volatility 列）。"""
+    cols = {row[1] for row in cur.execute(f'PRAGMA table_info("{table}")').fetchall()}
+    if column not in cols:
+        cur.execute(f'ALTER TABLE "{table}" ADD COLUMN {column} {sql_type}')
+
+
+def tsmom_regression(period="1d", h=1):
+    """面板 TSMOM 回归（Moskowitz-Ooi-Pedersen 2012 风格），返回斜率 β。
+
+        r_{t→t+h} / σ_t  =  α + β · r_{t-h→t}  +  ε
+
+    跨所有品种 × 时间 pooled（重叠观测）：
+      - 因变量 y：未来 h 期累计对数收益 ÷ 事前波动率 σ_t（波动率目标化）
+      - 自变量 x：过去 h 期累计对数收益（动量信号）
+    β>0 且显著 → 趋势（动量）存在；β<0 → 反转。给定 h 全市场只有一个 β。
+
+    标准误优先用 statsmodels 的 HAC（Newey-West，maxlags=h，重叠观测必需）；
+    未装 statsmodels 时退化为朴素 OLS SE（β 仍正确，但 t 值偏大）。
+
+    Args:
+        period: "1d" / "week" / "mon"
+        h:      滞后期数（信号期 = 持有期 = h）
+
+    Returns:
+        float：β 的 t 统计量（给定 h 全市场单一值）；无数据返回 NaN。
+        β/α/n 见打印。
+    """
+    if period not in _PERIOD_MAP:
+        raise ValueError(f"period 仅支持 {list(_PERIOD_MAP)}，收到 {period!r}")
+    if h < 1:
+        raise ValueError("h 需 >= 1")
+    table = _PERIOD_MAP[period][1]
+
+    res = {"beta": np.nan, "alpha": np.nan, "tstat": np.nan, "se": np.nan, "n": 0}
+    if not RETURNS_DB.exists():
+        print(f"[tsmom_regression] 无收益率库 {RETURNS_DB}")
+        return res["tstat"]
+
+    conn = sqlite3.connect(str(RETURNS_DB))
+    try:
+        df = pd.read_sql(
+            f'SELECT datetime, symbol, log_return, volatility FROM "{table}" '
+            f'WHERE log_return IS NOT NULL AND volatility IS NOT NULL', conn)
+    finally:
+        conn.close()
+    if df.empty:
+        return res["tstat"]
+
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    xs, ys = [], []
+    for _, g in df.groupby("symbol"):
+        g = g.sort_values("datetime").reset_index(drop=True)
+        r = g["log_return"].to_numpy(dtype=float)
+        sig = g["volatility"].to_numpy(dtype=float)
+        n = len(r)
+        if n < 2 * h + 1:
+            continue
+        cum = np.concatenate(([0.0], np.cumsum(r)))        # cum[k] = Σ r[0..k-1]
+        i = np.arange(h - 1, n - h)                          # 同时有过去h与未来h的位置
+        past = cum[i + 1] - cum[i + 1 - h]                   # r[t-h+1 .. t]
+        fwd = cum[i + 1 + h] - cum[i + 1]                    # r[t+1 .. t+h]
+        sigt = sig[i]                                        # σ_t（配 r_t，事前）
+        ok = (~np.isnan(past)) & (~np.isnan(fwd)) & (sigt > 0)
+        for j in np.where(ok)[0]:
+            xs.append(float(past[j]))
+            ys.append(float(fwd[j] / sigt[j]))
+
+    res["n"] = len(xs)
+    if res["n"] < 5:
+        print(f"[tsmom_regression] {period} h={h}: 有效观测不足 ({res['n']})")
+        return res["tstat"]
+
+    x = np.asarray(xs, dtype=float)
+    y = np.asarray(ys, dtype=float)
+    X = np.column_stack([np.ones_like(x), x])
+
+    try:
+        import statsmodels.api as sm
+        m = sm.OLS(y, X).fit(cov_type="HAC", maxlags=max(1, int(h)))
+        res.update(beta=float(m.params[1]), alpha=float(m.params[0]),
+                   tstat=float(m.tvalues[1]), se=float(m.bse[1]))
+    except Exception:
+        coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+        resid = y - X @ coef
+        s2 = float(resid @ resid) / (res["n"] - 2)
+        xtx_inv = np.linalg.inv(X.T @ X)
+        se = float(np.sqrt(s2 * xtx_inv[1, 1]))
+        res.update(beta=float(coef[1]), alpha=float(coef[0]),
+                   tstat=float(coef[1] / se), se=se)
+
+    print(f"[tsmom_regression] {period} h={h}: β={res['beta']:.4f} (t={res['tstat']:.2f}), "
+          f"α={res['alpha']:.5f}, n={res['n']}")
+    return res["tstat"]
+
+
 if __name__ == "__main__":
-    # 小样本自测：rb 日线 / 周线 / 月线对数收益
-    calc_log_return("rb", start_date="2024-01-01", end_date="2024-06-30", period="1d")
-    calc_log_return("rb", start_date="2024-01-01", end_date="2024-06-30", period="week")
-    calc_log_return("rb", start_date="2024-01-01", end_date="2024-06-30", period="mon")
+    # 自测：日线 TSMOM 面板回归，h=1 / 12 / 60，返回 β 的 t 统计量
+    for _h in (1, 12, 60):
+        t = tsmom_regression(period="1d", h=_h)
+        print(f"  → 返回 t = {t:.3f}")
