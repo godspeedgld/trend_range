@@ -261,6 +261,114 @@ def _delete_k_data_before(table, symbol, cut_date):
         conn.close()
 
 
+def _report_none(df, symbol):
+    """平滑后全局扫描 None/NaN/<=0，打印报告（只读，不改数据、不影响入库）。
+
+    扫描最终要入库的 ``out``：
+      - 价格列 open/high/low/close：NaN/None 或 <=0（无效价）都算坏；
+      - vol/oi/adj_factor：仅 NaN/None 算坏（0 合法，不报）。
+    干净打一行确认；有异常打 ⚠️ + 逐列 NaN 计数 + 前 ~20 个异常 date。
+    现有 None 检查只在换月拼接点；此处补一个对整段的兜底全局扫描。
+    """
+    if df is None or len(df) == 0:
+        return
+    price_cols = [c for c in ("open", "high", "low", "close") if c in df.columns]
+    other_cols = [c for c in ("vol", "oi", "adj_factor") if c in df.columns]
+
+    # 价格异常行：价格列任一 NaN/None 或 <=0（NaN<=0 为 False，靠 isna 兜住）
+    bad_mask = pd.Series(False, index=df.index)
+    for c in price_cols:
+        bad_mask |= df[c].isna() | (df[c] <= 0)
+    n_bad = int(bad_mask.sum())
+
+    # 逐列 NaN 计数（只列有 NaN 的列）
+    nan_counts = {
+        c: int(df[c].isna().sum())
+        for c in price_cols + other_cols
+        if int(df[c].isna().sum())
+    }
+
+    n = len(df)
+    if n_bad == 0 and not nan_counts:
+        print(f"[tushare] {symbol} None 扫描: 干净，无 NaN/<=0 ({n} 行)")
+        return
+
+    print(f"[tushare] ⚠️ {symbol} None 扫描: 发现 {n_bad} 行价格异常 (共 {n} 行)")
+    if nan_counts:
+        print(f"[tushare]   NaN 计数: {nan_counts}")
+    if n_bad and "date" in df.columns:
+        dates = df.loc[bad_mask, "date"].head(20).tolist()
+        print(f"[tushare]   异常日期(前20): {dates}")
+
+
+def _contract_label(ts_code):
+    """合约代码 → 可读名，如 'SF1701.CZCE' → 'SF 2017年01月'。
+
+    4 位年月(YYMM)能唯一解析；3 位(CZCE 旧式)等不唯一，原样返回 ts_code。
+    """
+    code = str(ts_code).split(".")[0]
+    i = 0
+    while i < len(code) and not code[i].isdigit():
+        i += 1
+    root, digits = code[:i], code[i:]
+    if len(digits) == 4:
+        yy, mm = int(digits[:2]), int(digits[2:4])
+        year = 2000 + yy if yy < 50 else 1900 + yy
+        return f"{root} {year}年{mm:02d}月"
+    return ts_code
+
+
+def _bad_contracts_with_none(raw, mp):
+    """返回 {合约ts_code: [含None的trade_date...]}，仅含 OHLC 有 NaN 的合约。
+
+    raw/mp 均含 trade_date(YYYYMMDD str)；用 mp 把每天归属到当天主力合约。
+    """
+    if mp is None or mp.empty:
+        return {}
+    j = raw[["trade_date", "open", "high", "low", "close"]].merge(
+        mp[["trade_date", "mapping_ts_code"]], on="trade_date", how="inner")
+    null_mask = j[["open", "high", "low", "close"]].isna().any(axis=1)
+    out = {}
+    for tc, g in j.loc[null_mask].groupby("mapping_ts_code"):
+        out[tc] = sorted(g["trade_date"].tolist())
+    return out
+
+
+def _bad_last_main_date(bad_contracts, mp):
+    """bad 合约最后一次作为主力的 trade_date(YYYYMMDD)；无则 None。
+
+    mp 按 trade_date 升序，取最后一行 mapping 在 bad 集合中的日期。
+    """
+    bad_set = set(bad_contracts)
+    last = None
+    for td, tc in zip(mp["trade_date"].tolist(), mp["mapping_ts_code"].tolist()):
+        if tc in bad_set:
+            last = td
+    return last
+
+
+def _bad_is_infancy(bad_last, mp):
+    """bad 合约是否都在早期：bad_last 不超过全部 trade_date 的中位数。
+
+    时间口径（非合约出现顺序）：含 None 的合约只要都集中在样本前半段即算婴儿期；
+    若延伸到后半段（如 2022 年附近）视为近期异常 → 由调用方中止。
+    """
+    if bad_last is None:
+        return True
+    dates = sorted(mp["trade_date"].tolist())
+    mid = dates[len(dates) // 2]
+    return bad_last <= mid
+
+
+def _clean_suffix_start(bad_last, mp):
+    """干净后缀的起点：第一个严格 > bad_last 的 trade_date。
+
+    保证从该日起主力合约全部干净（bad_last 是最后一个坏合约当主力的日子）。
+    """
+    after = mp.loc[mp["trade_date"] > bad_last, "trade_date"]
+    return after.iloc[0] if len(after) else None
+
+
 def _build_tushare_daily(symbol, start_date="1999-01-01", end_date=None):
     """从 tushare 拉主力连续日线，后复权（增量），写入 1d_k_data。"""
     end_date = end_date or datetime.now().strftime("%Y-%m-%d")
@@ -285,6 +393,34 @@ def _build_tushare_daily(symbol, start_date="1999-01-01", end_date=None):
     if not mp.empty:
         mp = mp.sort_values("trade_date").reset_index(drop=True)
         mp["trade_date"] = mp["trade_date"].astype(str)
+
+        # 平滑前：扫描 None → 丢弃含 None 的婴儿期坏合约（否则中止）。
+        # 这样平滑从第一个干净合约起锚(adj_factor=1)，复权因子从头算对；
+        # 且保证平滑前后整段均无 None（用户 5 步设计的 1~3 步）。
+        bad = _bad_contracts_with_none(raw, mp)
+        if bad:
+            for tc, dts in bad.items():
+                print(f"[tushare]   含None合约 {_contract_label(tc)}: "
+                      f"{dts[0]}~{dts[-1]} ({len(dts)} 行)")
+            if max_date is not None:
+                print(f"[tushare] ⚠️ {symbol} 增量段含 None（近期异常），中止不入库")
+                return 0
+            bad_last = _bad_last_main_date(list(bad), mp)
+            if not _bad_is_infancy(bad_last, mp):
+                print(f"[tushare] ⚠️ {symbol} 含None合约延伸到 {bad_last}（超过样本中位数→非婴儿期），中止不入库")
+                return 0
+            cut_td = _clean_suffix_start(bad_last, mp)
+            if cut_td is None:
+                print(f"[tushare] ⚠️ {symbol} 全部合约含 None，无干净起点，中止不入库")
+                return 0
+            cut_iso = pd.to_datetime(cut_td, format="%Y%m%d").strftime("%Y-%m-%d")
+            n_drop = int((raw["trade_date"] < cut_td).sum())
+            raw = raw[raw["trade_date"] >= cut_td].reset_index(drop=True)
+            mp = mp[mp["trade_date"] >= cut_td].reset_index(drop=True)
+            f_start = 1.0  # 全量构建：从干净起点重新锚定
+            print(f"[tushare]   丢弃婴儿期坏合约 {n_drop} 行(<{cut_iso})，从 {cut_iso} 起平滑")
+            _delete_k_data_before(table, symbol, cut_iso)  # 清掉可能残留的更早脏行
+
         md = max_date.replace("-", "") if max_date else None
         for i in range(1, len(mp)):
             if mp.loc[i, "mapping_ts_code"] != mp.loc[i - 1, "mapping_ts_code"]:
@@ -363,6 +499,7 @@ def _build_tushare_daily(symbol, start_date="1999-01-01", end_date=None):
             print(f"[tushare]   ⚠️ 2016+ 仍有 {len(abnormal)} 个异常换月(非婴儿期): {abnormal}")
         _delete_k_data_before(table, symbol, infancy_cut)
 
+    _report_none(out, symbol)   # 平滑后全局扫描 None/<=0，打印报告（不改数据）
     _save_k_data(table, out)
     extra = []
     if lookback:
