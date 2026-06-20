@@ -301,72 +301,75 @@ def _report_none(df, symbol):
         print(f"[tushare]   异常日期(前20): {dates}")
 
 
-def _contract_label(ts_code):
-    """合约代码 → 可读名，如 'SF1701.CZCE' → 'SF 2017年01月'。
+def _roll_dates(mp):
+    """换月点 trade_date 集合：mp 中 mapping_ts_code 变化的那天。"""
+    if mp is None or len(mp) == 0:
+        return set()
+    codes = mp["mapping_ts_code"].tolist()
+    dates = mp["trade_date"].tolist()
+    return {dates[i] for i in range(1, len(codes)) if codes[i] != codes[i - 1]}
 
-    4 位年月(YYMM)能唯一解析；3 位(CZCE 旧式)等不唯一，原样返回 ts_code。
+
+def _fill_none(raw, mp):
+    """逐行填补/丢弃连续序列的 None（操作 raw 副本，返回无 None 的 df）。
+
+    不做任何早期数据剔除。每行按 None 模式处理：
+    - 部分 None（OHLC 至少一个有值）：用本行 close>open>high>low 首个非None值
+      填其余 OHLC。
+    - 全 OHLC None 的连续块：
+      · 块内含换月点 → 整块丢弃，拼接点回退到块前最近非None行（不在拼接点伪造价）；
+      · 块内不含换月点 → 用后一交易日的数据复制填充（bfill，源行不动）。
+    - vol/oi 为 None：一律用后一日填充（bfill）。
     """
-    code = str(ts_code).split(".")[0]
-    i = 0
-    while i < len(code) and not code[i].isdigit():
-        i += 1
-    root, digits = code[:i], code[i:]
-    if len(digits) == 4:
-        yy, mm = int(digits[:2]), int(digits[2:4])
-        year = 2000 + yy if yy < 50 else 1900 + yy
-        return f"{root} {year}年{mm:02d}月"
-    return ts_code
+    df = raw.copy()
+    ohlc = ["open", "high", "low", "close"]
+    rolls = _roll_dates(mp)
 
+    # 价格列 <=0(0/负价)或非数 无效，统一转 NaN，后续与 NaN 同流程
+    # （vol/oi 不在此列：0 成交量/持仓合法）
+    for c in ohlc:
+        num = pd.to_numeric(df[c], errors="coerce")
+        df[c] = num.where(num > 0)
 
-def _bad_contracts_with_none(raw, mp):
-    """返回 {合约ts_code: [含None的trade_date...]}，仅含 OHLC 有 NaN 的合约。
+    # 1) 部分 None → 本行 close>open>high>low 首个非None 填其余 OHLC
+    part = df[ohlc].isna().any(axis=1) & ~df[ohlc].isna().all(axis=1)
+    for idx in df.index[part]:
+        for src in ("close", "open", "high", "low"):  # 优先级 close 先
+            v = df.at[idx, src]
+            if not pd.isna(v):
+                for c in ohlc:
+                    if pd.isna(df.at[idx, c]):
+                        df.at[idx, c] = v
+                break
+    if int(part.sum()):
+        print(f"[tushare]   部分None行 {int(part.sum())} 行，按 close>open>high>low 填充")
 
-    raw/mp 均含 trade_date(YYYYMMDD str)；用 mp 把每天归属到当天主力合约。
-    """
-    if mp is None or mp.empty:
-        return {}
-    j = raw[["trade_date", "open", "high", "low", "close"]].merge(
-        mp[["trade_date", "mapping_ts_code"]], on="trade_date", how="inner")
-    null_mask = j[["open", "high", "low", "close"]].isna().any(axis=1)
-    out = {}
-    for tc, g in j.loc[null_mask].groupby("mapping_ts_code"):
-        out[tc] = sorted(g["trade_date"].tolist())
-    return out
+    # 2) 全None 连续块：含换月点 → 整块丢弃(3.2)；不含 → 后一日复制(3.1)
+    all_none = df[ohlc].isna().all(axis=1)
+    if all_none.any():
+        block_id = (~all_none).cumsum()  # 连续 all-None 行共享同一 id
+        drop_mask = pd.Series(False, index=df.index)
+        for _bid, g in df[all_none].groupby(block_id, sort=False):
+            if g["trade_date"].isin(rolls).any():
+                drop_mask.loc[g.index] = True
+        if drop_mask.any():
+            print(f"[tushare]   丢弃含换月点的全None连续块 {int(drop_mask.sum())} 行")
+            df = df[~drop_mask].reset_index(drop=True)
+        # 剩余全None块(非换月) → 后一日复制
+        all_none = df[ohlc].isna().all(axis=1)
+        if all_none.any():
+            cols = ohlc + [c for c in ("vol", "oi") if c in df.columns]
+            bf = df[cols].bfill()
+            for c in cols:
+                df.loc[all_none, c] = bf.loc[all_none, c]
+            print(f"[tushare]   全None非换月块 {int(all_none.sum())} 行，用后一日填充")
 
+    # 3) vol/oi None → 后一日填充（全局）
+    for c in ("vol", "oi"):
+        if c in df.columns and df[c].isna().any():
+            df[c] = df[c].bfill()
 
-def _bad_last_main_date(bad_contracts, mp):
-    """bad 合约最后一次作为主力的 trade_date(YYYYMMDD)；无则 None。
-
-    mp 按 trade_date 升序，取最后一行 mapping 在 bad 集合中的日期。
-    """
-    bad_set = set(bad_contracts)
-    last = None
-    for td, tc in zip(mp["trade_date"].tolist(), mp["mapping_ts_code"].tolist()):
-        if tc in bad_set:
-            last = td
-    return last
-
-
-def _bad_is_infancy(bad_last, mp):
-    """bad 合约是否都在早期：bad_last 不超过全部 trade_date 的中位数。
-
-    时间口径（非合约出现顺序）：含 None 的合约只要都集中在样本前半段即算婴儿期；
-    若延伸到后半段（如 2022 年附近）视为近期异常 → 由调用方中止。
-    """
-    if bad_last is None:
-        return True
-    dates = sorted(mp["trade_date"].tolist())
-    mid = dates[len(dates) // 2]
-    return bad_last <= mid
-
-
-def _clean_suffix_start(bad_last, mp):
-    """干净后缀的起点：第一个严格 > bad_last 的 trade_date。
-
-    保证从该日起主力合约全部干净（bad_last 是最后一个坏合约当主力的日子）。
-    """
-    after = mp.loc[mp["trade_date"] > bad_last, "trade_date"]
-    return after.iloc[0] if len(after) else None
+    return df
 
 
 def _build_tushare_daily(symbol, start_date="1999-01-01", end_date=None):
@@ -394,32 +397,8 @@ def _build_tushare_daily(symbol, start_date="1999-01-01", end_date=None):
         mp = mp.sort_values("trade_date").reset_index(drop=True)
         mp["trade_date"] = mp["trade_date"].astype(str)
 
-        # 平滑前：扫描 None → 丢弃含 None 的婴儿期坏合约（否则中止）。
-        # 这样平滑从第一个干净合约起锚(adj_factor=1)，复权因子从头算对；
-        # 且保证平滑前后整段均无 None（用户 5 步设计的 1~3 步）。
-        bad = _bad_contracts_with_none(raw, mp)
-        if bad:
-            for tc, dts in bad.items():
-                print(f"[tushare]   含None合约 {_contract_label(tc)}: "
-                      f"{dts[0]}~{dts[-1]} ({len(dts)} 行)")
-            if max_date is not None:
-                print(f"[tushare] ⚠️ {symbol} 增量段含 None（近期异常），中止不入库")
-                return 0
-            bad_last = _bad_last_main_date(list(bad), mp)
-            if not _bad_is_infancy(bad_last, mp):
-                print(f"[tushare] ⚠️ {symbol} 含None合约延伸到 {bad_last}（超过样本中位数→非婴儿期），中止不入库")
-                return 0
-            cut_td = _clean_suffix_start(bad_last, mp)
-            if cut_td is None:
-                print(f"[tushare] ⚠️ {symbol} 全部合约含 None，无干净起点，中止不入库")
-                return 0
-            cut_iso = pd.to_datetime(cut_td, format="%Y%m%d").strftime("%Y-%m-%d")
-            n_drop = int((raw["trade_date"] < cut_td).sum())
-            raw = raw[raw["trade_date"] >= cut_td].reset_index(drop=True)
-            mp = mp[mp["trade_date"] >= cut_td].reset_index(drop=True)
-            f_start = 1.0  # 全量构建：从干净起点重新锚定
-            print(f"[tushare]   丢弃婴儿期坏合约 {n_drop} 行(<{cut_iso})，从 {cut_iso} 起平滑")
-            _delete_k_data_before(table, symbol, cut_iso)  # 清掉可能残留的更早脏行
+        # 平滑前：逐行填补 None（不丢弃早期数据），保证平滑前后整段无 None
+        raw = _fill_none(raw, mp)
 
         md = max_date.replace("-", "") if max_date else None
         for i in range(1, len(mp)):
@@ -478,26 +457,6 @@ def _build_tushare_daily(symbol, start_date="1999-01-01", end_date=None):
         "open": raw["open"], "close": raw["close"], "high": raw["high"], "low": raw["low"],
         "vol": raw["vol"], "oi": raw["oi"], "adj_factor": raw["adj_factor"],
     })
-
-    # 若有换月数据异常：丢弃「最后一个异常换月」及之前的婴儿期数据，
-    # 保留之后干净段（其内换月全部成功 → 无跳空）；并重新锚定 adj_factor 首日=1。
-    infancy_cut = None
-    abnormal = []
-    if data_err:
-        err_dates = sorted({d for _, d, _ in data_err})  # YYYYMMDD
-        abnormal = [d for d in err_dates if d >= "20160101"]  # 2016+ 仍异常 → 非婴儿期
-        last_err = err_dates[-1]
-        infancy_cut = pd.to_datetime(last_err, format="%Y%m%d").strftime("%Y-%m-%d")
-        n0 = len(out)
-        out = out[out["date"] > infancy_cut].reset_index(drop=True)
-        if len(out) and (f0 := float(out["adj_factor"].iloc[0])):
-            for c in ("open", "close", "high", "low"):
-                out[c] = out[c] / f0
-            out["adj_factor"] = out["adj_factor"] / f0
-        print(f"[tushare]   丢弃婴儿期 {n0 - len(out)} 行(≤{infancy_cut})，保留 {len(out)} 行")
-        if abnormal:
-            print(f"[tushare]   ⚠️ 2016+ 仍有 {len(abnormal)} 个异常换月(非婴儿期): {abnormal}")
-        _delete_k_data_before(table, symbol, infancy_cut)
 
     _report_none(out, symbol)   # 平滑后全局扫描 None/<=0，打印报告（不改数据）
     _save_k_data(table, out)
