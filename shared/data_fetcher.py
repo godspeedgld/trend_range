@@ -30,6 +30,9 @@ PERIOD_MAP = {
     "5分钟": "5m",
 }
 
+# period 英文 → 中文（fetch_klines 统一入口用英文，ssquant 取数时转中文）
+_PERIOD_EN2CN = {"1d": "日线", "1h": "60分钟", "30m": "30分钟", "15m": "15分钟", "5m": "5分钟"}
+
 
 def list_varieties(refresh: bool = False) -> pd.DataFrame:
     """获取全部期货品种清单（品种代码 rb/hc/au，非具体合约 rb888/rb2609）。
@@ -60,29 +63,38 @@ def list_varieties(refresh: bool = False) -> pd.DataFrame:
 
 def fetch_klines(
     symbol: str,
-    period: str = "日线",
+    period: str = "1d",
     start_date: str = None,
     end_date: str = None,
+    source: str = "ssquant",
 ) -> pd.DataFrame:
-    """获取期货品种 K 线数据。
-
-    使用 ssquant 的 get_futures_data 接口获取 OHLCV 数据。
-    品种代码自动补 888 后缀（主力连续合约），后复权。
+    """获取期货品种 K 线数据（统一入口）。
 
     Args:
-        symbol: 品种代码，如 "rb"、"hc"
-        period: K 线周期，如 "日线"、"60分钟"
+        symbol:     品种代码，如 "rb"、"hc"
+        period:     K 线周期。英文 "1d"/"week"/"mon"/"1h"/"30m"/"15m"/"5m"，
+                    或中文 "日线"/"60分钟"/...（ssquant 兼容旧写法）
         start_date: 开始日期 "YYYY-MM-DD"
-        end_date: 结束日期，默认今天
+        end_date:   结束日期，默认今天
+        source:     "ssquant"(默认，远程主力连续·后复权 rb888) 或
+                    "local"(本地 k_data.db，主力连续·后复权，需先
+                    fetch_klines_tushare_build 构建；仅 1d/week/mon)
 
     Returns:
-        DataFrame with columns: date, open, high, low, close, volume, symbol, ...
-        日期为 "YYYY-MM-DD" 字符串格式。
+        DataFrame，含 date/open/high/low/close/vol 等；日期为 "YYYY-MM-DD"。
+        source="local" 额外含 adj_factor、oi。
     """
+    if source == "local":
+        return _fetch_klines_local(symbol, period, start_date, end_date)
+
     from ssquant.data.api_data_fetcher import get_futures_data
     from ssquant.config.trading_config import get_api_auth
 
-    ssquant_period = PERIOD_MAP.get(period, "1d")
+    # ssquant：period 统一成中文再映射为 ssquant 内部代码
+    cn_period = period if period in PERIOD_MAP else _PERIOD_EN2CN.get(period)
+    if cn_period is None:
+        raise ValueError(f"ssquant 不支持的 period: {period!r}（中文/英文皆可）")
+    ssquant_period = PERIOD_MAP[cn_period]
     username, password = get_api_auth()
 
     # 品种代码补 888（主力连续），如 rb → rb888
@@ -529,10 +541,13 @@ def fetch_klines_tushare_build(symbol, period="1d", start_date="1999-01-01",
     return _build_tushare_resampled(symbol, period)
 
 
-def fetch_klines_tushare(symbol, period="1d", start_date=None, end_date=None):
-    """从本地 *_k_data 表读取（纯读，不拼接/不复权）。"""
+def _fetch_klines_local(symbol, period="1d", start_date=None, end_date=None):
+    """从本地 k_data.db 的 *_k_data 表读取（纯读，主力连续·后复权，已构建）。
+
+    由 fetch_klines(source="local") 调用；period 仅 1d/week/mon。
+    """
     if period not in _TS_K_TABLE:
-        raise ValueError(f"period 仅支持 {list(_TS_K_TABLE)}")
+        raise ValueError(f"本地库仅支持 {list(_TS_K_TABLE)}，收到 {period!r}")
     table = _TS_K_TABLE[period]
     if not K_DATA_DB.exists():
         return pd.DataFrame()

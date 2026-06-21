@@ -57,7 +57,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RETURNS_DB = PROJECT_ROOT / "data_cache" / "returns.db"
 
 
-def calc_log_return(symbol, start_date="1999-01-01", end_date=None, period="1d"):
+def calc_log_return(symbol, start_date="1999-01-01", end_date=None, period="1d",
+                    source="ssquant"):
     """计算单品种指定周期的对数收益率，并存入对应表。
 
     Args:
@@ -66,7 +67,9 @@ def calc_log_return(symbol, start_date="1999-01-01", end_date=None, period="1d")
         end_date:   结束日期 "YYYY-MM-DD"（默认今天）
         period:     "mon" / "week" / "1d" / "1h" / "30m"
                     → 分别落 mon_return / week_return / 1d_return / 1h_return / 30m_return
-                    （"mon"/"week" 由日线重采样得到：月末 / 周五）
+                    （ssquant 下 "mon"/"week" 由日线重采样得到：月末 / 周五）
+        source:     "ssquant"(远程，日线重采样得月/周) 或
+                    "local"(本地 k_data.db，直接读该周期表，仅 1d/week/mon)
 
     Returns:
         int: 写入的收益率行数（无数据返回 0）。
@@ -76,7 +79,16 @@ def calc_log_return(symbol, start_date="1999-01-01", end_date=None, period="1d")
 
     cn_period, table, resample_rule = _PERIOD_MAP[period]
 
-    df = fetch_klines(symbol, period=cn_period, start_date=start_date, end_date=end_date)
+    if source == "local":
+        if period not in ("1d", "week", "mon"):
+            raise ValueError(f"本地库仅支持 1d/week/mon，收到 {period!r}")
+        df = fetch_klines(symbol, period=period, start_date=start_date,
+                          end_date=end_date, source="local")
+        resample_rule = None  # 本地库已是目标周期，不再重采样
+    else:
+        df = fetch_klines(symbol, period=cn_period, start_date=start_date,
+                          end_date=end_date, source="ssquant")
+
     if df is None or df.empty:
         print(f"[calc_log_return] {symbol} {period} 无数据，跳过")
         return 0
