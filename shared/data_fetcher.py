@@ -15,6 +15,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 # 项目根（shared 的上一级），保证路径与 CWD 无关
@@ -323,27 +324,23 @@ def _roll_dates(mp):
 
 
 def _fill_none(raw, mp):
-    """逐行填补/丢弃连续序列的 None（操作 raw 副本，返回无 None 的 df）。
+    """逐行填补缺失（不丢弃/不截断），返回无 None 的 df。
 
-    不做任何早期数据剔除。每行按 None 模式处理：
-    - 部分 None（OHLC 至少一个有值）：用本行 close>open>high>low 首个非None值
-      填其余 OHLC。
-    - 全 OHLC None 的连续块：
-      · 块内含换月点 → 整块丢弃，拼接点回退到块前最近非None行（不在拼接点伪造价）；
-      · 块内不含换月点 → 用后一交易日的数据复制填充（bfill，源行不动）。
-    - vol/oi 为 None：一律用后一日填充（bfill）。
+    价格列 OHLC 的 NaN 或 <=0 视为缺失；vol/oi 仅 NaN 视为缺失（0 合法）。
+    - 部分缺失（OHLC 至少一个有效）：用本行 close>open>high>low 首个有效值填其余。
+    - 全缺失连续段：一律用段两头非缺失值之间线性插值（跨换月也插值，
+      把整段真实变动均摊到每天，避免压成单日伪跳空）。
+    - vol/oi 缺失 → 后一日填充（bfill）。
     """
     df = raw.copy()
     ohlc = ["open", "high", "low", "close"]
-    rolls = _roll_dates(mp)
 
-    # 价格列 <=0(0/负价)或非数 无效，统一转 NaN，后续与 NaN 同流程
-    # （vol/oi 不在此列：0 成交量/持仓合法）
+    # 0) 价格 <=0/非数 → NaN（vol/oi 不动：0 成交量/持仓合法）
     for c in ohlc:
         num = pd.to_numeric(df[c], errors="coerce")
         df[c] = num.where(num > 0)
 
-    # 1) 部分 None → 本行 close>open>high>low 首个非None 填其余 OHLC
+    # 1) 部分缺失 → close>open>high>low 首个有效值填其余
     part = df[ohlc].isna().any(axis=1) & ~df[ohlc].isna().all(axis=1)
     for idx in df.index[part]:
         for src in ("close", "open", "high", "low"):  # 优先级 close 先
@@ -354,34 +351,68 @@ def _fill_none(raw, mp):
                         df.at[idx, c] = v
                 break
     if int(part.sum()):
-        print(f"[tushare]   部分None行 {int(part.sum())} 行，按 close>open>high>low 填充")
+        print(f"[tushare]   部分缺失 {int(part.sum())} 行，按 close>open>high>low 填充")
 
-    # 2) 全None 连续块：含换月点 → 整块丢弃(3.2)；不含 → 后一日复制(3.1)
-    all_none = df[ohlc].isna().all(axis=1)
-    if all_none.any():
-        block_id = (~all_none).cumsum()  # 连续 all-None 行共享同一 id
-        drop_mask = pd.Series(False, index=df.index)
-        for _bid, g in df[all_none].groupby(block_id, sort=False):
-            if g["trade_date"].isin(rolls).any():
-                drop_mask.loc[g.index] = True
-        if drop_mask.any():
-            print(f"[tushare]   丢弃含换月点的全None连续块 {int(drop_mask.sum())} 行")
-            df = df[~drop_mask].reset_index(drop=True)
-        # 剩余全None块(非换月) → 后一日复制
-        all_none = df[ohlc].isna().all(axis=1)
-        if all_none.any():
-            cols = ohlc + [c for c in ("vol", "oi") if c in df.columns]
-            bf = df[cols].bfill()
-            for c in cols:
-                df.loc[all_none, c] = bf.loc[all_none, c]
-            print(f"[tushare]   全None非换月块 {int(all_none.sum())} 行，用后一日填充")
+    # 2) 全缺失连续段 → 段两头线性插值（跨换月也插值）
+    all_none = df[ohlc].isna().all(axis=1).to_numpy()
+    vals = {c: df[c].to_numpy(dtype=float).copy() for c in ohlc}
+    N = len(df)
+    n_interp = 0
+    i = 0
+    while i < N:
+        if not all_none[i]:
+            i += 1
+            continue
+        j = i
+        while j < N and all_none[j]:
+            j += 1
+        # 段 = 位置 [i, j)，两头非缺失值之间线性插值
+        k = j - i
+        pre = {c: (vals[c][i - 1] if i - 1 >= 0 else np.nan) for c in ohlc}
+        post = {c: (vals[c][j] if j < N else np.nan) for c in ohlc}
+        for c in ohlc:                       # 边界缺失时用另一头
+            if np.isnan(pre[c]):
+                pre[c] = post[c]
+            if np.isnan(post[c]):
+                post[c] = pre[c]
+        for p in range(i, j):
+            frac = (p - i + 1) / (k + 1)
+            for c in ohlc:
+                vals[c][p] = pre[c] + (post[c] - pre[c]) * frac
+        n_interp += k
+        i = j
+    for c in ohlc:
+        df[c] = vals[c]
+    if n_interp:
+        print(f"[tushare]   全缺失段线性插值 {n_interp} 行")
 
-    # 3) vol/oi None → 后一日填充（全局）
+    # 3) vol/oi NaN → 后一日填充（全局）
     for c in ("vol", "oi"):
         if c in df.columns and df[c].isna().any():
             df[c] = df[c].bfill()
 
     return df
+
+
+def _report_jumps(out, symbol, roll_set):
+    """平滑后全局检查大跳变：列最大 |收益| 前 8，标注换月点（潜在未平滑拼接）。"""
+    if out is None or len(out) < 2:
+        return
+    c = out["close"].astype(float)
+    ret = np.log(c).diff()
+    big = ret.abs().nlargest(8)
+    n_roll = 0
+    print(f"[tushare] {symbol} 平滑后最大|收益| 前8:")
+    for idx in big.index:
+        r = ret.loc[idx]
+        if pd.isna(r):
+            continue
+        d = str(out.loc[idx, "date"]).replace("-", "")
+        is_roll = d in roll_set
+        n_roll += 1 if is_roll else 0
+        print(f"   {out.loc[idx, 'date']}  {r * 100:+7.2f}%{'  换月点⚠️' if is_roll else ''}")
+    if n_roll:
+        print(f"   (其中 {n_roll} 个在换月点 → 疑似未平滑拼接，需关注)")
 
 
 def _build_tushare_daily(symbol, start_date="1999-01-01", end_date=None):
@@ -470,6 +501,7 @@ def _build_tushare_daily(symbol, start_date="1999-01-01", end_date=None):
         "vol": raw["vol"], "oi": raw["oi"], "adj_factor": raw["adj_factor"],
     })
 
+    _report_jumps(out, symbol, _roll_dates(mp))  # 平滑后检查大跳变，标注换月点
     _report_none(out, symbol)   # 平滑后全局扫描 None/<=0，打印报告（不改数据）
     _save_k_data(table, out)
     extra = []
@@ -505,8 +537,8 @@ def _build_tushare_resampled(symbol, period):
     df["date"] = pd.to_datetime(df["date"])
     agg = (df.set_index("date")
            .resample(freq)
-           .agg(open="first", close="last", high="max", low="min",
-                vol="sum", oi="last", adj_factor="last")
+           .agg({"open": "first", "close": "last", "high": "max",
+                 "low": "min", "vol": "sum", "oi": "last", "adj_factor": "last"})
            .dropna(subset=["open"])
            .reset_index())
     agg["date"] = agg["date"].dt.strftime("%Y-%m-%d")
