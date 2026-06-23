@@ -345,34 +345,41 @@ def plot_stats_box(period="1d", feature="kurt"):
     return out
 
 
-def plot_tsmom_tstat(period="1d", minh=1, maxh=60, steph=1):
-    """扫描 h，画 TSMOM 面板回归的 t 统计量柱状图，输出 HTML。
+def plot_tsmom_tstat(period="1d", minh=1, maxh=60, steph=1, start_date=None, end_date=None,
+                     symbols=None, raw=False, min_years=2.0):
+    """扫描 h，画 TSMOM 回归的 t 统计量柱状图，输出 HTML。
 
-    对 h = minh, minh+steph, ..., maxh 逐个调用
-    ``trend_following.check_trend_valid.tsmom_regression(period, h)``，收集返回的
-    t 统计量，画柱状图（横轴=h，纵轴=t），并标 ±2 显著性参考线。
+    - raw=False（默认）：eq(2) z_t ~ z_{t-h}（z_t = r_t/σ_{t-1}，波动率目标化）。
+    - raw=True：原始收益 r_t ~ r_{t-h}（不除波动率，tsmom_regression_raw）。
 
     Args:
-        period: "1d" / "week" / "mon"
-        minh:   起始 h（含）
-        maxh:   结束 h（含）
-        steph:  步长
+        period:     "1d" / "week" / "mon"
+        minh:       起始 h（含）
+        maxh:       结束 h（含）
+        steph:      步长
+        start_date: 样本起始日（含），None 不限
+        end_date:   样本结束日（含），None 不限
+        symbols:    固定品种集合（iterable），None 则全部；非 None 时文件名/标题加 `_fixed{N}`。
+        raw:        True 用原始收益回归，False 用波动率目标化回归。
+        min_years:  上市不足此年数的品种剔除（默认 2.0）；None 则不限制。
 
     Returns:
         生成的 HTML 文件路径。
     """
-    from trend_following.check_trend_valid import tsmom_regression
+    from trend_following.check_trend_valid import tsmom_regression, tsmom_regression_raw
+    regfn = tsmom_regression_raw if raw else tsmom_regression
 
     hs = list(range(minh, maxh + 1, steph))
-    ts = []
+    nsym = None if symbols is None else len(list(symbols))
     import contextlib, io
+    ts = []
     for h in hs:
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):       # 屏蔽逐行打印
-            t = tsmom_regression(period=period, h=h)
+        with contextlib.redirect_stdout(buf):
+            t = regfn(period=period, h=h, start_date=start_date, end_date=end_date,
+                      symbols=symbols, min_years=min_years)
         ts.append(float(t) if t is not None and not pd.isna(t) else None)
 
-    # 画图（NaN 画为 0 高度但保留位置）
     y = [0 if v is None else v for v in ts]
     colors = ["crimson" if v < 0 else "steelblue" for v in y]
 
@@ -384,14 +391,34 @@ def plot_tsmom_tstat(period="1d", minh=1, maxh=60, steph=1):
     fig.add_hline(y=-2, line_dash="dash", line_color="gray",
                   annotation_text="-2", annotation_position="bottom left")
     fig.add_hline(y=0, line_color="black", line_width=1)
+    extra = []
+    if nsym is not None:
+        extra.append(f"固定 {nsym} 品种")
+    if start_date:
+        extra.append(f"起 {start_date}")
+    if end_date:
+        extra.append(f"止 {end_date}")
+    extra_txt = ("，" + "，".join(extra)) if extra else ""
+
+    eq_label = "原始收益 r_t~r_{t-h}" if raw else "eq(2) z_t~z_{t-h}"
     fig.update_layout(
-        title=f"{period} · TSMOM 回归 t 统计量 vs h（{minh}~{maxh} 步{steph}）",
+        title=f"{period} · TSMOM {eq_label} t 统计量 vs h（{minh}~{maxh} 步{steph}，时间聚类SE{extra_txt}）",
         xaxis_title="滞后阶数 h", yaxis_title="β 的 t 统计量",
         template="plotly_white",
     )
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out = RESULTS_DIR / f"tsmom_tstat_{period}_h{minh}-{maxh}.html"
+    tags = []
+    if raw:
+        tags.append("raw")
+    if nsym is not None:
+        tags.append(f"fixed{nsym}")
+    if start_date:
+        tags.append(f"from{start_date}")
+    if end_date:
+        tags.append(f"to{end_date}")
+    suffix = ("_" + "_".join(tags)) if tags else ""
+    out = RESULTS_DIR / f"tsmom_tstat_{period}_h{minh}-{maxh}{suffix}.html"
     fig.write_html(str(out))
     valid = sum(1 for v in ts if v is not None)
     print(f"[data_viz] 已输出: {out}  (h {minh}~{maxh} 步{steph}, 有效 {valid}/{len(hs)})")
