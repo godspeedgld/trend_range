@@ -36,7 +36,7 @@ _FEATURE_LABEL = {
 _STAT_LABEL = {
     "count": "样本数", "mean": "均值", "std": "标准差",
     "min": "最小值", "q25": "25%分位", "q50": "中位数", "q75": "75%分位", "max": "最大值",
-    "skew": "偏度", "kurt": "峰度(超额)",
+    "skew": "偏度", "kurt": "峰度(超额)", "std_ret": "std_ret",
 }
 
 # 柱状图参考线：特征 → 标准值（偏度/峰度/均值 以 0 为基准；标准差不画）
@@ -44,7 +44,6 @@ _REF_LINE = {"skew": 0.0, "kurt": 0.0, "mean": 0.0}
 
 # 统计特征表名（与 trend_following.check_trend_valid.STATS_TABLE 一致）
 STATS_TABLE = "return_stats"
-
 
 def plot_feature(symbol, start_date=None, end_date=None, feature="log_return", period="1d"):
     """读取 symbol 在指定 period 表里的 feature，画折线，输出 HTML 到 results/。
@@ -113,7 +112,6 @@ def plot_feature(symbol, start_date=None, end_date=None, feature="log_return", p
     print(f"[data_viz] 已输出: {out}  ({len(df)} 点, {df['datetime'].iloc[0]} ~ {df['datetime'].iloc[-1]})")
     return out
 
-
 def plot_stats_table(period="1d"):
     """读取 return_stats，输出可点击表头排序的统计特征表格 HTML。
 
@@ -139,7 +137,7 @@ def plot_stats_table(period="1d"):
 
     df = df.sort_values("symbol").reset_index(drop=True)
     text_cols = ["symbol", "category", "start_date", "end_date"]
-    stat_cols = ["count", "mean", "std", "min", "q25", "q50", "q75", "max", "skew", "kurt"]
+    stat_cols = ["count", "mean", "std", "min", "q25", "q50", "q75", "max", "skew", "kurt", "std_ret"]
     cols = text_cols + stat_cols
     labels = {
         "symbol": "symbol", "category": "板块", "start_date": "起", "end_date": "止",
@@ -221,7 +219,6 @@ function sortTable(col) {{
     print(f"[data_viz] 已输出: {out}  ({len(df)} 个品种，表头可点击排序)")
     return out
 
-
 def plot_stats_bar(period="1d", feature="std"):
     """读取 return_stats，画某统计特征的柱状图（横轴=品种，纵轴=特征值），输出 HTML。
 
@@ -274,7 +271,6 @@ def plot_stats_bar(period="1d", feature="std"):
     fig.write_html(str(out))
     print(f"[data_viz] 已输出: {out}  ({len(df)} 个品种)")
     return out
-
 
 def plot_stats_box(period="1d", feature="kurt"):
     """读取 return_stats，按板块分组画箱线图（横轴=板块，纵轴=特征值），输出 HTML。
@@ -344,31 +340,27 @@ def plot_stats_box(period="1d", feature="kurt"):
     print(f"[data_viz] 已输出: {out}  ({len(order)} 个板块)")
     return out
 
+def _plot_tstat_bars(tstats, labels, title, out_name):
+    """核心绘图：输入 t 值 → 柱状图（±2 参考线，红负蓝正，plotly_white），写 HTML。"""
+    y = [0 if v is None else v for v in tstats]
+    colors = ["crimson" if v < 0 else "steelblue" for v in y]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=labels, y=y, marker_color=colors, showlegend=False))
+    fig.add_hline(y=2, line_dash="dash", line_color="gray", annotation_text="+2")
+    fig.add_hline(y=-2, line_dash="dash", line_color="gray", annotation_text="-2")
+    fig.add_hline(y=0, line_color="black", line_width=1)
+    fig.update_layout(title=title, xaxis_title="滞后阶数",
+                      yaxis_title="β 的 t 统计量", template="plotly_white")
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    out = RESULTS_DIR / out_name
+    fig.write_html(str(out))
+    return out
 
 def plot_tsmom_tstat(period="1d", minh=1, maxh=60, steph=1, start_date=None, end_date=None,
-                     symbols=None, raw=False, min_years=2.0):
-    """扫描 h，画 TSMOM 回归的 t 统计量柱状图，输出 HTML。
-
-    - raw=False（默认）：eq(2) z_t ~ z_{t-h}（z_t = r_t/σ_{t-1}，波动率目标化）。
-    - raw=True：原始收益 r_t ~ r_{t-h}（不除波动率，tsmom_regression_raw）。
-
-    Args:
-        period:     "1d" / "week" / "mon"
-        minh:       起始 h（含）
-        maxh:       结束 h（含）
-        steph:      步长
-        start_date: 样本起始日（含），None 不限
-        end_date:   样本结束日（含），None 不限
-        symbols:    固定品种集合（iterable），None 则全部；非 None 时文件名/标题加 `_fixed{N}`。
-        raw:        True 用原始收益回归，False 用波动率目标化回归。
-        min_years:  上市不足此年数的品种剔除（默认 2.0）；None 则不限制。
-
-    Returns:
-        生成的 HTML 文件路径。
-    """
-    from trend_following.check_trend_valid import tsmom_regression, tsmom_regression_raw
-    regfn = tsmom_regression_raw if raw else tsmom_regression
-
+                     symbols=None, raw=False, min_years=2.0, return_col="log_return"):
+    """扫描 h，画 TSMOM 单滞后回归 t 统计量柱状图（z_t ~ z_{t-h}），输出 HTML。"""
+    from trend_following.check_trend_valid import tsmom_regression
+    regfn = tsmom_regression
     hs = list(range(minh, maxh + 1, steph))
     nsym = None if symbols is None else len(list(symbols))
     import contextlib, io
@@ -377,20 +369,9 @@ def plot_tsmom_tstat(period="1d", minh=1, maxh=60, steph=1, start_date=None, end
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             t = regfn(period=period, h=h, start_date=start_date, end_date=end_date,
-                      symbols=symbols, min_years=min_years)
+                      symbols=symbols, min_years=min_years, return_col=return_col)
         ts.append(float(t) if t is not None and not pd.isna(t) else None)
 
-    y = [0 if v is None else v for v in ts]
-    colors = ["crimson" if v < 0 else "steelblue" for v in y]
-
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=hs, y=y, marker_color=colors,
-                         name="t 统计量", showlegend=False))
-    fig.add_hline(y=2, line_dash="dash", line_color="gray",
-                  annotation_text="+2 (5%显著)", annotation_position="top left")
-    fig.add_hline(y=-2, line_dash="dash", line_color="gray",
-                  annotation_text="-2", annotation_position="bottom left")
-    fig.add_hline(y=0, line_color="black", line_width=1)
     extra = []
     if nsym is not None:
         extra.append(f"固定 {nsym} 品种")
@@ -399,31 +380,51 @@ def plot_tsmom_tstat(period="1d", minh=1, maxh=60, steph=1, start_date=None, end
     if end_date:
         extra.append(f"止 {end_date}")
     extra_txt = ("，" + "，".join(extra)) if extra else ""
+    eq_label = "eq(2) z_t~z_{t-h}"
+    title = f"{period} · TSMOM {eq_label} t 统计量 vs h（{minh}~{maxh} 步{steph}，时间聚类SE{extra_txt}）"
 
-    eq_label = "原始收益 r_t~r_{t-h}" if raw else "eq(2) z_t~z_{t-h}"
-    fig.update_layout(
-        title=f"{period} · TSMOM {eq_label} t 统计量 vs h（{minh}~{maxh} 步{steph}，时间聚类SE{extra_txt}）",
-        xaxis_title="滞后阶数 h", yaxis_title="β 的 t 统计量",
-        template="plotly_white",
-    )
-
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    tags = []
-    if raw:
-        tags.append("raw")
-    if nsym is not None:
-        tags.append(f"fixed{nsym}")
-    if start_date:
-        tags.append(f"from{start_date}")
-    if end_date:
-        tags.append(f"to{end_date}")
+    tags = []; _ = raw and tags.append("raw"); _ = nsym is not None and tags.append(f"fixed{nsym}")
+    _ = start_date and tags.append(f"from{start_date}"); _ = end_date and tags.append(f"to{end_date}")
     suffix = ("_" + "_".join(tags)) if tags else ""
-    out = RESULTS_DIR / f"tsmom_tstat_{period}_h{minh}-{maxh}{suffix}.html"
-    fig.write_html(str(out))
+    out_name = f"tsmom_tstat_{period}_h{minh}-{maxh}{suffix}.html"
+
+    out = _plot_tstat_bars(ts, hs, title, out_name)
     valid = sum(1 for v in ts if v is not None)
     print(f"[data_viz] 已输出: {out}  (h {minh}~{maxh} 步{steph}, 有效 {valid}/{len(hs)})")
     return out
+    ret_table = {"1d": "1d_return", "week": "week_return", "mon": "mon_return"}[period]
+    conn = sqlite3.connect(str(RETURNS_DB))
+    try:
+        df = pd.read_sql(
+            f'SELECT datetime, return_index FROM "{ret_table}" '
+            f"WHERE symbol = ? AND return_index IS NOT NULL ORDER BY datetime",
+            conn, params=(symbol,),
+        )
+    finally:
+        conn.close()
+    if df.empty:
+        print(f"[data_viz] {symbol} {period} 无 return_index，跳过")
+        return None
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    name = name or symbol
+    d0, d1 = df["datetime"].iloc[0].date(), df["datetime"].iloc[-1].date()
+    v0, v1 = df["return_index"].iloc[0], df["return_index"].iloc[-1]
 
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(x=df["datetime"], y=df["return_index"], mode="lines",
+                   name=name, line=dict(width=1.5)),
+    )
+    fig.update_layout(
+        title=f"{name} {period} 收益指数（首日=1000）| {d0} ~ {d1} | {v0:.0f}→{v1:.0f}",
+        xaxis_title="日期", yaxis_title="收益指数",
+        template="plotly_white",
+    )
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    out = RESULTS_DIR / f"ret_index_{symbol}_{period}.html"
+    fig.write_html(str(out))
+    print(f"[data_viz] 已输出: {out}")
+    return out
 
 if __name__ == "__main__":
     # 自测：统计特征表格 + 柱状图（std/skew/kurt）

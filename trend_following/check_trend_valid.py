@@ -60,8 +60,6 @@ _PERIOD_VOL_COL = {"1d": "volatility", "week": "week_1d_vol", "mon": "mon_1d_vol
 # 收益率库：项目根/data_cache/returns.db（与 CWD 无关）
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RETURNS_DB = PROJECT_ROOT / "data_cache" / "returns.db"
-K_DATA_DB = PROJECT_ROOT / "data_cache" / "k_data.db"
-_K_DATA_TABLE = {"1d": "1d_k_data", "week": "week_k_data", "mon": "mon_k_data"}
 
 
 def calc_log_return(symbol, start_date="1999-01-01", end_date=None, period="1d",
@@ -163,22 +161,98 @@ def _save_returns(df: pd.DataFrame, table: str) -> None:
         conn.close()
 
 
+def calc_simple_return(symbol, start_date="1999-01-01", end_date=None, period="1d",
+                       source="ssquant", persist=True):
+    """计算单品种简单收益率（close_t/close_{t-1} − 1），存 `simple_return` 列。
+
+    取数方式与 calc_log_return 完全一致（fetch_klines → close → 周/月按规则 resample
+    取月末/周末）。区别仅在计算：简单收益 = close.pct_change()（而非 log(close).diff()），
+    且写入 simple_return 列（不覆盖 log_return）。
+
+    Args:
+        symbol:     品种代码
+        start_date: 开始日期 "YYYY-MM-DD"（默认 1999-01-01）
+        end_date:   结束日期 "YYYY-MM-DD"（默认今天）
+        period:     "mon" / "week" / "1d" / "1h" / "30m"
+        source:     "ssquant"(远程) 或 "local"(本地 k_data.db，仅 1d/week/mon)
+        persist:    True(默认)写库返回行数(int)；False 返回 DataFrame 供比对。
+
+    Returns:
+        persist=True  → int：写入行数；无数据返回 0。
+        persist=False → DataFrame(datetime/symbol/simple_return)。
+    """
+    if period not in _PERIOD_MAP:
+        raise ValueError(f"period 仅支持 {list(_PERIOD_MAP)}，收到 {period!r}")
+    cn_period, table, resample_rule = _PERIOD_MAP[period]
+    if source == "local":
+        if period not in ("1d", "week", "mon"):
+            raise ValueError(f"本地库仅支持 1d/week/mon，收到 {period!r}")
+        df = fetch_klines(symbol, period=period, start_date=start_date,
+                          end_date=end_date, source="local")
+        resample_rule = None
+    else:
+        df = fetch_klines(symbol, period=cn_period, start_date=start_date,
+                          end_date=end_date, source="ssquant")
+    if df is None or df.empty:
+        print(f"[calc_simple_return] {symbol} {period} 无数据，跳过")
+        return 0
+
+    dt_col = "datetime" if "datetime" in df.columns else "date"
+    df = df[[dt_col, "close"]].copy()
+    df[dt_col] = pd.to_datetime(df[dt_col])
+    df["close"] = df["close"].astype(float)
+    df = df.dropna(subset=["close"]).drop_duplicates(subset=[dt_col]).sort_values(dt_col)
+    df = df.set_index(dt_col)
+    if resample_rule:
+        df = df[["close"]].resample(resample_rule).last().dropna()
+    if df.empty:
+        print(f"[calc_simple_return] {symbol} {period} 无有效 close，跳过")
+        return 0
+
+    # 简单收益率：close_t/close_{t-1} − 1
+    df["simple_return"] = df["close"].pct_change()
+    df = df.dropna(subset=["simple_return"])
+    if df.empty:
+        print(f"[calc_simple_return] {symbol} {period} 不足两个采样点")
+        return 0
+
+    out = pd.DataFrame({
+        "datetime": df.index.strftime("%Y-%m-%d %H:%M:%S"),
+        "symbol": symbol,
+        "simple_return": df["simple_return"].astype(float),
+    })
+    if not persist:
+        return out
+    conn = sqlite3.connect(str(RETURNS_DB))
+    try:
+        cur = conn.cursor()
+        _ensure_column(cur, table, "simple_return", "REAL")
+        cur.execute(f'UPDATE "{table}" SET simple_return = NULL WHERE symbol = ?', (symbol,))
+        rows = [(float(v), dt, symbol) for dt, v in zip(out["datetime"], out["simple_return"])]
+        cur.executemany(
+            f'UPDATE "{table}" SET simple_return = ? WHERE datetime = ? AND symbol = ?', rows
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    print(f"[calc_simple_return] {symbol} {period} → {table}.simple_return: {len(out)} 行 "
+          f"({out['datetime'].iloc[0]} ~ {out['datetime'].iloc[-1]})")
+    return len(out)
+
+
 # 统计特征表：return_stats
 STATS_TABLE = "return_stats"
 # period → 收益率表名（与 _PERIOD_MAP 的表名一致）
 _STATS_SOURCE = {"1d": "1d_return", "week": "week_return", "mon": "mon_return"}
 
 
-def calc_return_stats(period="1d", symbol=None):
-    """计算各品种指定周期对数收益率的统计特征，存入 return_stats 表。
-
-    从对应的收益率表（1d_return / week_return / mon_return）读取，按 symbol 分组
-    计算：count / mean / std / min / 25% / 50% / 75% / max / skew / kurt，
-    并附带 start_date / end_date / period / symbol / category。
+def calc_return_stats(period="1d", symbol=None, return_col="log_return"):
+    """计算各品种指定周期收益率的统计特征，存入 return_stats 表。
 
     Args:
-        period: "1d" / "week" / "mon"
-        symbol: 仅计算该品种；None 则计算该表内全部品种
+        period:     "1d" / "week" / "mon"
+        symbol:     仅计算该品种；None 则计算该表内全部品种
+        return_col: 收益列名，默认 "log_return"；可 "simple_return"。
 
     Returns:
         int: 写入的行数（= 计算的品种数）。
@@ -188,28 +262,27 @@ def calc_return_stats(period="1d", symbol=None):
     src = _STATS_SOURCE[period]
 
     if not RETURNS_DB.exists():
-        print(f"[calc_return_stats] 无收益率库 {RETURNS_DB}，请先 calc_log_return")
+        print(f"[calc_return_stats] 无收益率库 {RETURNS_DB}")
         return 0
     conn = sqlite3.connect(str(RETURNS_DB))
     try:
         if symbol:
-            df = pd.read_sql(f'SELECT * FROM "{src}" WHERE symbol = ?', conn, params=(symbol,))
+            df = pd.read_sql(f'SELECT datetime, symbol, category, "{return_col}" FROM "{src}" WHERE symbol=? AND "{return_col}" IS NOT NULL ORDER BY datetime', conn, params=(symbol,))
         else:
-            df = pd.read_sql(f'SELECT * FROM "{src}"', conn)
+            df = pd.read_sql(f'SELECT datetime, symbol, category, "{return_col}" FROM "{src}" WHERE "{return_col}" IS NOT NULL ORDER BY datetime', conn)
     finally:
         conn.close()
-
     if df.empty:
-        print(f"[calc_return_stats] {period}({src}) 无数据")
         return 0
-
     df["datetime"] = pd.to_datetime(df["datetime"])
     rows = []
     for sym, g in df.groupby("symbol"):
-        r = g["log_return"].astype(float).dropna()
+        r = g[return_col].astype(float).dropna()
         if r.empty:
             continue
         q = r.quantile([0.25, 0.5, 0.75])
+        m = float(r.mean())
+        s = float(r.std())
         rows.append({
             "symbol": sym,
             "category": g["category"].dropna().iloc[0] if g["category"].notna().any() else None,
@@ -217,8 +290,9 @@ def calc_return_stats(period="1d", symbol=None):
             "start_date": g["datetime"].min().strftime("%Y-%m-%d"),
             "end_date": g["datetime"].max().strftime("%Y-%m-%d"),
             "count": int(r.count()),
-            "mean": float(r.mean()),
-            "std": float(r.std()),
+            "mean": m,
+            "std": s,
+            "std_ret": abs(s / m) if m != 0 else None,
             "min": float(r.min()),
             "q25": float(q.loc[0.25]),
             "q50": float(q.loc[0.50]),
@@ -240,7 +314,8 @@ def _save_return_stats(df: pd.DataFrame) -> None:
     """把统计特征写入 return_stats 表，按 (symbol, period) 主键覆盖。"""
     RETURNS_DB.parent.mkdir(parents=True, exist_ok=True)
     cols = ["symbol", "category", "period", "start_date", "end_date",
-            "count", "mean", "std", "min", "q25", "q50", "q75", "max", "skew", "kurt"]
+            "count", "mean", "std", "min", "q25", "q50", "q75", "max", "skew", "kurt",
+            "std_ret"]
     conn = sqlite3.connect(str(RETURNS_DB))
     try:
         cur = conn.cursor()
@@ -250,8 +325,11 @@ def _save_return_stats(df: pd.DataFrame) -> None:
             'start_date TEXT, end_date TEXT, '
             'count INTEGER, mean REAL, std REAL, min REAL, '
             'q25 REAL, q50 REAL, q75 REAL, max REAL, skew REAL, kurt REAL, '
+            'std_ret REAL, '
             'PRIMARY KEY (symbol, period))'
         )
+        # 旧表迁移：若已存在但无 std_ret 列，补上
+        _ensure_column(cur, STATS_TABLE, "std_ret", "REAL")
         ph = ", ".join("?" for _ in cols)
         cn = ", ".join(f'"{c}"' for c in cols)
         rows = [tuple(r) for r in df[cols].to_numpy()]
@@ -272,8 +350,8 @@ def ema_volatility(returns, delta=None, com=60, annualize=252):
         s²_t   = annualize · Σ_i w_i · (r_{t-i} − r̄_t)²
         s_t    = √s²_t                               （年化波动率）
 
-    权重 w_i = (1−d)·d^i（i=0,1,2,…），归一化；重心 COM = d/(1−d)。
-    论文取 COM=60 天、annualize=261；本函数默认 com=60、annualize=252
+    权重 w_i = (1−d)·d^i（i=0,1,2,…），归一化；com 为**半衰期**：d^com = 0.5 → d = 0.5^(1/com)。
+    论文 COM=60 天对应半衰期约 41 天；本函数默认 com=60（半衰期 60）、annualize=252
     （与本项目其他年化口径一致，可改）。
 
     ⚠️ **使用约定（重要）**：本函数输出的 σ_t 由 r_t 及之前数据估计（**含 r_t**），
@@ -284,8 +362,8 @@ def ema_volatility(returns, delta=None, com=60, annualize=252):
 
     Args:
         returns:   对数收益率序列（pd.Series 或 1D array，按时间正序）。
-        delta:     衰减因子 d。None 时由 com 反推：d = com/(com+1)。
-        com:       权重重心（天数），delta=None 时生效。默认 60。
+        delta:     衰减因子 d。None 时由 com（半衰期）反推：d = 0.5^(1/com)。
+        com:       半衰期（权重减半所需期数），delta=None 时生效。默认 60。
         annualize: 年化系数（一年的观测数）。默认 252。
 
     Returns:
@@ -297,8 +375,8 @@ def ema_volatility(returns, delta=None, com=60, annualize=252):
     if n == 0:
         return pd.Series(dtype="float64")
 
-    # 由重心推 delta：COM = d/(1−d)  =>  d = COM/(COM+1)
-    d = (com / (com + 1)) if delta is None else float(delta)
+    # 由半衰期推 delta：d^com = 0.5  =>  d = 0.5^(1/com)
+    d = (0.5 ** (1 / com)) if delta is None else float(delta)
     if not 0 < d < 1:
         raise ValueError(f"delta 需在 (0,1)，得到 {d}")
 
@@ -326,25 +404,25 @@ def ema_volatility(returns, delta=None, com=60, annualize=252):
     vol = np.sqrt(var_ew * annualize)
     out = pd.Series(vol, index=r.index, name="ema_vol")
 
-    # 前期权重未铺满（归一化前权重和明显<1）视为不可靠，置 NaN（无条件）
-    # 阈值：权重和达到 ~0.99 所需点数 = ceil(log(0.01)/log(d))。com=60 → 279 期。
-    # 统一规则：任何品种都砍前 warmup 期；数据不足 warmup 的品种（如新上市）全部 NaN
-    # ——它们没有可靠的 EMA 波动率，这是诚实而非缺数据。
+    # 不强制截断：前期权重和<1 已在循环内归一化（wt/s）处理，早期值基于较少观测、略噪但可用。
+    # 仅首点（单观测方差退化=0）置 NaN。长/短品种规则一致，新上市品种也有 vol（从第2个观测起）。
+    # out.iloc[0] = np.nan
     warmup = int(np.ceil(np.log(1 - 0.99) / np.log(d)))
     out.iloc[:warmup] = np.nan
     return out
 
 
-def calc_volatility(symbol, period="1d", delta=None, com=60, annualize=252, persist=True):
+def calc_volatility(symbol, period="1d", delta=None, com=60, annualize=252, persist=True,
+                    return_col="log_return"):
     """【计算波动率】给定 period 与 com，按 EMA 在「该频度自身收益」上算 σ_t，存 `volatility` 列。
 
-    读取该 symbol 已入库的对数收益（按时间正序），调用 ema_volatility 算 σ_t，
-    UPDATE 到对应行的 `volatility` 列（σ_t 配 r_t）。**不改动 log_return / category**。
+    读取该 symbol 已入库的收益（return_col，默认 log_return；可改 simple_return），调用
+    ema_volatility 算 σ_t，UPDATE 到对应行的 `volatility` 列（σ_t 配 r_t）。**不改动收益列**。
     表若无 `volatility` 列会自动 ALTER 补上。写入前先清该品种旧值，避免残留。
 
     ⚠️ com 是「该频度的 bar 数」。月/周收益数据太少时，直接在本函数算 σ 会不稳、
     warmup 还吃掉前期——此时应改用 calc_mapped_volatility 从更细频度（如日频）的 σ
-    映射过来。**上层自行决定是否更新、用哪一级波动率为基础**。
+    映射过来。**上层自行决定是否更新、用哪一级波动率为基础、基于哪种收益**。
 
     Args:
         symbol:              品种代码
@@ -352,10 +430,11 @@ def calc_volatility(symbol, period="1d", delta=None, com=60, annualize=252, pers
         delta/com/annualize: 透传给 ema_volatility
         persist:             True(默认)写库并返回非空点数(int)；False 不写库，
                              返回 DataFrame(datetime/volatility) 供校验比对。
+        return_col:          收益列名，默认 "log_return"；可 "simple_return"。
 
     Returns:
         persist=True  → int：写入 `volatility` 的非空点数；无数据返回 0。
-        persist=False → DataFrame：datetime/volatility（与库内 log_return 行对齐）。
+        persist=False → DataFrame：datetime/volatility（与库内同行对齐）。
     """
     if period not in _PERIOD_MAP:
         raise ValueError(f"period 仅支持 {list(_PERIOD_MAP)}，收到 {period!r}")
@@ -369,7 +448,7 @@ def calc_volatility(symbol, period="1d", delta=None, com=60, annualize=252, pers
         cur = conn.cursor()
         _ensure_column(cur, table, "volatility", "REAL")
         rows = cur.execute(
-            f'SELECT datetime, log_return FROM "{table}" WHERE symbol = ? ORDER BY datetime',
+            f'SELECT datetime, "{return_col}" FROM "{table}" WHERE symbol = ? ORDER BY datetime',
             (symbol,),
         ).fetchall()
         if not rows:
@@ -495,101 +574,99 @@ def _ensure_column(cur, table, column, sql_type):
         cur.execute(f'ALTER TABLE "{table}" ADD COLUMN {column} {sql_type}')
 
 
-def calc_ret_index(symbol, period="1d", base=1000.0, persist=True):
-    """【累计收益指数】从 k_data 读 close，首日归一 base，几何累积，存 `ret_index` 列。
+def calc_ret_index(symbol, start_date="1999-01-01", end_date=None, period="1d",
+                   source="local", base=1000.0, persist=True):
+    """【累计收益指数】参考 calc_log_return 取数，首日 close 归一 base，几何累积，存 `return_index` 列。
 
         index_0 = base（首条 close 归一为 base）
         index_t = index_{t-1} × close_t/close_{t-1} = base × close_t/close_0
 
-    直接取 k_data.<频度> 的 close 计算（原始价格，不经过 log_return）。收益表首行是
-    第 2 个 bar（首日无 diff 被丢），故首行 index = base × close_1/close_0；base 对应
-    首日 close（不在收益表内）。仅支持 1d/week/mon（k_data 仅此三表）。
+    取数与 calc_log_return 一致：fetch_klines → close → (周/月按规则 resample 取月末/周末)。
+    不经过 log_return，直接用 close 算。收益表首行是第 2 个 bar（首日被 calc_log_return 的
+    diff 丢掉，表内无该行），故首行 return_index = base × close_1/close_0；base 对应首日 close。
 
     Args:
-        symbol:  品种代码
-        period:  "1d" / "week" / "mon"
-        base:    首日基准值（默认 1000）
-        persist: True(默认)写库并返回非空点数(int)；False 不写库返回 DataFrame。
+        symbol:     品种代码
+        start_date: 开始日期 "YYYY-MM-DD"（默认 1999-01-01）
+        end_date:   结束日期 "YYYY-MM-DD"（默认今天）
+        period:     "1d" / "week" / "mon"
+        source:     "local"(默认，k_data.db) 或 "ssquant"(远程，日线重采样得月/周)
+        base:       首日基准值（默认 1000）
+        persist:    True(默认)写库并返回非空点数(int)；False 不写库返回 DataFrame。
 
     Returns:
         persist=True  → int：写入的非空点数；无数据返回 0。
-        persist=False → DataFrame(datetime/ret_index)。
+        persist=False → DataFrame(datetime/return_index)。
     """
-    if period not in _K_DATA_TABLE:
-        raise ValueError(f"period 仅支持 {list(_K_DATA_TABLE)}（k_data 仅此三表），收到 {period!r}")
-    table, ktable = _PERIOD_MAP[period][1], _K_DATA_TABLE[period]
+    if period not in _PERIOD_MAP:
+        raise ValueError(f"period 仅支持 {list(_PERIOD_MAP)}，收到 {period!r}")
+    cn_period, table, resample_rule = _PERIOD_MAP[period]
+    if source == "local":
+        if period not in ("1d", "week", "mon"):
+            raise ValueError(f"本地库仅支持 1d/week/mon，收到 {period!r}")
+        df = fetch_klines(symbol, period=period, start_date=start_date,
+                          end_date=end_date, source="local")
+        resample_rule = None
+    else:
+        df = fetch_klines(symbol, period=cn_period, start_date=start_date,
+                          end_date=end_date, source="ssquant")
+    if df is None or df.empty:
+        print(f"[calc_ret_index] {symbol} {period} 无数据，跳过")
+        return 0
 
-    if not K_DATA_DB.exists():
-        print(f"[calc_ret_index] 无 K 线库 {K_DATA_DB}")
+    dt_col = "datetime" if "datetime" in df.columns else "date"
+    df = df[[dt_col, "close"]].copy()
+    df[dt_col] = pd.to_datetime(df[dt_col])
+    df["close"] = df["close"].astype(float)
+    df = df.dropna(subset=["close"]).drop_duplicates(subset=[dt_col]).sort_values(dt_col)
+    df = df.set_index(dt_col)
+    if resample_rule:
+        df = df[["close"]].resample(resample_rule).last().dropna()
+    if df.empty:
+        print(f"[calc_ret_index] {symbol} {period} 无有效 close，跳过")
         return 0
-    conn = sqlite3.connect(str(K_DATA_DB))
-    try:
-        rows = conn.execute(
-            f'SELECT date, close FROM "{ktable}" WHERE symbol = ? AND close IS NOT NULL ORDER BY date',
-            (symbol,),
-        ).fetchall()
-    finally:
-        conn.close()
-    if not rows:
-        print(f"[calc_ret_index] {symbol} {period}: {ktable} 无 close，跳过")
-        return 0
-    dates = [r[0] for r in rows]
-    closes = np.array([float(r[1]) for r in rows], dtype=float)
-    idx = base * closes / closes[0]                       # index_t = base × close_t/close_0
-    # 收益表首行对应第 2 个 bar（首日 base 不在表内），故写 idx[1:]
-    out_dates, out_idx = dates[1:], idx[1:]
+
+    # 收益指数：首条 close 归一 base，几何累积 = base × close_t/close_0
+    df["return_index"] = base * df["close"] / df["close"].iloc[0]
+    out = pd.DataFrame({
+        "datetime": df.index.strftime("%Y-%m-%d %H:%M:%S"),
+        "return_index": df["return_index"].astype(float),
+    })
     if not persist:
-        return pd.DataFrame({"datetime": [f"{d} 00:00:00" for d in out_dates],
-                             "ret_index": out_idx})
+        return out
 
-    if not RETURNS_DB.exists():
-        print(f"[calc_ret_index] 无收益率库 {RETURNS_DB}")
-        return 0
     conn = sqlite3.connect(str(RETURNS_DB))
     try:
         cur = conn.cursor()
-        _ensure_column(cur, table, "ret_index", "REAL")
-        cur.execute(f'UPDATE "{table}" SET ret_index = NULL WHERE symbol = ?', (symbol,))
-        upd = [(float(v), f"{d} 00:00:00", symbol) for d, v in zip(out_dates, out_idx)]
+        _ensure_column(cur, table, "return_index", "REAL")
+        cur.execute(f'UPDATE "{table}" SET return_index = NULL WHERE symbol = ?', (symbol,))
+        rows = [(float(v), dt, symbol) for dt, v in zip(out["datetime"], out["return_index"])]
         cur.executemany(
-            f'UPDATE "{table}" SET ret_index = ? WHERE datetime = ? AND symbol = ?', upd
+            f'UPDATE "{table}" SET return_index = ? WHERE datetime = ? AND symbol = ?', rows
         )
         conn.commit()
     finally:
         conn.close()
-    n_valid = int(np.isfinite(out_idx).sum())
-    print(f"[calc_ret_index] {symbol} {period} → {table}.ret_index: {n_valid} 点 (base={base}, 源 {ktable})")
+    n_valid = int(out["return_index"].notna().sum())
+    print(f"[calc_ret_index] {symbol} {period} → {table}.return_index: {n_valid} 点 "
+          f"(base={base}, {out['datetime'].iloc[0]} ~ {out['datetime'].iloc[-1]})")
     return n_valid
 
 
 def tsmom_regression(period="1d", h=1, start_date=None, end_date=None, symbols=None,
-                     min_years=2.0):
+                     min_years=2.0, cov_type="cluster", return_col="log_return"):
     """单期波动率目标化收益的滞后 h 自相关回归（面板 pooled），返回 β 的 t 统计量。
 
-        z_t   = r_t / σ_{t-1}            （单期对数收益 ÷ 前一期事前波动率）
+        z_t   = r_t / σ_{t-1}            （单期收益 ÷ 前一期事前波动率）
         z_t   = α + β · z_{t-h}  +  ε
 
-    跨所有品种 × 时间 pooled（矩阵视角：z 为 时间×品种，含 NaN——早期品种/波动率
-    warmup 处为空；逐 t 取 z_t 对 z_{t-h} 的非空配对进入回归）。
-      - β>0 且显著 → 滞后 h 处正自相关（动量）
-      - β<0 且显著 → 反转
-    给定 h 全市场只有一个 β。
-
-    σ_{t-1} = <vol 列>.shift(1)，vol 列按频度取（_PERIOD_VOL_COL）：日频=volatility
-    （EMA 直接估），周/月=week_1d_vol/mon_1d_vol（日频σ映射到周末/月末，论文口径）。
-    shift(1) 后即为上一周期末的事前 σ，配当期 r 无前视。标准误按时间聚类（论文口径）。
-
+    ...
     Args:
-        period:     "1d" / "week" / "mon"
-        h:          滞后阶数（z_t 对 z_{t-h} 回归）
-        start_date: 样本起始日 "YYYY-MM-DD"（含），None 则不限
-        end_date:   样本结束日 "YYYY-MM-DD"（含），None 则不限；用于分段子样本检验
-        symbols:    指定品种集合（iterable），None 则全部；用于固定品种集使跨 h 可比
-        min_years:  上市不足此年数的品种剔除（默认 2.0）。按频度折算 bar 数
-                    （日 252/周 52/月 12 ×年数）取该表行数门槛；None 则不限制。
+        ...
+        return_col: 收益列名，默认 "log_return"；可 "simple_return"。
 
     Returns:
-        float：β 的 t 统计量（给定 h 全市场单一值）；无数据返回 NaN。β/α/n 见打印。
+        float：β 的 t 统计量；无数据返回 NaN。β/α/n 见打印。
     """
     if period not in _PERIOD_MAP:
         raise ValueError(f"period 仅支持 {list(_PERIOD_MAP)}，收到 {period!r}")
@@ -603,8 +680,8 @@ def tsmom_regression(period="1d", h=1, start_date=None, end_date=None, symbols=N
         print(f"[tsmom_regression] 无收益率库 {RETURNS_DB}")
         return res["tstat"]
 
-    sql = (f'SELECT datetime, symbol, log_return, "{vol_col}" AS vol FROM "{table}" '
-           f'WHERE log_return IS NOT NULL AND "{vol_col}" IS NOT NULL')
+    sql = (f'SELECT datetime, symbol, "{return_col}" AS r, "{vol_col}" AS vol FROM "{table}" '
+           f'WHERE "{return_col}" IS NOT NULL AND "{vol_col}" IS NOT NULL')
     params = []
     if start_date:
         sql += " AND datetime >= ?"; params.append(f"{start_date} 00:00:00")
@@ -631,8 +708,7 @@ def tsmom_regression(period="1d", h=1, start_date=None, end_date=None, symbols=N
 
     df["datetime"] = pd.to_datetime(df["datetime"])
     df = df.sort_values(["symbol", "datetime"]).reset_index(drop=True)
-    # eq(2)：z_t = r_t/σ_{t-1}（事前缩放，σ 来自对应频度的 vol 列），x = z_{t-h}
-    df["z"] = (df["log_return"].astype(float)
+    df["z"] = (df["r"].astype(float)
                / df.groupby("symbol")["vol"].shift(1))
     df["z"] = df["z"].replace([np.inf, -np.inf], np.nan)
     df["x"] = df.groupby("symbol")["z"].shift(h)
@@ -650,7 +726,12 @@ def tsmom_regression(period="1d", h=1, start_date=None, end_date=None, symbols=N
     clusters = pd.factorize(v["datetime"].dt.to_period(clst_freq))[0]
     try:
         import statsmodels.api as sm
-        m = sm.OLS(y, X).fit(cov_type="cluster", cov_kwds={"groups": clusters})
+        if cov_type == "cluster":
+            m = sm.OLS(y, X).fit(cov_type="cluster", cov_kwds={"groups": clusters})
+        elif cov_type == "HAC":
+            m = sm.OLS(y, X).fit(cov_type="HAC", maxlags=max(1, int(h)))
+        else:
+            m = sm.OLS(y, X).fit(cov_type=cov_type)
         res.update(beta=float(m.params[1]), alpha=float(m.params[0]),
                    tstat=float(m.tvalues[1]), se=float(m.bse[1]))
     except Exception:
@@ -661,105 +742,5 @@ def tsmom_regression(period="1d", h=1, start_date=None, end_date=None, symbols=N
         res.update(beta=float(c[1]), alpha=float(c[0]), tstat=float(c[1] / se), se=se)
 
     print(f"[tsmom_regression] {period} h={h}: β={res['beta']:.4f} (t={res['tstat']:.2f}), "
-          f"α={res['alpha']:.5f}, n={res['n']} (时间聚类SE)")
+          f"α={res['alpha']:.5f}, n={res['n']} (SE={cov_type})")
     return res["tstat"]
-
-
-def tsmom_regression_raw(period="1d", h=1, start_date=None, end_date=None, symbols=None,
-                         min_years=2.0):
-    """【原始收益版】滞后 h 自相关回归——只用对数收益，不除波动率。
-
-        r_t   = α + β · r_{t-h}  +  ε
-
-    与 tsmom_regression 的区别：因变量/自变量都是原始 r（不做 r/σ 波动率目标化）。
-    用于对照「波动率缩放前」的收益自相关结构——不跨品种按波动率归一，高波动品种
-    权重更大。数据读取、频度、日期/品种/上市年限过滤、时间聚类标准误均与
-    tsmom_regression 一致（仅不读、不用 vol 列）。
-
-    Args:
-        period:     "1d" / "week" / "mon"
-        h:          滞后阶数（r_t 对 r_{t-h} 回归）
-        start_date: 样本起始日 "YYYY-MM-DD"（含），None 则不限
-        end_date:   样本结束日 "YYYY-MM-DD"（含），None 则不限
-        symbols:    指定品种集合（iterable），None 则全部
-        min_years:  上市不足此年数的品种剔除（默认 2.0）；None 则不限制
-
-    Returns:
-        float：β 的 t 统计量（给定 h 全市场单一值）；无数据返回 NaN。β/α/n 见打印。
-    """
-    if period not in _PERIOD_MAP:
-        raise ValueError(f"period 仅支持 {list(_PERIOD_MAP)}，收到 {period!r}")
-    if h < 1:
-        raise ValueError("h 需 >= 1")
-    table = _PERIOD_MAP[period][1]
-
-    res = {"beta": np.nan, "alpha": np.nan, "tstat": np.nan, "se": np.nan, "n": 0}
-    if not RETURNS_DB.exists():
-        print(f"[tsmom_regression_raw] 无收益率库 {RETURNS_DB}")
-        return res["tstat"]
-
-    sql = (f'SELECT datetime, symbol, log_return FROM "{table}" '
-           f'WHERE log_return IS NOT NULL')
-    params = []
-    if start_date:
-        sql += " AND datetime >= ?"; params.append(f"{start_date} 00:00:00")
-    if end_date:
-        sql += " AND datetime <= ?"; params.append(f"{end_date} 23:59:59")
-    if symbols is not None:
-        syms = list(symbols)
-        if not syms:
-            return res["tstat"]
-        ph = ",".join("?" * len(syms))
-        sql += f" AND symbol IN ({ph})"; params.extend(str(s) for s in syms)
-    if min_years is not None:
-        bpy = {"1d": 252, "week": 52, "mon": 12}[period]
-        min_bars = int(min_years * bpy)
-        sql += (f' AND symbol IN (SELECT symbol FROM "{table}" '
-                f'GROUP BY symbol HAVING COUNT(*) >= {min_bars})')
-    conn = sqlite3.connect(str(RETURNS_DB))
-    try:
-        df = pd.read_sql(sql, conn, params=params)
-    finally:
-        conn.close()
-    if df.empty:
-        return res["tstat"]
-
-    df["datetime"] = pd.to_datetime(df["datetime"])
-    df = df.sort_values(["symbol", "datetime"]).reset_index(drop=True)
-    # 原始收益自相关：z_t = r_t（不除 σ），x = r_{t-h}
-    df["z"] = df["log_return"].astype(float)
-    df["x"] = df.groupby("symbol")["z"].shift(h)
-    v = df.dropna(subset=["z", "x"])
-    v = v[np.isfinite(v["z"]) & np.isfinite(v["x"])]
-    res["n"] = len(v)
-    if res["n"] < 5:
-        print(f"[tsmom_regression_raw] {period} h={h}: 有效观测不足 ({res['n']})")
-        return res["tstat"]
-
-    # 面板 pooled OLS；标准误按时间聚类
-    y = v["z"].to_numpy(float)
-    X = np.column_stack([np.ones(res["n"]), v["x"].to_numpy(float)])
-    clst_freq = {"1d": "D", "week": "W", "mon": "M"}[period]
-    clusters = pd.factorize(v["datetime"].dt.to_period(clst_freq))[0]
-    try:
-        import statsmodels.api as sm
-        m = sm.OLS(y, X).fit(cov_type="cluster", cov_kwds={"groups": clusters})
-        res.update(beta=float(m.params[1]), alpha=float(m.params[0]),
-                   tstat=float(m.tvalues[1]), se=float(m.bse[1]))
-    except Exception:
-        c, *_ = np.linalg.lstsq(X, y, rcond=None)
-        r = y - X @ c
-        s2 = float(r @ r) / (res["n"] - 2)
-        se = float(np.sqrt(s2 * np.linalg.inv(X.T @ X)[1, 1]))
-        res.update(beta=float(c[1]), alpha=float(c[0]), tstat=float(c[1] / se), se=se)
-
-    print(f"[tsmom_regression_raw] {period} h={h}: β={res['beta']:.4f} (t={res['tstat']:.2f}), "
-          f"α={res['alpha']:.5f}, n={res['n']} (时间聚类SE, 原始收益)")
-    return res["tstat"]
-
-
-if __name__ == "__main__":
-    # 自测：日线 TSMOM 面板回归，h=1 / 12 / 60，返回 β 的 t 统计量
-    for _h in (1, 12, 60):
-        t = tsmom_regression(period="1d", h=_h)
-        print(f"  → 返回 t = {t:.3f}")
