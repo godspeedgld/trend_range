@@ -37,28 +37,28 @@ API_PASSWORD = "你的俱乐部密码"
 
 ### 3. 安装
 
-建议 Python 3.10–3.14（ssquant 的 CTP 二进制覆盖 py39–py314；仅做研究不接 CTP 则任意 3.9+ 即可）。
+建议 Python 3.10–3.14（仅做研究不接 CTP 则任意 3.9+ 即可）。
 
 ```bash
-# 先装子模块（ssquant 自带打包配置）
-pip install -e ./ssquant
-
-# 再装本项目（注册 shared / trend_following 为可导入包）
+# 1. 装本项目（注册 shared / trend_following 为可导入包，自动装核心依赖，含 tushare）
 pip install -e .
+
+# 2.（可选）ssquant 子模块：仅当需要 ssquant 远程 data_server 取数 / CTP 实盘时才装
+#    pip install -e .[ssquant] && pip install -e ./ssquant
 ```
 
-**`pip install -e .` 会自动安装本项目声明的依赖**（见 [`pyproject.toml`](pyproject.toml) 的 `dependencies`）：
+**核心依赖**（`pip install -e .` 自动装，见 [`pyproject.toml`](pyproject.toml) 的 `dependencies`）：
 
-| 依赖 | 用途 |
-|---|---|
-| `pandas` / `numpy` | 数据处理、收益/波动率计算 |
-| `requests` | ssquant 远程取数 |
-| `statsmodels` | TSMOM 面板回归的 HAC（Newey-West）标准误 |
-| `plotly` | `shared.data_viz` 交互式图表 |
+| 依赖 | 用途 | 必须 |
+|---|---|---|
+| `pandas` / `numpy` | 数据处理、收益/波动率计算 | ✅ |
+| `tushare` | **主力连续·后复权 K 线构建**（`k_data.db` 数据源）| ✅（需 [Tushare Pro](https://tushare.pro) 账号 + 2000 积分）|
+| `statsmodels` | TSMOM 面板回归的 HAC（Newey-West）/ cluster 标准误 | ✅ |
+| `plotly` | `shared.data_viz` 交互式图表 | ✅ |
 
-> ssquant 还会传递依赖装上它自己需要的包（akshare 等）。
+> **ssquant（子模块）非必须**：本项目默认用 tushare 构建的本地 `k_data.db` 做研究。只有要走 ssquant 远程取数或接 CTP 实盘时，才需 `pip install -e ./ssquant`（它会传递依赖装上 `requests`/`akshare` 等），并配置 quant789 账号。
 
-装完后，`import ssquant`、`from shared...`、`from trend_following...` 在任意目录、任意启动方式下都可用（与运行目录解耦）。
+装完后，`from shared...`、`from trend_following...` 在任意目录、任意启动方式下都可用（与运行目录解耦）。
 
 ---
 

@@ -7,8 +7,8 @@ requires-python = ">=3.9"
 dependencies = [
     "pandas",
     "numpy",
-    "requests",
-    "statsmodels",  # TSMOM 面板回归的 HAC（Newey-West）标准误
+    "tushare",      # 主力连续·后复权 K 线构建（k_data.db 数据源）；需账号 + 2000 积分
+    "statsmodels",  # TSMOM 面板回归的 HAC（Newey-West）/ cluster 标准误
     "plotly",       # data_viz 交互式图表
 ]
 
@@ -20,8 +20,10 @@ dependencies = [
 bigquant = [
     "bigquant",  # BigQuant SDK（数据查询 DAI / 本地回测）；需 Python 3.11 + 私有源
 ]
-tushare = [
-    "tushare",   # Tushare Pro（期货日线/主力映射）；需账号 + 2000 积分
+ssquant = [
+    "requests",  # ssquant 远程 data_server 取数用。ssquant 本体是 git submodule
+                 # （本地 ./ssquant，非 PyPI 包），extras 无法自动装，需手动：
+                 #   pip install -e ./ssquant   （它会带 akshare 等其余传递依赖）
 ]
 claude = [
     "claude-agent-sdk",  # Claude Agent SDK（价格指标分解智能体等）；pip install -e .[claude]
