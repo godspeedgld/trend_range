@@ -357,7 +357,7 @@ def _plot_tstat_bars(tstats, labels, title, out_name):
     return out
 
 def plot_tsmom_tstat(period="1d", minh=1, maxh=60, steph=1, start_date=None, end_date=None,
-                     symbols=None, raw=False, min_years=2.0, return_col="log_return"):
+                     symbols=None, min_years=2.0, return_col="log_return"):
     """扫描 h，画 TSMOM 单滞后回归 t 统计量柱状图（z_t ~ z_{t-h}），输出 HTML。"""
     from trend_following.check_trend_valid import tsmom_regression
     regfn = tsmom_regression
@@ -380,15 +380,14 @@ def plot_tsmom_tstat(period="1d", minh=1, maxh=60, steph=1, start_date=None, end
     if end_date:
         extra.append(f"止 {end_date}")
     extra_txt = ("，" + "，".join(extra)) if extra else ""
-    eq_label = "eq(2) z_t~z_{t-h}"
-    title = f"{period} · TSMOM {eq_label} t 统计量 vs h（{minh}~{maxh} 步{steph}，时间聚类SE{extra_txt}）"
+    title = f"{period} · TSMOM eq(2) z_t~z_{{t-h}} t 统计量 vs h（{minh}~{maxh} 步{steph}，时间聚类SE{extra_txt}）"
 
-    tags = []; _ = raw and tags.append("raw"); _ = nsym is not None and tags.append(f"fixed{nsym}")
+    tags = []
+    _ = nsym is not None and tags.append(f"fixed{nsym}")
     _ = start_date and tags.append(f"from{start_date}"); _ = end_date and tags.append(f"to{end_date}")
     suffix = ("_" + "_".join(tags)) if tags else ""
-    out_name = f"tsmom_tstat_{period}_h{minh}-{maxh}{suffix}.html"
 
-    out = _plot_tstat_bars(ts, hs, title, out_name)
+    out = _plot_tstat_bars(ts, hs, title, f"tsmom_tstat_{period}_h{minh}-{maxh}{suffix}.html")
     valid = sum(1 for v in ts if v is not None)
     print(f"[data_viz] 已输出: {out}  (h {minh}~{maxh} 步{steph}, 有效 {valid}/{len(hs)})")
     return out

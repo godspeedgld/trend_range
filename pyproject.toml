@@ -23,6 +23,9 @@ bigquant = [
 tushare = [
     "tushare",   # Tushare Pro（期货日线/主力映射）；需账号 + 2000 积分
 ]
+claude = [
+    "claude-agent-sdk",  # Claude Agent SDK（价格指标分解智能体等）；pip install -e .[claude]
+]
 
 [build-system]
 requires = ["setuptools>=61"]
