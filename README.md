@@ -22,7 +22,7 @@ cd trend_range
 git submodule update --init --recursive
 ```
 
-### 2. 数据获取（可选）
+### 2. 数据获取
 
 - **tushare**（主力连续·后复权 K 线构建，默认数据源）：在项目根 `.env` 填写 token：
   ```
@@ -166,13 +166,6 @@ plot_tsmom_tstat(period="1d", minh=1, maxh=120, steph=1)
 | `return_stats` | symbol, category, period, start_date, end_date, count, mean, std, min, q25, q50, q75, max, skew, kurt | 按品种×周期的统计特征 |
 
 写库用 UPSERT：重算收益不破坏已存的波动率，反之亦然。
-
----
-
-## 已知限制
-
-- **数据回溯仅到 2022-01-05**：ssquant 的 data_server 对几乎所有品种都只回溯到 2022 年初（与品种上市日无关，是 server 端上限）。短样本品种（股指/国债 2024 起、pd/pt 2025-11 起等）更短。需更长历史请换数据源（具体方案待定）。
-- **结论受单一 regime 影响**：2022 至今偏下跌/震荡，TSMOM 的"反转"结论可能只反映这一段，不宜过度外推。
 
 ---
 
