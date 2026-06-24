@@ -22,18 +22,19 @@ cd trend_range
 git submodule update --init --recursive
 ```
 
-### 2. 配置取数凭证（必需）
+### 2. 数据获取（可选）
 
-本项目通过 ssquant 的远程 data_server 取行情，**需要自备 [quant789](https://quant789.com) 俱乐部账号**（非 CTP 交易账户）。
+- **tushare**（主力连续·后复权 K 线构建，默认数据源）：在项目根 `.env` 填写 token：
+  ```
+  TUSHARE_TOKEN = "your token"
+  ```
+  （需 [Tushare Pro](https://tushare.pro) 账号 + 2000 积分）
 
-打开 [`ssquant/ssquant/config/trading_config.py`](ssquant/ssquant/config/trading_config.py)，填写：
-
-```python
-API_USERNAME = "你的俱乐部手机号或邮箱"
-API_PASSWORD = "你的俱乐部密码"
-```
-
-> 没有账号也可改用 `data_source_mode='local'` 离线回测，但需自行导入历史数据（见 ssquant 的 `examples/A_工具_导入数据库DB示例.py`）。
+- **ssquant**（远程 data_server 取行情 / CTP 实盘，可选）：自备 [quant789](https://quant789.com) 俱乐部账号（非 CTP 交易账户），打开 [`ssquant/ssquant/config/trading_config.py`](ssquant/ssquant/config/trading_config.py) 填写：
+  ```python
+  API_USERNAME = "你的俱乐部手机号或邮箱"
+  API_PASSWORD = "你的俱乐部密码"
+  ```
 
 ### 3. 安装
 
