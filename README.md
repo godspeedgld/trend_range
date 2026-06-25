@@ -1,6 +1,6 @@
 # trend_range — 期货趋势 / 震荡 / 综合策略实证
 
-基于 [ssquant](https://github.com/songshuquant/ssquant)（中国期货 CTP 量化框架）的实证研究项目，三个目标：
+趋势跟踪以及震荡策略的实证研究，三个目标：
 
 1. **趋势跟踪策略**实证（主要期货）—— 见 [`trend_following/`](trend_following/)
 2. **震荡行情**策略实证（规划中）
@@ -103,7 +103,7 @@ get_category("rb")          # '黑色'
 CATEGORY_MAP["化工"]        # 21 个化工品种
 ```
 
-板块分类共 13 类（黑色/有色金属/化工/能源/轻工/油脂油料/谷物/软商品/农副产品/贵金属/股指/国债/集运），已与 ssquant 的 90 个品种对齐；低流动性/特殊品种（纤维板、动力煤、月均价期货等）在 `trend_following.check_trend_valid.no_use_symbols` 中忽略。
+板块分类共 13 类（黑色/有色金属/化工/能源/轻工/油脂油料/谷物/软商品/农副产品/贵金属/股指/国债/集运），低流动性/特殊品种（纤维板、动力煤、月均价期货等）在 `trend_following.check_trend_valid.no_use_symbols` 中忽略。
 
 ### 对数收益率 + 统计特征
 
