@@ -598,3 +598,169 @@ def _fetch_klines_local(symbol, period="1d", start_date=None, end_date=None):
         return pd.read_sql(sql, conn, params=params)
     finally:
         conn.close()
+
+
+# ── Pandadata Warehouse → 后复权 K 线 ─────────────────────
+
+_PD_K_DB = PROJECT_ROOT / "data_cache" / "pd_k_data.db"
+
+# Pandadata API 返回的交易所后缀（与 tushare 不同：CZCE→CZC 而非 ZCE）
+_PD_EXCH_SUFFIX = {
+    "SHFE": "SHF", "DCE": "DCE", "CZCE": "CZC",
+    "CFFEX": "CFX", "INE": "INE", "GFEX": "GFE",
+}
+
+_PD_SYM_CACHE = None  # {小写品种: Pandadata symbol}
+
+
+def _get_pd_symbol(symbol):
+    """品种代码 → Pandadata 主力连续 symbol（如 'rb' → 'RB_DOMINANT.SHF'）。"""
+    global _PD_SYM_CACHE
+    if _PD_SYM_CACHE is None:
+        try:
+            varieties = list_varieties()
+            _PD_SYM_CACHE = {}
+            for _, r in varieties.iterrows():
+                sym = r["variety"].lower()
+                exch = r["exchange"]
+                suffix = _PD_EXCH_SUFFIX.get(exch, exch)
+                _PD_SYM_CACHE[sym] = f"{sym.upper()}_DOMINANT.{suffix}"
+        except Exception:
+            # 硬编码回退（常用品种）
+            _PD_SYM_CACHE = {
+                "rb": "RB_DOMINANT.SHF", "hc": "HC_DOMINANT.SHF",
+                "i": "I_DOMINANT.DCE", "j": "J_DOMINANT.DCE",
+                "jm": "JM_DOMINANT.DCE", "sf": "SF_DOMINANT.CZC",
+                "sm": "SM_DOMINANT.CZC", "ss": "SS_DOMINANT.SHF",
+                "wr": "WR_DOMINANT.SHF",
+            }
+    key = symbol.lower().replace("888", "")
+    if key not in _PD_SYM_CACHE:
+        raise ValueError(
+            f"Unknown symbol: {symbol!r}. Known: {sorted(_PD_SYM_CACHE)}. "
+            f"Ensure ssquant is importable for auto-discovery."
+        )
+    return _PD_SYM_CACHE[key]
+
+
+def pandadata_build(symbol, period="1d", start_date=None, end_date=None):
+    """从 Pandadata 仓库读取主力连续日线，后复权，写入 pd_k_data.db。
+
+    后复权算法（最早合约 adj_factor=1.0，向后累积）：
+      1. 从 DuckDB ``future_daily`` 视图读取原始数据。
+      2. 找到 ``dominant_id`` 变化的换月点。
+      3. 换月日 ratio = 旧主力 close / 新主力 close，累积乘入 adj_factor。
+      4. 新主力及之后所有行的 OHLC + settlement 乘 ratio；volume/oi 不变。
+
+    Args:
+        symbol:    品种代码如 ``"rb"``, ``"j"``
+        period:    目前仅支持 ``"1d"``
+        start_date: 开始日期 ``"YYYYMMDD"`` 或 ``"YYYY-MM-DD"``
+        end_date:   结束日期
+
+    Returns:
+        写入的行数。
+
+    Example:
+        >>> pandadata_build("rb")
+        >>> pandadata_build("j", start_date="2015-01-01")
+    """
+    if period != "1d":
+        raise ValueError(f"pandadata_build 仅支持 period='1d'，收到 {period!r}")
+
+    try:
+        import duckdb
+    except ImportError:
+        raise ImportError("pandadata_build 需要 duckdb，请 pip install duckdb")
+
+    pd_sym = _get_pd_symbol(symbol)
+    warehouse = PROJECT_ROOT / "data_cache" / "pandadata_warehouse"
+    duckdb_path = warehouse / "warehouse.duckdb"
+    if not duckdb_path.exists():
+        raise FileNotFoundError(f"Warehouse not found: {duckdb_path}")
+
+    # ── 1. 从 DuckDB 读取 ─────────────────────────────────
+    conn = duckdb.connect(str(duckdb_path), read_only=True)
+    sql = (
+        "SELECT date, open, high, low, close, volume, open_interest, "
+        "settlement, dominant_id FROM future_daily WHERE symbol = ?"
+    )
+    params = [pd_sym]
+    if start_date:
+        params.append(start_date.replace("-", ""))
+        sql += " AND date >= ?"
+    if end_date:
+        params.append(end_date.replace("-", ""))
+        sql += " AND date <= ?"
+    sql += " ORDER BY date"
+    df = conn.execute(sql, params).df()
+    conn.close()
+
+    if df.empty:
+        print(f"[pandadata] {symbol} ({pd_sym}): no data in warehouse")
+        return 0
+
+    df["date"] = df["date"].astype(str)
+    ohlc_cols = ["open", "high", "low", "close", "settlement"]
+
+    # ── 2. 初始化 ─────────────────────────────────────────
+    df["adj_factor"] = 1.0
+
+    # ── 3. 找到换月点 ─────────────────────────────────────
+    df["_prev_dom"] = df["dominant_id"].shift(1)
+    df["_is_roll"] = (df["dominant_id"] != df["_prev_dom"]) & df["_prev_dom"].notna()
+    roll_indices = df.index[df["_is_roll"]].tolist()
+
+    # ── 4. 后复权：累积乘 ratio ───────────────────────────
+    for idx in roll_indices:
+        prev_idx = idx - 1
+        old_close = float(df.at[prev_idx, "close"])
+        new_close = float(df.at[idx, "close"])
+        ratio = old_close / new_close if new_close and new_close != 0 else 1.0
+
+        # 当前行及之后所有行：OHLC + settlement 乘 ratio
+        for col in ohlc_cols:
+            df.loc[idx:, col] = df.loc[idx:, col].astype(float) * ratio
+
+        # adj_factor 累积
+        df.loc[idx:, "adj_factor"] = df.loc[idx:, "adj_factor"] * ratio
+
+    # ── 5. 清理 + 标准化列名 ──────────────────────────────
+    df = df.drop(columns=["_prev_dom", "_is_roll", "dominant_id"])
+    # DuckDB 返回 volume/open_interest，统一为 vol/oi（与 tushare k_data.db 一致）
+    df = df.rename(columns={"volume": "vol", "open_interest": "oi"})
+    out_cols = ["date", "open", "close", "high", "low", "vol", "oi", "adj_factor"]
+    out = df[out_cols].copy()
+    out.insert(0, "symbol", symbol)
+    out["vol"] = out["vol"].astype(float)
+    out["oi"] = out["oi"].astype(float)
+
+    # ── 6. 写入 SQLite ────────────────────────────────────
+    _PD_K_DB.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(_PD_K_DB))
+    try:
+        cur = conn.cursor()
+        table = f"{period}_k_data"
+        cur.execute(
+            f'CREATE TABLE IF NOT EXISTS "{table}" ('
+            "symbol TEXT, date TEXT, open REAL, close REAL, high REAL, low REAL, "
+            "vol REAL, oi REAL, adj_factor REAL, PRIMARY KEY (symbol, date))"
+        )
+        cols = ["symbol", "date", "open", "close", "high", "low", "vol", "oi", "adj_factor"]
+        ph = ", ".join("?" for _ in cols)
+        cn = ", ".join(f'"{c}"' for c in cols)
+        rows = [tuple(r) for r in out[cols].to_numpy()]
+        cur.executemany(
+            f'INSERT INTO "{table}" ({cn}) VALUES ({ph}) ON CONFLICT(symbol,date) DO UPDATE SET '
+            "open=excluded.open, close=excluded.close, high=excluded.high, low=excluded.low, "
+            "vol=excluded.vol, oi=excluded.oi, adj_factor=excluded.adj_factor",
+            rows,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    n_rolls = len(roll_indices)
+    print(f"[pandadata] {symbol} ({pd_sym}) 1d -> {table}: {len(out)} rows "
+          f"({out['date'].iloc[0]} ~ {out['date'].iloc[-1]}, {n_rolls} rollovers)")
+    return len(out)

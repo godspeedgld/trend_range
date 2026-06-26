@@ -25,6 +25,10 @@ ssquant = [
                  # （本地 ./ssquant，非 PyPI 包），extras 无法自动装，需手动：
                  #   pip install -e ./ssquant   （它会带 akshare 等其余传递依赖）
 ]
+pandadata = [
+    "panda_data",  # Pandadata SDK（行情/因子/宏观数据）；需账号 + init_token 鉴权
+    "duckdb",      # 本地 Parquet 仓库查询视图（hs300_post_daily 等）
+]
 claude = [
     "claude-agent-sdk",  # Claude Agent SDK（价格指标分解智能体等）；pip install -e .[claude]
 ]

@@ -36,6 +36,21 @@ git submodule update --init --recursive
   API_PASSWORD = "你的俱乐部密码"
   ```
 
+- **pandadata**（行情/因子/宏观数据，可选）：安装后通过 `init_token` 鉴权调用 `panda_data.get_*` 系列接口。
+  ```bash
+  pip install -e .[pandadata]
+  ```
+  首次配置可运行内置 setup 脚本（安装 SDK + 隐藏输入用户名/密码 + 校验登录 + 可选保存凭证到 `~/.pandadata/pandadata.env`）：
+  ```bash
+  python .claude/skills/skill-pandadata-api-main/scripts/setup_runtime.py
+  ```
+  或直接在代码里鉴权：
+  ```python
+  import panda_data
+  panda_data.init_token(username="...", password="...",
+                         base_url="http://pandadata.pandaaiquant.com")
+  ```
+
 ### 3. 安装
 
 建议 Python 3.10–3.14（仅做研究不接 CTP 则任意 3.9+ 即可）。
@@ -157,6 +172,8 @@ plot_tsmom_tstat(period="1d", minh=1, maxh=120, steph=1)
 ## 数据存储说明
 
 所有数据落在 `data_cache/`（已 gitignore）。
+
+
 
 **`returns.db`** 的表：
 
