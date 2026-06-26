@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pandadata Warehouse"
+  short_description: "Build and maintain local Pandadata DuckDB/Parquet caches"
+  default_prompt: "Use $pandadata-warehouse to design or refresh my local Pandadata warehouse."

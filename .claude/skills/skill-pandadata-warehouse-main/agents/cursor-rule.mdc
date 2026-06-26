@@ -1,0 +1,22 @@
+---
+description: Use the Pandadata Warehouse skill for local Pandadata DuckDB/Parquet cache, warehouse refresh, validation, and SQL query work.
+alwaysApply: false
+---
+
+# Pandadata Warehouse Skill
+
+When the user asks to cache Pandadata or `panda_data` results locally, build or repair a DuckDB/Parquet warehouse, run incremental refreshes, validate local partitions, or query downloaded market data with SQL, use the local skill package.
+
+Preferred local project path:
+
+```text
+.cursor/skills/pandadata-warehouse
+```
+
+Workflow:
+
+1. Read `.cursor/skills/pandadata-warehouse/SKILL.md`.
+2. Read `.cursor/skills/pandadata-warehouse/references/warehouse-playbook.md` before designing tables, writing refresh code, rebuilding partitions, or deciding validation rules.
+3. Use the Pandadata API skill or local API docs to confirm exact `panda_data.get_*` signatures before coding or running API calls.
+4. Preserve source field names, partition conventions, metadata watermarks, validation rules, and freshness notes from the skill files.
+5. Do not invent credentials, API parameters, factor definitions, destructive repair permission, or runtime behavior that is not supported by the skill files.
