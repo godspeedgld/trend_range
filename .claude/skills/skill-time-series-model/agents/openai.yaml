@@ -1,0 +1,34 @@
+name: time-series-model
+description: Diagnostic-driven time-series modeling (ARMA / AR+GARCH / ARMA+GARCH).
+trigger:
+  keywords:
+    - time series model
+    - 时序建模
+    - ARMA
+    - GARCH
+    - ARCH
+    - ARCH-LM
+    - Ljung-Box
+    - Variance Ratio
+    - Random Walk
+    - volatility model
+    - 波动率建模
+    - 时间序列建模
+instructions: |
+  Always model the return or differenced series, never raw price. Start with
+  run_diagnostics (ADF + Ljung-Box + ARCH-LM + Variance-Ratio) and follow its
+  recommendation: RandomWalk, ARMA, ARMA+GARCH, or AR+GARCH. Select orders by
+  AIC/BIC. Validate ARMA/RandomWalk residuals with Ljung-Box; for GARCH-type
+  validate standardized residuals and their squares. For user-facing output call
+  generate_model_report and return its Markdown. Report recommended model, optimal
+  order, and pass/fail conclusion before evidence. Outputs are research directions
+  only, never order instructions.
+interface:
+  display_name: "Time Series Model"
+  short_description: "ARMA / AR+GARCH / ARMA+GARCH modeling driven by diagnostics"
+  default_prompt: "Use $time-series-model to model this return series and produce a Markdown report."
+references:
+  - references/workflow.md
+  - references/api.md
+  - references/interpretation.md
+  - references/report-format.md

@@ -1,0 +1,17 @@
+---
+description: Time-series modeling -- ARMA, AR+GARCH, ARMA+GARCH with ADF/Ljung-Box/ARCH-LM
+globs: ["**/*time*series*.py", "**/*garch*.py", "**/*arma*.py", "**/*arch*.py"]
+alwaysApply: false
+---
+
+# Time Series Model
+
+When modeling a financial return series, use the diagnostic-driven flow:
+
+1. Model the **return/differenced series**, not raw price.
+2. Call `run_diagnostics` (ADF + Ljung-Box + ARCH-LM + Variance-Ratio) and follow its `recommendation`.
+3. Route: `RandomWalk` → `fit_random_walk`; `ARMA` → `fit_arma`; `ARMA+GARCH` → `fit_arma_garch`; `AR+GARCH` → `fit_ar_garch`.
+4. Orders are chosen by AIC/BIC (default AIC); RandomWalk = ARIMA(0,1,0).
+5. Validate: ARMA/RandomWalk residuals Ljung-Box; GARCH-type standardized residuals and their squares.
+6. For user-facing output, call `generate_model_report` and return its Markdown.
+7. Conclusions before evidence; research directions only, never order instructions.

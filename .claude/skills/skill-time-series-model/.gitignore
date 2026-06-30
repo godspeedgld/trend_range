@@ -1,0 +1,13 @@
+.venv/
+.env
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+dist/
+build/
+*.egg-info/
+.DS_Store
+uv.lock
+reports/*
+!reports/README.md
