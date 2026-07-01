@@ -1,23 +1,35 @@
 # Workflow
 
-检测驱动的时序建模流程。
+两阶段检测驱动的时序建模流程。
 
 1. **准备序列**：建模对象是**收益率或差分序列**，不要直接对非平稳价格建模。
    - 期货/股票日频：`returns = log(price).diff()`。
-   - 价格若非平稳，先差分到平稳（见 ADF）。
-2. **四项检测**：调用 `run_diagnostics(returns)` 一次拿到 ADF / Ljung-Box / ARCH-LM / 方差比(VR)。
-3. **模型路由**（`recommend_model`）：
-   - 无自相关 + 无 ARCH 效应 + VR 不拒绝 → `RandomWalk`（ARIMA(0,1,0) 漂移）
-   - 有自相关 + 无 ARCH 效应 → `ARMA`
-   - 有自相关 + 有 ARCH 效应 → `ARMA+GARCH`
-   - 无自相关 + 有 ARCH 效应 → `AR+GARCH`
-4. **拟合**：`fit_model(recommendation, returns, ...)`，或直接调
-   `fit_random_walk` / `fit_arma` / `fit_ar_garch` / `fit_arma_garch`。
-5. **随机游走流程**：在收益率空间估计常数漂移 μ（等价于价格 ARIMA(0,1,0) with drift）→
-   残差 = 收益 - μ → 残差 Ljung-Box（应通过）→ 判定。
-6. **ARMA 流程**（严格）：AIC/BIC 选阶 → 参数估计 → 残差 → 残差 Ljung-Box → 判定 p 值是否通过。
-7. **GARCH 类流程**（严格）：AIC/BIC 选 AR/ARMA 阶 → 构建 +GARCH 并拟合 → 标准化残差 →
-   均值方程 Ljung-Box（标准化残差）→ 方差方程 Ljung-Box（标准化残差平方）→ 综合判定。
-8. **报告**：`generate_model_report(...)` 写出 Markdown + 检测图 + 预测图。
-9. **结论先行**：先给模型类型、最优阶数、是否通过；再列参数与检测证据。
-10. 全程把输出表述为研究方向判断，不作为下单依据。
+   - 价格若非平稳，先差分到平稳。
+2. **ADF 前提**：`run_diagnostics` 先跑 ADF；非平稳直接抛 `NonStationaryError`（应传入收益率）。
+3. **均值方程检测**：Ljung-Box（短期自相关）+ GPH（长记忆 d）+ ACF/PACF（辅助）：
+   - 无自相关（Ljung-Box）→ `Constant`
+   - 否则长记忆（GPH `|d|>0.1` 且 p<0.05）→ `ARFIMA`
+   - 否则 → `ARMA`
+4. **方差方程检测**：ARCH-LM（波动聚集）+ Engle-Ng 符号偏差（杠杆）：
+   - 无 ARCH → `Constant`
+   - 有 ARCH 且有杠杆（Engle-Ng 任一 p<0.05）→ `GJR-GARCH`
+   - 有 ARCH 无杠杆 → `GARCH`
+5. **流程归类**（`classify_model(mean_eq, var_eq)`）：
+   - Constant + Constant → `white_noise`（**不建模**，`fit_model` 返回 `None`）
+   - 均值方程 + Constant → `flow_a`（ARMA / ARFIMA）
+   - Constant + 方差方程 → `flow_b`（GARCH / GJR-GARCH）
+   - 均值方程 + 方差方程 → `flow_c`（两步联合）
+6. **拟合**：`fit_model(diag, series, ...)`，或直接调 `flow_a` / `flow_b` / `flow_c`。
+7. **flow_a 流程**（严格）：AIC/BIC 选均值阶 → 估计（ARMA；ARFIMA 先分数差分再 ARMA）→
+   残差（创新）→ 残差 Ljung-Box → 判定。
+8. **flow_b 流程**：常数均值取残差 → 残差上选 GARCH/GJR 阶并拟合 → 标准化残差 →
+   均值方程 LB（标准化残差）+ 方差方程 LB（标准化残差平方）→ 综合判定。
+9. **flow_c 流程**（迭代两步法）：
+   ① 先定均值方程 (p,q)（假设常方差）→ 计算初始残差；
+   ② 初始残差上定方差方程 (P,Q)；
+   ③ 固定 (P,Q)，按 `mean_AIC+var_AIC` 重选均值 (p,q)（迭代至稳定）；
+   ④ 用最佳 (p,q)+(P,Q) 最终拟合（均值取残差 → 残差上 GARCH/GJR）；
+   ⑤ 标准化残差双 LB。
+10. **报告**：`generate_model_report(...)` 写出 Markdown + 检测图 + 预测图。
+11. **结论先行**：先给流程、均值/方差方程、模型类型、最优阶数、是否通过；再列参数与检测证据。
+12. 全程把输出表述为研究方向判断，不作为下单依据。

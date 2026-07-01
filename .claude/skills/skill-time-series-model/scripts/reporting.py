@@ -1,9 +1,9 @@
 """报告脚本：检测 → 建模 → Markdown 报告 + 预测图。
 
-主入口 generate_model_report(returns)：
-  1) ADF / Ljung-Box / ARCH-LM 三项检测（结果 + ACF/平方收益图）
-  2) 根据检测结果选模型并拟合（ARMA / AR+GARCH / ARMA+GARCH / 无需建模）
-  3) 最优阶数、参数估计、建模后 Ljung-Box 检测结果与结论
+两阶段检测驱动：
+  1) ADF(前提) / Ljung-Box / GPH / ARCH-LM / Engle-Ng / ACF-PACF → 均值方程 + 方差方程
+  2) 按 flow_a/b/c 自动建模（白噪声不建模）
+  3) 最优阶数、参数估计、建模后 Ljung-Box 与结论
   4) 原始数据 + 样本内拟合 + 向前预测 同图，写入报告
 报告与图落到 skill 的 reports/ 子目录。
 """
@@ -39,8 +39,9 @@ def _fmt(v: Any) -> str:
 def _df_md(df: pd.DataFrame, index_name: str = "") -> str:
     if df is None or df.empty:
         return "_无数据_。"
+    idx_name = index_name or (df.index.name if df.index.name else "index")
     header_cols = [str(c) for c in df.columns]
-    head = "| " + " | ".join([index_name or "index", *header_cols]) + " |"
+    head = "| " + " | ".join([idx_name, *header_cols]) + " |"
     sep = "| " + " | ".join("---" for _ in range(len(header_cols) + 1)) + " |"
     lines = [head, sep]
     for idx, row in df.iterrows():
@@ -68,6 +69,24 @@ def _order_str(order) -> str:
 def _safe_stem(name: str) -> str:
     stem = re.sub(r"[^0-9A-Za-z_.-]+", "_", str(name).strip())
     return stem.strip("._-") or "series"
+
+
+def _acfpacf_md(ap: pd.DataFrame, max_lags: int = 15) -> str:
+    """ACF/PACF 紧凑表：前 max_lags 阶，带显著性标记（超出 95% CI）。"""
+    if ap is None or ap.empty:
+        return "_无数据_。"
+    df = ap.head(max_lags).copy()
+    acf_sig = (df["acf"] < df["acf_lower"]) | (df["acf"] > df["acf_upper"])
+    pacf_sig = (df["pacf"] < df["pacf_lower"]) | (df["pacf"] > df["pacf_upper"])
+    out = pd.DataFrame(
+        {
+            "ACF": [_fmt(v) + (" *" if s else "") for v, s in zip(df["acf"], acf_sig)],
+            "PACF": [_fmt(v) + (" *" if s else "") for v, s in zip(df["pacf"], pacf_sig)],
+        },
+        index=df.index,
+    )
+    out.index.name = "滞后阶"
+    return _df_md(out, "滞后阶") + "\n\n> `*` 标记表示超出 95% 置信区间（统计显著）。"
 
 
 # ────────────────────────────────────────────────────────────
@@ -100,22 +119,31 @@ def _plot_diagnostics(returns: pd.Series, path: Path) -> str:
 
 
 def _plot_prediction(returns: pd.Series, fit: FitSummary, path: Path) -> str:
-    """原始序列 + 样本内拟合 + 向前预测 同图。"""
+    """原始序列 + 样本内拟合 + 向前预测 同图。
+
+    fitted 按原始 index 对齐到位置（ARFIMA/分数差分类的前若干边界点为 NaN，自然只画有效段）。
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    y = pd.Series(returns).dropna().astype(float).reset_index(drop=True)
-    fitted = fit.fitted.dropna().reset_index(drop=True) if fit.fitted is not None else pd.Series(dtype=float)
+    y = pd.Series(returns).dropna().astype(float)
+    pos = pd.Series(np.arange(len(y)), index=y.index)   # index -> 位置
+    fitted = fit.fitted
     fc = fit.forecast_mean.reset_index(drop=True) if len(fit.forecast_mean) else pd.Series(dtype=float)
 
     fig, ax = plt.subplots(figsize=(12, 5))
-    ax.plot(y.index, y.values, label="actual", color="#34495e", linewidth=1.0)
-    if len(fitted):
-        ax.plot(fitted.index, fitted.values, label="in-sample fit", color="#27ae60", linewidth=1.0, alpha=0.85)
+    ax.plot(pos.values, y.values, label="actual", color="#34495e", linewidth=1.0)
+    if fitted is not None and fitted.notna().any():
+        fpos = fitted.index.map(pos).to_numpy()
+        mask = pd.notna(fpos) & fitted.notna().to_numpy()
+        if mask.any():
+            ax.plot(np.asarray(fpos[mask], dtype=float), fitted.to_numpy()[mask],
+                    label="in-sample fit", color="#27ae60", linewidth=1.0, alpha=0.85)
     if len(fc):
         start = len(y)
-        ax.plot(range(start, start + len(fc)), fc.values, label=f"forecast ({len(fc)} steps)", color="#e74c3c", linewidth=1.5)
+        ax.plot(range(start, start + len(fc)), fc.values,
+                label=f"forecast ({len(fc)} steps)", color="#e74c3c", linewidth=1.5)
     ax.set_title(f"{fit.model_type} {_order_str(fit.order)}  fit & forecast")
     ax.legend(fontsize="small")
     ax.grid(alpha=0.3)
@@ -130,9 +158,13 @@ def _plot_prediction(returns: pd.Series, fit: FitSummary, path: Path) -> str:
 # ────────────────────────────────────────────────────────────
 def _one_sentence(diag: DiagnosticReport, fit: FitSummary | None) -> str:
     if fit is None:
-        return "该收益率序列无可检测的自相关与波动聚集，未建模拟合。"
+        return f"判定为白噪声（均值方程={diag.mean_equation}，方差方程={diag.variance_equation}），无可建模结构，未拟合。"
     verdict = "充分" if fit.passed else "尚不充分"
-    return f"检测建议 `{fit.model_type}`；最优阶数 {_order_str(fit.order)}；建模拟合{verdict}（{fit.reason}）。"
+    d_note = f"，分数 d={_fmt(fit.d)}" if fit.d is not None else ""
+    return (
+        f"流程 `{fit.flow}`：均值方程={fit.mean_equation}、方差方程={fit.variance_equation}"
+        f"{d_note}；模型 `{fit.model_type}` 阶数 {_order_str(fit.order)}；拟合{verdict}。"
+    )
 
 
 def _build_markdown(
@@ -141,18 +173,18 @@ def _build_markdown(
     series_name: str,
     diag: DiagnosticReport,
     fit: FitSummary | None,
-    diag_img: str,
+    diag_img: str | None,
     pred_img: str | None,
 ) -> str:
     parts: list[str] = [f"# {title}", "", "## 一句话结论", "", _one_sentence(diag, fit), ""]
 
-    # ── 三项检测 ──
+    # ── 检测 ──
     parts += [
         "## 1. 检测结果",
         "",
-        f"- **建议模型**：`{diag.recommendation}` — {diag.reason}",
+        f"> {diag.reason}",
         "",
-        "### 1.1 ADF 平稳性",
+        "### 1.1 ADF 平稳性（前提）",
         "",
         _kv_md(
             {
@@ -163,13 +195,28 @@ def _build_markdown(
             }
         ),
         "",
-        "### 1.2 Ljung-Box 自相关",
+        "### 1.2 Ljung-Box 自相关（均值方程·短期）",
         "",
         _df_md(diag.ljung_box.table.rename(columns={"lb_stat": "统计量", "lb_pvalue": "p 值"}), "滞后阶"),
         "",
         f"> 存在自相关：`{diag.ljung_box.has_autocorrelation}`",
         "",
-        "### 1.3 ARCH-LM 异方差效应",
+        "### 1.3 GPH 长记忆检验（均值方程·分数积分 d）",
+        "",
+        _kv_md(
+            {
+                "d_hat": diag.gph.d_hat,
+                "se": diag.gph.se,
+                "tstat": diag.gph.tstat,
+                "pvalue": diag.gph.pvalue,
+                "bandwidth(m)": diag.gph.bandwidth,
+                "has_long_memory": diag.gph.has_long_memory,
+            }
+        ),
+        "",
+        f"> 长记忆（|d|>0.1 且 p<0.05）：`{diag.gph.has_long_memory}`（d>0 持续性，d<0 反持久）",
+        "",
+        "### 1.4 ARCH-LM 异方差效应（方差方程·波动聚集）",
         "",
         _df_md(
             pd.DataFrame({"统计量": diag.arch_lm.statistics, "p 值": diag.arch_lm.pvalues},
@@ -178,32 +225,54 @@ def _build_markdown(
         "",
         f"> 存在 ARCH 效应：`{diag.arch_lm.has_arch_effect}`",
         "",
-        "### 1.4 方差比检验（随机游走，Lo-MacKinlay）",
+        "### 1.5 Engle-Ng 符号偏差检验（方差方程·杠杆/非对称）",
         "",
-        _df_md(
-            pd.DataFrame({"VR(q)": diag.variance_ratio.vr, "z 统计量": diag.variance_ratio.z,
-                          "p 值": diag.variance_ratio.pvalues},
-                         index=pd.Index(diag.variance_ratio.lags, name="持有期 q")),
+        _kv_md(
+            {
+                "sign_p": diag.sign_bias.sign_p,
+                "negative_p(杠杆)": diag.sign_bias.negative_p,
+                "positive_p": diag.sign_bias.positive_p,
+                "joint_p": diag.sign_bias.joint_p,
+                "has_asymmetry": diag.sign_bias.has_asymmetry,
+            }
         ),
         "",
-        f"> 未拒绝随机游走：`{diag.variance_ratio.is_random_walk}`（VR(q)=1 即随机游走；<1 均值回复，>1 动量）",
+        f"> 存在非对称（杠杆）：`{diag.sign_bias.has_asymmetry}`（任一项 p<0.05 → 建议 GJR-GARCH）",
         "",
-        f"![检测图]({os.path.basename(diag_img)})",
+        "### 1.6 ACF / PACF（辅助证据）",
+        "",
+        _acfpacf_md(diag.acf_pacf),
+        "",
+        "### 均值方程判定",
+        "",
+        f"**`{diag.mean_equation}`** — 无自相关(LB)→Constant；否则长记忆(GPH)→ARFIMA；否则→ARMA。",
+        "",
+        "### 方差方程判定",
+        "",
+        f"**`{diag.variance_equation}`** — 无ARCH→Constant；有ARCH且有杠杆(Engle-Ng)→GJR-GARCH；有ARCH无杠杆→GARCH。",
         "",
     ]
+    if diag_img:
+        parts += [f"![检测图]({os.path.basename(diag_img)})", ""]
 
     # ── 建模 ──
+    parts += ["## 2. 建模", ""]
     if fit is None:
-        parts += ["## 2. 建模", "", "未检测到可建模结构，未进行拟合。", ""]
-    else:
         parts += [
-            "## 2. 建模",
+            "判定为**白噪声**（常数均值 + 不变方差），无可建模结构，未进行拟合。",
             "",
+            "> 若需预测，均值用样本均值、方差用样本方差即可。",
+            "",
+        ]
+    else:
+        d_line = f"\n- 分数差分参数 d：`{_fmt(fit.d)}`" if fit.d is not None else ""
+        parts += [
             f"### 2.1 模型与最优阶数",
             "",
+            f"- 流程：`{fit.flow}`（均值方程 `{fit.mean_equation}` + 方差方程 `{fit.variance_equation}`）",
             f"- 模型类型：`{fit.model_type}`",
             f"- 最优阶数：`{_order_str(fit.order)}`（按 `{fit.criterion}` 选取）",
-            f"- 样本量：`{fit.n_obs}`；AIC=`{_fmt(fit.aic)}`；BIC=`{_fmt(fit.bic)}`",
+            f"- 样本量：`{fit.n_obs}`；AIC=`{_fmt(fit.aic)}`；BIC=`{_fmt(fit.bic)}`" + d_line,
             "",
             "### 2.2 参数估计",
             "",
@@ -212,8 +281,8 @@ def _build_markdown(
             "### 2.3 建模后 Ljung-Box 检测",
             "",
         ]
-        # GARCH 类（有标准化残差）走均值/方差方程双 LB；其余（ARMA / RandomWalk）走残差 LB
         if fit.std_resid_lb is not None:
+            # flow_b / flow_c：均值方程 + 方差方程双 LB
             parts += [
                 "均值方程 — 标准化残差 Ljung-Box：",
                 "",
@@ -225,8 +294,9 @@ def _build_markdown(
                 "",
             ]
         else:
+            # flow_a：均值方程残差单 LB
             parts += [
-                "残差 Ljung-Box（判定拟合是否充分）：",
+                "均值方程残差（创新）Ljung-Box：",
                 "",
                 _df_md(fit.resid_lb.rename(columns={"lb_stat": "统计量", "lb_pvalue": "p 值"}), "滞后阶"),
                 "",
@@ -245,8 +315,9 @@ def _build_markdown(
     parts += [
         "## 3. 注意事项",
         "",
-        "- 检测与建模作用在**收益率/差分序列**上，不要直接对非平稳价格建模。",
-        "- ARCH-LM、Ljung-Box 对窗口与频率敏感，结论需结合样本长度与业务背景复核。",
+        "- 检测与建模作用在**收益率/差分序列**上；非平稳价格会触发 NonStationaryError。",
+        "- GPH/Engle-Ng/Ljung-Box 对窗口与频率敏感，结论需结合样本长度与业务背景复核。",
+        "- ARFIMA 采用两步法（arch/statsmodels 不支持分数 d）；GJR-GARCH（o=1）捕捉 Engle-Ng 杠杆效应。",
         "- 输出仅用于研究方向判断，不构成任何下单依据。",
         "",
     ]
@@ -263,18 +334,21 @@ def generate_model_report(
     title: str | None = None,
     output_dir: str | Path | None = None,
     forecast_steps: int = 20,
-    max_p: int = 5,
-    max_q: int = 5,
+    max_p: int = 3,
+    max_q: int = 3,
+    p_max: int = 2,
+    q_max: int = 2,
     criterion: str = "aic",
 ) -> dict:
     """对收益率序列跑「检测 → 自动建模 → 报告」全流程，返回结构化结果。
 
     Args:
-        returns: 收益率或差分序列（pd.Series / array-like）。
+        returns: 收益率或差分序列（pd.Series / array-like），必须平稳。
         series_name: 名称，用于报告标题与文件名。
         output_dir: 报告与图输出目录；默认 skill 的 reports/ 下。
         forecast_steps: 预测步数。
-        max_p / max_q: ARMA/AR 阶数搜索上界。
+        max_p / max_q: 均值方程 ARMA/AR 阶数搜索上界。
+        p_max / q_max: 方差方程 GARCH/GJR 阶数搜索上界。
         criterion: 'aic' / 'bic'。
 
     Returns:
@@ -286,33 +360,32 @@ def generate_model_report(
 
     stem = _safe_stem(series_name)
 
-    # 1) 检测
+    # 1) 检测（非平稳会抛 NonStationaryError，向上传播）
     diag = run_diagnostics(r)
 
     # 检测图
     diag_img = out_dir / f"{stem}_diagnostics.png"
+    _diag_err = None
     try:
         _plot_diagnostics(r, diag_img)
     except Exception as e:  # pragma: no cover - 图失败不应中断报告
         diag_img = None
         _diag_err = str(e)
-    else:
-        _diag_err = None
 
-    # 2) 建模（推荐 RandomWalk 时也会拟合 ARIMA(0,1,0) 漂移）
+    # 2) 建模（按 diag.flow 路由；白噪声返回 None）
     fit: FitSummary | None = None
     pred_img: str | None = None
+    _fit_err = None
     try:
         fit = fit_model(
-            diag.recommendation, r,
-            max_p=max_p, max_q=max_q, criterion=criterion,
-            forecast_steps=forecast_steps,
+            diag, r,
+            max_p=max_p, max_q=max_q, p_max=p_max, q_max=q_max,
+            criterion=criterion, forecast_steps=forecast_steps,
         )
     except Exception as e:  # 建模失败则仅出检测报告
         fit = None
         _fit_err = str(e)
     else:
-        _fit_err = None
         if fit is not None:
             try:
                 pred_img = out_dir / f"{stem}_prediction.png"
@@ -340,7 +413,7 @@ def generate_model_report(
         "fit": fit,
         "diag_plot": str(diag_img) if diag_img else None,
         "pred_plot": str(pred_img) if pred_img else None,
-        "fit_error": _fit_err,
+        "fit_error": _fit_err or _diag_err,
     }
 
 

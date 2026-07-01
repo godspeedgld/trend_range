@@ -1,17 +1,27 @@
 ---
-description: Time-series modeling -- ARMA, AR+GARCH, ARMA+GARCH with ADF/Ljung-Box/ARCH-LM
-globs: ["**/*time*series*.py", "**/*garch*.py", "**/*arma*.py", "**/*arch*.py"]
+description: Time-series modeling -- two-stage diagnostic-driven (ARMA/ARFIMA + GARCH/GJR-GARCH)
+globs: ["**/*time*series*.py", "**/*garch*.py", "**/*arma*.py", "**/*arch*.py", "***arfima*.py", "***volatility*.py"]
 alwaysApply: false
 ---
 
 # Time Series Model
 
-When modeling a financial return series, use the diagnostic-driven flow:
+When modeling a financial return series, use the two-stage diagnostic-driven flow:
 
-1. Model the **return/differenced series**, not raw price.
-2. Call `run_diagnostics` (ADF + Ljung-Box + ARCH-LM + Variance-Ratio) and follow its `recommendation`.
-3. Route: `RandomWalk` → `fit_random_walk`; `ARMA` → `fit_arma`; `ARMA+GARCH` → `fit_arma_garch`; `AR+GARCH` → `fit_ar_garch`.
-4. Orders are chosen by AIC/BIC (default AIC); RandomWalk = ARIMA(0,1,0).
-5. Validate: ARMA/RandomWalk residuals Ljung-Box; GARCH-type standardized residuals and their squares.
-6. For user-facing output, call `generate_model_report` and return its Markdown.
-7. Conclusions before evidence; research directions only, never order instructions.
+1. Model the **return/differenced series**, not raw price. ADF is the gate: non-stationary
+   input raises `NonStationaryError`.
+2. Call `run_diagnostics(returns)` — it returns a `DiagnosticReport` with `mean_equation`,
+   `variance_equation`, and `flow`.
+3. **Mean equation** (Ljung-Box + GPH + ACF/PACF): long memory → `ARFIMA`; else autocorrelation →
+   `ARMA`; else → `Constant`.
+4. **Variance equation** (ARCH-LM + Engle-Ng): no ARCH → `Constant`; ARCH + leverage → `GJR-GARCH`
+   (asymmetric, `o=1`); ARCH, no leverage → `GARCH`.
+5. `classify_model` → `white_noise` (not modeled) / `flow_a` (mean only) / `flow_b` (variance only)
+   / `flow_c` (mean + variance, two-step).
+6. Fit with `fit_model(diag, returns, ...)`; orders by AIC/BIC (default AIC).
+7. Validate: `flow_a` residuals Ljung-Box; `flow_b`/`flow_c` standardized residuals and their squares.
+8. For user-facing output, call `generate_model_report` and return its Markdown.
+9. Conclusions before evidence; research directions only, never order instructions.
+
+Notes: arch 8.0 EGARCH has no sign term, so leverage uses GJR-GARCH. ARFIMA uses a two-step
+fractional-difference filter (GPH → (1-L)^d → ARMA).

@@ -1,31 +1,44 @@
 name: time-series-model
-description: Diagnostic-driven time-series modeling (ARMA / AR+GARCH / ARMA+GARCH).
+description: Two-stage diagnostic-driven time-series modeling (ARMA/ARFIMA + GARCH/GJR-GARCH).
 trigger:
   keywords:
     - time series model
     - 时序建模
     - ARMA
+    - ARFIMA
+    - long memory
+    - 长记忆
     - GARCH
+    - GJR-GARCH
+    - leverage
+    - 杠杆
     - ARCH
     - ARCH-LM
     - Ljung-Box
-    - Variance Ratio
-    - Random Walk
+    - GPH
+    - Engle-Ng
+    - sign bias
     - volatility model
     - 波动率建模
     - 时间序列建模
 instructions: |
-  Always model the return or differenced series, never raw price. Start with
-  run_diagnostics (ADF + Ljung-Box + ARCH-LM + Variance-Ratio) and follow its
-  recommendation: RandomWalk, ARMA, ARMA+GARCH, or AR+GARCH. Select orders by
-  AIC/BIC. Validate ARMA/RandomWalk residuals with Ljung-Box; for GARCH-type
-  validate standardized residuals and their squares. For user-facing output call
-  generate_model_report and return its Markdown. Report recommended model, optimal
-  order, and pass/fail conclusion before evidence. Outputs are research directions
-  only, never order instructions.
+  Always model the return or differenced series, never raw price. ADF is the gate:
+  non-stationary input raises NonStationaryError. Run run_diagnostics(returns), which
+  returns mean_equation and variance_equation plus a flow. Mean equation (Ljung-Box +
+  GPH + ACF/PACF): long memory -> ARFIMA; else autocorrelation -> ARMA; else Constant.
+  Variance equation (ARCH-LM + Engle-Ng sign bias): no ARCH -> Constant; ARCH + leverage
+  -> GJR-GARCH; ARCH no leverage -> GARCH. classify_model maps to white_noise (not modeled),
+  flow_a (mean only), flow_b (variance only), or flow_c (mean + variance, two-step). Fit with
+  fit_model(diag, returns); select orders by AIC/BIC. Validate flow_a residuals with
+  Ljung-Box; for flow_b/flow_c validate standardized residuals and their squares. For
+  user-facing output call generate_model_report and return its Markdown. Report flow,
+  mean/variance equation, optimal order, and pass/fail conclusion before evidence. Outputs
+  are research directions only, never order instructions. Note: arch 8.0 EGARCH has no sign
+  term, so leverage uses GJR-GARCH (o=1, gamma coefficient); ARFIMA uses a two-step
+  fractional-difference filter.
 interface:
   display_name: "Time Series Model"
-  short_description: "ARMA / AR+GARCH / ARMA+GARCH modeling driven by diagnostics"
+  short_description: "Two-stage ARMA/ARFIMA + GARCH/GJR-GARCH modeling driven by diagnostics"
   default_prompt: "Use $time-series-model to model this return series and produce a Markdown report."
 references:
   - references/workflow.md

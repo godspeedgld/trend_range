@@ -1,7 +1,7 @@
 [project]
 name = "skill-time-series-model"
 version = "0.1.0"
-description = "QuantSkills time-series modeling skill: ARMA, AR+GARCH, ARMA+GARCH with diagnostic-driven model selection"
+description = "QuantSkills time-series modeling skill: two-stage diagnostic-driven ARMA/ARFIMA + GARCH/GJR-GARCH"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -9,6 +9,7 @@ dependencies = [
     "matplotlib",
     "numpy",
     "pandas",
+    "pmdarima>=2.1.1",
     "scipy",
     "statsmodels",
 ]
