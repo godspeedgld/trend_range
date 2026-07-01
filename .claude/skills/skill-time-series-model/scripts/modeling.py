@@ -1,10 +1,10 @@
-"""时序建模脚本：两阶段检测驱动的三流程建模。
+"""时序建模脚本：两阶段检测驱动的四流程建模。
 
-由 diagnostics.DiagnosticReport 的 flow 分支路由：
-  flow_a : 均值方程(ARMA/ARFIMA) + 不变方差     → 原子均值拟合 + 残差 LB
-  flow_b : 常数均值 + 方差方程(GARCH/GJR-GARCH) → 常数均值 + 残差上 GARCH/GJR
+由 diagnostics.DiagnosticReport 的 flow 分支路由（均值×方差 3×3=9 种组合全覆盖）：
+  flow_a : 均值方程(ARMA/ARFIMA) + 不变方差      → 原子均值拟合 + 残差 LB
+  flow_b : 常数均值 + 方差方程(GARCH/GJR-GARCH)  → 常数均值 + 残差上 GARCH/GJR
   flow_c : 均值方程 + 方差方程                   → 两步：均值取残差 → 残差上 GARCH/GJR
-  white_noise : 常数均值 + 不变方差              → 不建模（fit_model 返回 None）
+  flow_d : 常数均值 + 不变方差                   → 拟合常数模型(μ, σ²) + 残差 LB
 
 ARFIMA 采用两步法（arch/statsmodels 不支持分数 d）：
   GPH 估 d → 分数差分 (1-L)^d → 对差分序列 fit ARMA；创新即为 ARFIMA 残差。
@@ -634,6 +634,52 @@ def flow_c(
 
 
 # ════════════════════════════════════════════════════════════
+# flow_d：常数均值 + 不变方差（常数模型 / 随机游走漂移）
+# ════════════════════════════════════════════════════════════
+def flow_d(
+    s: pd.Series,
+    *,
+    forecast_steps: int = 20,
+) -> FitSummary:
+    """常数均值 + 不变方差：拟合 μ 与 σ²（等价于价格的随机游走带漂移）。
+
+    不再当作"白噪声跳过"——μ 即趋势 drift、σ² 即波动水平，是最朴素但完整的基线模型。
+    残差 = r - μ；残差 Ljung-Box 判定常数模型是否充分（残差无自相关 → 通过）。
+    """
+    cm = fit_constant_mean(s)
+    resid_lb = _ljung_box(cm["resid"])
+    passed = _lb_passed(resid_lb)
+    reason = (
+        "残差（去均值）无显著自相关，常数均值+常数方差模型充分"
+        if passed else
+        "残差仍存在自相关，常数模型不充分，可能存在未捕捉的均值/方差动态结构"
+    )
+    fc = pd.Series(np.full(forecast_steps, cm["mu"]))
+    return FitSummary(
+        model_type="Constant",
+        order=((0, 0), (0, 0)),
+        criterion="-",
+        params=cm["params"],
+        aic=cm["aic"],
+        bic=cm["bic"],
+        n_obs=int(len(s)),
+        resid_lb=resid_lb,
+        std_resid_lb=None,
+        sq_std_resid_lb=None,
+        passed=passed,
+        reason=reason,
+        fitted=cm["fitted"],
+        forecast_mean=fc,
+        forecast_index=list(range(len(s), len(s) + len(fc))),
+        resid=cm["resid"],
+        mean_equation="Constant",
+        variance_equation="Constant",
+        flow="flow_d",
+        d=None,
+    )
+
+
+# ════════════════════════════════════════════════════════════
 # 统一入口：按 DiagnosticReport 的 flow 路由
 # ════════════════════════════════════════════════════════════
 def fit_model(
@@ -646,16 +692,12 @@ def fit_model(
     q_max: int = 2,
     criterion: str = "aic",
     forecast_steps: int = 20,
-) -> FitSummary | None:
-    """按 DiagnosticReport.flow 路由到对应流程。
-
-    white_noise → 返回 None（不建模）；
-    flow_a/b/c → 均值/方差方程组合拟合。
-    """
+) -> FitSummary:
+    """按 DiagnosticReport.flow 路由到对应流程（均值×方差 9 种组合全覆盖）。"""
     s = _clean(series, "series")
     flow = getattr(diag, "flow", None)
-    if flow == "white_noise":
-        return None
+    if flow == "flow_d":
+        return flow_d(s, forecast_steps=forecast_steps)
     if flow == "flow_a":
         return flow_a(s, diag.mean_equation, max_p=max_p, max_q=max_q,
                       criterion=criterion, forecast_steps=forecast_steps)
@@ -679,5 +721,6 @@ __all__ = [
     "flow_a",
     "flow_b",
     "flow_c",
+    "flow_d",
     "fit_model",
 ]

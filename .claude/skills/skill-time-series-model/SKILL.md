@@ -18,16 +18,16 @@ quantSkills:
   validation_level: runnable
   maintainer_type: community
   requires: []
-  summary_zh: 两阶段检测驱动建模：ADF 前提→均值方程(LB/GPH/ACF-PACF：Constant/ARMA/ARFIMA)+方差方程(ARCH-LM/Engle-Ng：Constant/GARCH/GJR)，白噪声不建模。
-  summary_en: Two-stage diagnostic-driven modeling: ADF gate, then mean equation (LB/GPH/ACF-PACF → Constant/ARMA/ARFIMA) and variance equation (ARCH-LM/Engle-Ng → Constant/GARCH/GJR-GARCH); white noise is not modeled.
+  summary_zh: 两阶段检测驱动建模：ADF 前提→均值方程(LB/GPH/ACF-PACF：Constant/ARMA/ARFIMA)+方差方程(ARCH-LM/Engle-Ng：Constant/GARCH/GJR)，均值×方差 9 种组合全覆盖（常数均值+不变方差也建模为 flow_d）。
+  summary_en: Two-stage diagnostic-driven modeling: ADF gate, then mean equation (LB/GPH/ACF-PACF → Constant/ARMA/ARFIMA) and variance equation (ARCH-LM/Engle-Ng → Constant/GARCH/GJR-GARCH); all 9 mean×variance combos are modeled (constant+constant = flow_d).
 ---
 
 # Time Series Model
 
 Use this skill to model a **return / differenced series** (stationary) after diagnosing
 its dynamics. It runs a **two-stage** detection — a mean equation and a variance
-equation — picks one of three modeling flows (white noise is not modeled), fits with
-AIC/BIC order selection, validates residuals with Ljung-Box, and writes a Chinese
+equation — picks one of four modeling flows (all 9 mean×variance combos are modeled),
+fits with AIC/BIC order selection, validates residuals with Ljung-Box, and writes a Chinese
 conclusion-first Markdown report with diagnostics, parameters, residual tests, and an
 in-sample fit + forward forecast plot.
 
@@ -45,8 +45,8 @@ in-sample fit + forward forecast plot.
    - no ARCH → `Constant`
    - ARCH + leverage (Engle-Ng) → `GJR-GARCH` (asymmetric, `o=1`, captures the sign effect)
    - ARCH, no leverage → `GARCH`
-4. `classify_model` maps the (mean, variance) pair to a flow:
-   - `white_noise` (Constant + Constant) → **not modeled**, `fit_model` returns `None`
+4. `classify_model` maps the (mean, variance) pair to a flow (all 9 combos modeled):
+   - `flow_d` (Constant + Constant) → fit constant model (μ, σ²; random-walk-with-drift baseline), residual Ljung-Box
    - `flow_a` (mean model + Constant variance) → ARMA/ARFIMA, residual Ljung-Box
    - `flow_b` (Constant mean + variance model) → GARCH/GJR-GARCH on de-meaned residuals, double LB
    - `flow_c` (mean + variance) → iterated two-step: pick mean order → pick variance order →
@@ -66,7 +66,7 @@ in-sample fit + forward forecast plot.
 | Layer | Use first | Purpose |
 |---|---|---|
 | Report API | `generate_model_report` | End-to-end user-facing Markdown report + plots |
-| Modeling | `fit_model`, `flow_a`/`flow_b`/`flow_c`, `fit_arma_mean`, `fit_arfima_mean`, `fit_constant_mean`, `fit_garch_var`, `fit_gjr_var` | Fit a chosen flow / atomic mean-variance component |
+| Modeling | `fit_model`, `flow_a`/`flow_b`/`flow_c`/`flow_d`, `fit_arma_mean`, `fit_arfima_mean`, `fit_constant_mean`, `fit_garch_var`, `fit_gjr_var` | Fit a chosen flow / atomic mean-variance component |
 | Diagnostics | `run_diagnostics`, `adf_test`, `ljung_box_test`, `gph_test`, `arch_lm_test`, `engle_ng_sign_bias_test`, `acf_pacf`, `recommend_mean_equation`, `recommend_variance_equation`, `classify_model` | ADF gate + mean/variance detection |
 | Helpers | `FitSummary`, `DiagnosticReport`, `NonStationaryError` | Result containers / custom workflows |
 
@@ -78,8 +78,8 @@ Always produce:
 - ADF / Ljung-Box / GPH / ARCH-LM / Engle-Ng / ACF-PACF evidence
 - selected model class and **optimal order** chosen by AIC/BIC (incl. ARFIMA `d`)
 - fitted **parameter estimates** (incl. GJR `gamma` leverage coefficient when present)
-- post-fit **Ljung-Box** results (residuals for `flow_a`; standardized residuals and
-  their squares for `flow_b`/`flow_c`) and a pass/fail conclusion; white noise → "not modeled"
+- post-fit **Ljung-Box** results (residuals for `flow_a`/`flow_d`; standardized residuals and
+  their squares for `flow_b`/`flow_c`) and a pass/fail conclusion
 - a chart of actual series + in-sample fit + forward forecast
 - caveats: short samples, conflicting tests, non-stationary inputs
 

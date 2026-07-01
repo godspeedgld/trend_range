@@ -10,9 +10,10 @@ run_diagnostics(returns) first; it returns mean_equation, variance_equation, and
 Mean equation (Ljung-Box + GPH + ACF/PACF): long memory -> ARFIMA; else autocorrelation
 -> ARMA; else Constant. Variance equation (ARCH-LM + Engle-Ng sign bias): no ARCH ->
 Constant; ARCH + leverage -> GJR-GARCH; ARCH no leverage -> GARCH. classify_model maps to
-white_noise (not modeled), flow_a (mean only), flow_b (variance only), or flow_c (mean +
-variance, two-step). Fit with fit_model(diag, returns); select orders by AIC/BIC (default
-AIC). For flow_a validate residuals with Ljung-Box; for flow_b/flow_c validate standardized
+flow_d (constant mean+variance, fit mu/sigma2), flow_a (mean only), flow_b (variance only),
+or flow_c (mean + variance, two-step). All 9 mean×variance combos are modeled. Fit with
+fit_model(diag, returns); select orders by AIC/BIC (default AIC). For flow_a/flow_d validate
+residuals with Ljung-Box; for flow_b/flow_c validate standardized
 residuals and their squares with Ljung-Box. For user-facing output call generate_model_report
 and return its Markdown. Report the flow, mean/variance equation, optimal order, and
 pass/fail conclusion before evidence. Outputs are research directions only, never order

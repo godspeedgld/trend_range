@@ -9,7 +9,8 @@
 ## 建模 API
 
 - `fit_model(diag, series, *, max_p=3, max_q=3, p_max=2, q_max=2, criterion="aic", forecast_steps=20)`
-  — 按 `diag.flow` 路由；`white_noise` 返回 `None`。
+  — 按 `diag.flow` 路由 flow_a/b/c/d（9 种组合全覆盖；返回 `FitSummary`，异常时由调用方捕获）。
+- `flow_d(series, *, forecast_steps=20)` — 常数均值+不变方差：拟合 μ、σ²；残差单 LB。
 - `flow_a(series, mean_eq, *, max_p=3, max_q=3, criterion="aic", forecast_steps=20)`
   — 均值方程(ARMA/ARFIMA) + 不变方差；残差单 LB。
 - `flow_b(series, var_eq, *, p_max=2, q_max=2, criterion="aic", forecast_steps=20)`

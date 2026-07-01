@@ -16,8 +16,8 @@ When modeling a financial return series, use the two-stage diagnostic-driven flo
    `ARMA`; else → `Constant`.
 4. **Variance equation** (ARCH-LM + Engle-Ng): no ARCH → `Constant`; ARCH + leverage → `GJR-GARCH`
    (asymmetric, `o=1`); ARCH, no leverage → `GARCH`.
-5. `classify_model` → `white_noise` (not modeled) / `flow_a` (mean only) / `flow_b` (variance only)
-   / `flow_c` (mean + variance, two-step).
+5. `classify_model` → `flow_d` (constant mean+variance, fit μ/σ²) / `flow_a` (mean only) / `flow_b` (variance only)
+   / `flow_c` (mean + variance, two-step). All 9 mean×variance combos are modeled.
 6. Fit with `fit_model(diag, returns, ...)`; orders by AIC/BIC (default AIC).
 7. Validate: `flow_a` residuals Ljung-Box; `flow_b`/`flow_c` standardized residuals and their squares.
 8. For user-facing output, call `generate_model_report` and return its Markdown.

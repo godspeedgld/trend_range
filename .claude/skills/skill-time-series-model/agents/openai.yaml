@@ -27,8 +27,9 @@ instructions: |
   returns mean_equation and variance_equation plus a flow. Mean equation (Ljung-Box +
   GPH + ACF/PACF): long memory -> ARFIMA; else autocorrelation -> ARMA; else Constant.
   Variance equation (ARCH-LM + Engle-Ng sign bias): no ARCH -> Constant; ARCH + leverage
-  -> GJR-GARCH; ARCH no leverage -> GARCH. classify_model maps to white_noise (not modeled),
-  flow_a (mean only), flow_b (variance only), or flow_c (mean + variance, two-step). Fit with
+  -> GJR-GARCH; ARCH no leverage -> GARCH. classify_model maps to flow_d (constant mean+variance,
+  fit mu/sigma2), flow_a (mean only), flow_b (variance only), or flow_c (mean + variance, two-step).
+  All 9 mean×variance combos are modeled. Fit with
   fit_model(diag, returns); select orders by AIC/BIC. Validate flow_a residuals with
   Ljung-Box; for flow_b/flow_c validate standardized residuals and their squares. For
   user-facing output call generate_model_report and return its Markdown. Report flow,

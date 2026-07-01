@@ -2,7 +2,7 @@
 
 两阶段检测驱动：
   1) ADF(前提) / Ljung-Box / GPH / ARCH-LM / Engle-Ng / ACF-PACF → 均值方程 + 方差方程
-  2) 按 flow_a/b/c 自动建模（白噪声不建模）
+  2) 按 flow_a/b/c/d 自动建模（均值×方差 9 种组合全覆盖，常数均值+不变方差也建模）
   3) 最优阶数、参数估计、建模后 Ljung-Box 与结论
   4) 原始数据 + 样本内拟合 + 向前预测 同图，写入报告
 报告与图落到 skill 的 reports/ 子目录。
@@ -158,7 +158,7 @@ def _plot_prediction(returns: pd.Series, fit: FitSummary, path: Path) -> str:
 # ────────────────────────────────────────────────────────────
 def _one_sentence(diag: DiagnosticReport, fit: FitSummary | None) -> str:
     if fit is None:
-        return f"判定为白噪声（均值方程={diag.mean_equation}，方差方程={diag.variance_equation}），无可建模结构，未拟合。"
+        return "建模异常，未能拟合（见下方错误信息）；仅给出检测结果。"
     verdict = "充分" if fit.passed else "尚不充分"
     d_note = f"，分数 d={_fmt(fit.d)}" if fit.d is not None else ""
     return (
@@ -259,9 +259,7 @@ def _build_markdown(
     parts += ["## 2. 建模", ""]
     if fit is None:
         parts += [
-            "判定为**白噪声**（常数均值 + 不变方差），无可建模结构，未进行拟合。",
-            "",
-            "> 若需预测，均值用样本均值、方差用样本方差即可。",
+            "建模异常，未能拟合（可能因样本过短或数值不收敛）；仅给出上方检测结果。",
             "",
         ]
     else:
@@ -372,7 +370,7 @@ def generate_model_report(
         diag_img = None
         _diag_err = str(e)
 
-    # 2) 建模（按 diag.flow 路由；白噪声返回 None）
+    # 2) 建模（按 diag.flow 路由 flow_a/b/c/d；异常时 fit=None 仅出检测报告）
     fit: FitSummary | None = None
     pred_img: str | None = None
     _fit_err = None

@@ -13,12 +13,12 @@
   - Engle-Ng 符号偏差（杠杆 / 非对称）
 共同判定。
 
-白噪声（常数均值 + 不变方差）→ 不建模。
+均值×方差 3×3 = 9 种组合全覆盖，分别落到 flow_a/b/c/d（常数均值+不变方差也建模为 flow_d）。
 
 用法:
     from scripts.diagnostics import run_diagnostics
     result = run_diagnostics(returns)   # pd.Series，必须传入收益率/差分序列
-    print(result.flow)                  # 'white_noise' / 'flow_a' / 'flow_b' / 'flow_c'
+    print(result.flow)                  # 'flow_a' / 'flow_b' / 'flow_c' / 'flow_d'
     print(result.mean_equation, result.variance_equation)
 """
 
@@ -436,7 +436,7 @@ def classify_model(mean_eq: str, var_eq: str) -> tuple[str, str]:
     """由均值/方差方程组合判定流程分支与模型类型。
 
     返回 (flow, model_type)：
-      white_noise : 常数均值 + 不变方差（不建模）
+      flow_d      : 常数均值 + 不变方差 → 拟合常数模型(μ, σ²)
       flow_a      : 均值方程(ARMA/ARFIMA) + 不变方差
       flow_b      : 常数均值 + 方差方程(GARCH/GJR)
       flow_c      : 均值方程 + 方差方程
@@ -444,7 +444,7 @@ def classify_model(mean_eq: str, var_eq: str) -> tuple[str, str]:
     mean_struct = mean_eq != "Constant"
     var_struct = var_eq != "Constant"
     if not mean_struct and not var_struct:
-        return "white_noise", "WhiteNoise"
+        return "flow_d", "Constant"   # 常数均值 + 不变方差 → 拟合常数模型(μ, σ²)
     if mean_struct and not var_struct:
         return "flow_a", mean_eq
     if not mean_struct and var_struct:
@@ -465,7 +465,7 @@ class DiagnosticReport:
     acf_pacf: pd.DataFrame
     mean_equation: str          # 'Constant' / 'ARMA' / 'ARFIMA'
     variance_equation: str      # 'Constant' / 'GARCH' / 'GJR'
-    flow: str                   # 'white_noise' / 'flow_a' / 'flow_b' / 'flow_c'
+    flow: str                   # 'flow_a' / 'flow_b' / 'flow_c' / 'flow_d'
     recommendation: str         # 模型类型字符串（兼容旧命名）
     reason: str
 
