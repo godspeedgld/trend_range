@@ -1,0 +1,47 @@
+name: trend-prediction
+description: Trend-vs-range regime prediction (indicator + decision-tree templates composed by the agent).
+trigger:
+  keywords:
+    - trend prediction
+    - 趋势预测
+    - regime detection
+    - 趋势震荡判断
+    - ADX
+    - Hurst
+    - MACD
+    - HMA
+    - random forest
+    - XGBoost
+    - walk-forward
+    - 趋势判断
+    - 决策树 趋势
+instructions: |
+  This is a FRAMEWORK skill — there is no top-level dispatcher. You decide the flow and
+  translate the user's natural-language rule into code, then call a template.
+
+  1) Decide the flow from the user's request:
+     - explicit rule (e.g. "ADX(14)>25 and MACD golden cross", "Hurst>0.5") -> indicator flow.
+     - feature set + learning goal -> decision-tree flow.
+     - unclear -> describe_data.
+  2) Compose code using scripts.indicator:
+     - indicator flow: build an `indicators` dict (Series) + a `rule(indicators)->pd.Series`
+       (predicted per-bar label) + a `label_fn(df)->pd.Series` (ground truth).
+     - tree flow: build a lagged `features` DataFrame (NO look-ahead: never use close.shift(-k))
+       + `label_fn`; pass task="classification" or "regression".
+  3) Default label: indicator.trend_label(close, high, low, horizon=10, k=1.5) — forward |r| > k*RELATIVE
+     ATR (ATR/close) -> up(+1)/down(-1), else range(0). The threshold MUST be relative ATR.
+  4) Call predict_by_indicator / predict_by_tree with output_dir= -> writes a Chinese conclusion-first
+     report + colored close/kline (trend=red, range=green) + confusion + precision/recall/F1 (or RMSE/MAE/R2).
+  5) Anti-leakage: features known at t; label is forward (only as y); standardize per-fold;
+     correlation filter on initial train segment.
+  6) Markov (HMM) and deep-learning (LSTM/Transformer) are placeholders: plan_markov() / plan_dl().
+  7) Conclusions before evidence; research only, never order instructions.
+interface:
+  display_name: "Trend Prediction"
+  short_description: "Indicator / decision-tree trend-vs-range regime prediction (agent-composed)"
+  default_prompt: "Use $trend-prediction to judge trend vs range on this price series."
+references:
+  - references/workflow.md
+  - references/api.md
+  - references/report-format.md
+  - references/interpretation.md

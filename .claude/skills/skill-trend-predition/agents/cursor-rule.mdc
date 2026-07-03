@@ -1,0 +1,24 @@
+---
+description: Trend/regime prediction -- indicator + decision-tree (RF/XGBoost) templates composed by the agent
+globs: ["**/*trend*.py", "**/*regime*.py", "**/*adx*.py", "**/*hurst*.py", "**/*macd*.py"]
+alwaysApply: false
+---
+
+# Trend Prediction
+
+This skill is a **framework**: there is NO top-level dispatcher. You decide the flow and
+**translate the user's natural-language rule into code**, then call a template.
+
+1. Model the **return / differenced series' regime** (trend vs range), not absolute price direction prediction for orders.
+2. Read the user's rule / feature spec. Pick a template:
+   - explicit rule (ADX>25 & MACD cross, Hurst>0.5...) → `predict_by_indicator`.
+   - feature set + learning goal → `predict_by_tree`.
+   - unclear → `describe_data`.
+3. Compose code with `scripts.indicator`:
+   - indicator flow: build `indicators` dict + a `rule(indicators)->Series` + `label_fn`.
+   - tree flow: build a lagged `features` DataFrame (NO look-ahead) + `label_fn`; `task="classification"` or `"regression"`.
+4. Default label: `indicator.trend_label(close, high, low, horizon=10, k=1.5)` (forward |r|>k·relativeATR → up/down, else range). Threshold must be RELATIVE ATR.
+5. Call the template with `output_dir=` → it writes a Chinese conclusion-first report + colored close/kline (trend=red, range=green) + confusion/precision/recall.
+6. Hard rules: features must be known at time t (no `shift(-k)`); label is forward-looking, use only as y; standardize per-fold; correlation filter on initial train segment.
+7. Markov / deep-learning: `plan_markov()` / `plan_dl()` return placeholder plans (deps not installed).
+8. Conclusions before evidence; research only, never order instructions.
