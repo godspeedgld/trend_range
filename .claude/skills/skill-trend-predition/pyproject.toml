@@ -9,6 +9,7 @@ dependencies = [
     "matplotlib",
     "numpy",
     "pandas",
+    "plotly>=6.8.0",
     "scikit-learn",
     "scipy",
     "statsmodels",

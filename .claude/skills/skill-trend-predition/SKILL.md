@@ -91,6 +91,31 @@ res = predict_by_tree(df, features=features, label_fn=label_fn, task="classifica
 # task="regression" 时标签连续化，模板自动切到 RF/XGB Regressor + RMSE/MAE/R²
 ```
 
+## 只算指标 + 出图（不要报告）
+
+indicator.py 与 viz.py 是**独立模块**，可跳过模板直接用。典型：主图 close/K线 + 副图 MACD/ADX/KDJ。
+
+```python
+from scripts import indicator as ind, viz
+close, high, low, vol = ind.extract_ohlcv(df)
+d = df.tail(400)                                   # 近 400 根
+ml, ms, mh = ind.macd(close)
+adx_, dip, dim = ind.adx_components(high, low, close)   # ADX + DI+/DI-
+K, D, J = ind.kdj(high, low, close)
+
+# 主图 close 折线 + MACD 副(线+柱+0线)
+viz.plot_panels(d, main="close",
+                panels=[{"title":"MACD","lines":{"MACD":ml,"signal":ms},"bars":{"hist":mh},"hlines":[0]}],
+                title="HC close + MACD", path="reports/hc/macd.png")
+# 主图 K线 + ADX 副(ADX/+DI/-DI + 25线)
+viz.plot_panels(d, main="kline", last_n=200,
+                panels=[{"title":"ADX","lines":{"ADX":adx_,"+DI":dip,"-DI":dim},"hlines":[25]}],
+                title="HC k线 + ADX/DI", path="reports/hc/adx.png")
+```
+- `main`：`"close"`（折线）或 `"kline"`（K 线）。
+- 每个 `panels` 项：`lines`(折线) / `bars`(柱状，如 hist) / `hlines`(水平参考线，如 0、25)。
+- `main_colored=标签Series` 给主图加趋势红/震荡绿着色（K线则按 regime 上色）。
+
 ## API Pyramid
 
 | Layer | Use first | Purpose |
@@ -98,7 +123,7 @@ res = predict_by_tree(df, features=features, label_fn=label_fn, task="classifica
 | 模板 | `predict_by_indicator`, `predict_by_tree`, `describe_data` | 流程骨架，传 indicators/rule/features/label_fn |
 | 工具 | `standardize`, `correlation_filter`, `rolling_train` | 写死、可独立复用 |
 | 指标库 | `indicator.adx/atr/macd/hma/hurst_rs/hurst_rolling/log_return/close_vol_ratio/trend_label` | 构造 indicators / features / label_fn |
-| 可视化 | `viz.plot_close_colored / plot_kline_colored / plot_confusion / plot_feature_importance / plot_corr_heatmap` | 报告自动调用 |
+| 可视化 | `viz.plot_panels`（通用主图+副图）/ `plot_close_colored` / `plot_kline_colored` / `plot_confusion` / `plot_feature_importance` / `plot_corr_heatmap` | 报告自动调用，也可独立调用 |
 | 结果 | 报告 md + 着色 close/K线 + 混淆矩阵 + 特征重要性 + 相关性 | 写入 output_dir |
 
 ## Output Contract

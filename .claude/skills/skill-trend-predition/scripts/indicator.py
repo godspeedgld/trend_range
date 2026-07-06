@@ -3,7 +3,7 @@
 纯计算模块（输入 OHLCV Series/DataFrame，输出对齐的 pd.Series）。
 包含：ATR / ADX / Hurst(R-S) / MACD / HMA / 对数收益 / close-vol 比 / 前瞻 3 分类趋势标签。
 
-Wilder 平滑统一用 ewm(alpha=1/n, adjust=False)（与 Wilder SMMA 等价的常用实现，warmup 后误差可忽略）。
+Wilder 平滑用标准 SMMA（首值 = 前 n 个连续有效值均值；之后 y[t]=y[t-1]·(n-1)/n + x[t]/n）。
 """
 
 from __future__ import annotations
@@ -40,28 +40,128 @@ def extract_ohlcv(df: pd.DataFrame) -> tuple[pd.Series, pd.Series, pd.Series, pd
 
 
 # ────────────────────────────────────────────────────────────
+# Wilder SMMA（标准种子）
+# ────────────────────────────────────────────────────────────
+def _wilder_smma(x: pd.Series, n: int) -> pd.Series:
+    """Wilder 平滑移动平均（SMMA）。
+
+    首个值 = 前 n 个连续有效值的均值；之后 y[t] = y[t-1]·(n-1)/n + x[t]/n。
+    前导 NaN 自动跳过；输出对齐原 index（warmup 区为 NaN，符合 Wilder 定义）。
+    """
+    x = pd.Series(x).astype(float)
+    out = pd.Series(np.nan, index=x.index, dtype=float)
+    a = x.to_numpy()
+    nv = len(a)
+    start = None
+    for i in range(nv - n + 1):  # 第一个长度为 n 的全有效窗口
+        if not np.isnan(a[i:i + n]).any():
+            start = i
+            break
+    if start is None:
+        return out
+    prev = float(a[start:start + n].mean())
+    out.iloc[start + n - 1] = prev
+    for t in range(start + n, nv):
+        v = a[t]
+        if np.isnan(v):
+            continue
+        prev = prev * (n - 1) / n + v / n
+        out.iloc[t] = prev
+    return out
+
+
+# ────────────────────────────────────────────────────────────
 # ATR / ADX
 # ────────────────────────────────────────────────────────────
 def atr(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> pd.Series:
-    """Wilder ATR。"""
+    """Wilder ATR（= TR 的 SMMA）。"""
     pc = close.shift()
     tr = pd.concat([(high - low), (high - pc).abs(), (low - pc).abs()], axis=1).max(axis=1)
-    return tr.ewm(alpha=1 / n, adjust=False).mean()
+    return _wilder_smma(tr, n)
 
 
-def adx(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> pd.Series:
-    """Wilder ADX（趋势强度，>25 通常视为有趋势）。"""
+def _di_dx(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14, smooth=None):
+    """ADX 内部：用 `smooth(series, n)` 平滑 DM/TR 得到 DI，返回 (plus_di, minus_di, dx)。
+
+    smooth 默认 _wilder_smma（标准）；可传 hma 做低延迟变体。
+    """
+    if smooth is None:
+        smooth = _wilder_smma
     up = high.diff()
     down = -low.diff()
     plus_dm = (((up > down) & (up > 0)) * up).clip(lower=0.0)
     minus_dm = (((down > up) & (down > 0)) * down).clip(lower=0.0)
     tr = pd.concat([(high - low), (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
-    atr_ = tr.ewm(alpha=1 / n, adjust=False).mean().replace(0, np.nan)
-    plus_di = 100 * plus_dm.ewm(alpha=1 / n, adjust=False).mean() / atr_
-    minus_di = 100 * minus_dm.ewm(alpha=1 / n, adjust=False).mean() / atr_
-    dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan))
-    dx = dx.replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    return dx.ewm(alpha=1 / n, adjust=False).mean()
+    tr_n = smooth(tr, n)
+    plus_di = 100 * smooth(plus_dm, n) / tr_n.replace(0, np.nan)
+    minus_di = 100 * smooth(minus_dm, n) / tr_n.replace(0, np.nan)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    dx = dx.replace([np.inf, -np.inf], np.nan)
+    return plus_di, minus_di, dx
+
+
+def _adx_parts(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14):
+    """ADX 内部：返回 (adx, plus_di, minus_di)。ADX = Wilder SMMA(dx)。"""
+    plus_di, minus_di, dx = _di_dx(high, low, close, n)
+    return _wilder_smma(dx, n), plus_di, minus_di
+
+
+def adx(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> pd.Series:
+    """Wilder ADX（趋势强度，>25 通常视为有趋势）。warmup 区（约前 2n 根）为 NaN。"""
+    return _adx_parts(high, low, close, n)[0]
+
+
+def adx_components(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14):
+    """返回 (adx, plus_di, minus_di)，便于副图同时画 ADX + DI+ / DI−。"""
+    return _adx_parts(high, low, close, n)
+
+
+def adx_hma(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> pd.Series:
+    """低延迟 ADX：DX→ADX 的 Wilder SMMA 改为 HMA；DI+/DI− 保持标准 Wilder SMMA。
+
+    为何 DI 不也用 HMA：DI = 100·DM_n/TR_n 是**比率**，需 DM_n/TR_n 非负。HMA 含
+    `2·WMA(n/2)−WMA(n)` 外推减法，对稀疏的 DM（多 0 带尖峰）会产出**负值**，使 DI/DX 失效
+    （实测全 HMA 版与标准 ADX corr≈0.09、ADX>25 占比畸高至 85%）。故 DM/TR 平滑必须用
+    正性保持的 Wilder SMMA；HMA 只作用于稠密有界的 DX∈[0,100]。
+    """
+    _, _, dx = _di_dx(high, low, close, n)  # DI 走标准 Wilder
+    return hma(dx, n)
+
+
+def adx_hma_components(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14):
+    """返回 (adx_hma, plus_di, minus_di)；ADX=HMA(DX)，DI 标准 Wilder。"""
+    plus_di, minus_di, dx = _di_dx(high, low, close, n)
+    return hma(dx, n), plus_di, minus_di
+
+
+def adx_diff_hma(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14) -> pd.Series:
+    """方向性低延迟趋势强度（带符号）：HMA 平滑 (DI+ − DI−)。
+
+    与标准 ADX 的区别：
+      ① 不用 |DI+−DI−|/(DI++DI−) 比值，而用**原始差值** DI+−DI−（幅度更陡、未归一）；
+      ② **保留方向符号**：>0 多头主导、<0 空头主导、绝对值=强度；
+      ③ HMA 平滑，低延迟。
+    DI+−DI− 稠密有界（约 [−100,100]），HMA 可安全作用（与稀疏的 DM 不同，不会因外推失效）。
+    """
+    plus_di, minus_di, _ = _di_dx(high, low, close, n)
+    return hma(plus_di - minus_di, n)
+
+
+def adx_diff_hma_components(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 14):
+    """返回 (adx_diff_hma, plus_di, minus_di)。"""
+    plus_di, minus_di, _ = _di_dx(high, low, close, n)
+    return hma(plus_di - minus_di, n), plus_di, minus_di
+
+
+def kdj(high: pd.Series, low: pd.Series, close: pd.Series, n: int = 9, m1: int = 3, m2: int = 3):
+    """KDJ：RSV=(C−low_n)/(high_n−low_n)·100；K=SMA(RSV,m1)；D=SMA(K,m2)；J=3K−2D。返回 (K,D,J)。"""
+    low_n = low.rolling(n).min()
+    high_n = high.rolling(n).max()
+    rsv = (close - low_n) / (high_n - low_n).replace(0, np.nan) * 100
+    k = rsv.ewm(alpha=1 / m1, adjust=False).mean()
+    d = k.ewm(alpha=1 / m2, adjust=False).mean()
+    j = 3 * k - 2 * d
+    return k, d, j
 
 
 # ────────────────────────────────────────────────────────────
@@ -173,6 +273,12 @@ __all__ = [
     "extract_ohlcv",
     "atr",
     "adx",
+    "adx_components",
+    "adx_hma",
+    "adx_hma_components",
+    "adx_diff_hma",
+    "adx_diff_hma_components",
+    "kdj",
     "hurst_rs",
     "hurst_rolling",
     "macd",
