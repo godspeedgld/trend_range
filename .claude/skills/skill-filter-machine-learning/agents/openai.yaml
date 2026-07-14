@@ -1,0 +1,11 @@
+name: filter-machine-learning
+description: 滤波/机器学习 skill 骨架，功能待定。
+trigger:
+  keywords: []
+instructions: |
+  骨架。功能待规划后补全触发词与流程。
+interface:
+  display_name: "filter-machine-learning"
+  short_description: "滤波/机器学习骨架"
+  default_prompt: ""
+references: []

@@ -3,7 +3,7 @@ name: trend-prediction
 description: Use when an agent needs to predict trend vs range regime on OHLCV price data.
   Provides indicator / decision-tree / markov / deep-learning flows. The agent picks the
   flow, translates the user's natural-language rule into code (indicators, rule, features,
-  label), then calls a template. Built-in: ADX/Hurst/MACD/HMA library, RandomForest+XGBoost
+  label), then calls a template. Ships with ADX/Hurst/MACD/HMA library, RandomForest+XGBoost
   walk-forward, scaling, correlation filter, confusion/precision/recall, colored close/kline.
 quantSkills:
   organization: https://github.com/quantskills
