@@ -1,15 +1,14 @@
-"""自适应卡尔曼滤波（纯 numpy）—— 二阶(2态)与三阶(3态)，Myers-Tapley 滑动窗口噪声自适应。
+"""自适应卡尔曼滤波（纯 numpy）—— AdaptiveKalmanFilter 类。
 
-模型族（F/H/G 时不变，噪声 Q/R 自适应）：
-  二阶 kalman_filter_adaptive_2：状态 [level, velocity]            （一阶 Taylor：价格+速度）
-  三阶 kalman_filter_adaptive_3：状态 [level, velocity, accel]     （二阶 Taylor：价格+速度+加速度）
+F/H/G 时不变；Q/R 由 Myers-Tapley 滑动窗口自适应；Joseph 形式协方差更新（保 PSD）；
+warmup 门控；Q 对称化 + jitter 防奇异。默认 3 阶（dim=3，状态 [level, velocity, accel]）。
 
-噪声自适应（Myers-Tapley，长度 win 的滑动窗口；二阶/三阶方法相同，只是维数）：
-    新息 ν_t = z_t − H·x⁻_t                       → R = Var_win(ν)        (标量)
-    过程噪声样本 q_t = x⁺_t − F·x⁺_{t-1}，
-        qq_i = q_t[i] / g_i                       → Q = Cov_win(qq)       (n×n)
+两种模式：
+  批量 fit(series)  —— 整段序列滚动估计，返回每点 DataFrame（回测/训练）。
+  流量 update(z)    —— 逐个最新价更新，类持有状态，返回当步 dict（实盘）。
 
-每步：predict → 新息 → 自适应 Q,R → 增益 → 更新，逐点输出各状态 + R + Q。
+输出字段：level, velocity[, acceleration], predict_value(下一时刻预测), innov(新息), S(新息协方差)
+         另含 R, q11..（内部噪声，便于诊断）。
 依赖：numpy、pandas。
 """
 
@@ -22,137 +21,155 @@ import numpy as np
 import pandas as pd
 
 
-# ════════════════════════════════════════════════════════════
-# 二阶（2 态：[level, velocity]）
-# ════════════════════════════════════════════════════════════
-def kalman_filter_adaptive_2(
-    series: pd.Series,
-    win: int,
-    *,
-    g1: float = 1.0,
-    g2: float = 1.0,
-    dt: float = 1.0,
-    r_min: Optional[float] = None,
-    p0_scale: float = 10.0,
-    q_init_scale: float = 1e-3,
-) -> pd.DataFrame:
-    """二阶自适应卡尔曼：状态 [level, velocity]，diag(g1,g2) 噪声分布。
-
-    Returns: DataFrame[level, velocity, R, q11, q12, q22]（index 对齐输入）。
-    """
-    return _run(series, win, dim=2, gs=(g1, g2), dt=dt, r_min=r_min,
-                p0_scale=p0_scale, q_init_scale=q_init_scale)
-
-
-# ════════════════════════════════════════════════════════════
-# 三阶（3 态：[level, velocity, accel]）
-# ════════════════════════════════════════════════════════════
-def kalman_filter_adaptive_3(
-    series: pd.Series,
-    win: int,
-    *,
-    g1: float = 1.0,
-    g2: float = 1.0,
-    g3: float = 1.0,
-    dt: float = 1.0,
-    r_min: Optional[float] = None,
-    p0_scale: float = 10.0,
-    q_init_scale: float = 1e-3,
-) -> pd.DataFrame:
-    """三阶自适应卡尔曼：状态 [level, velocity, accel]，diag(g1,g2,g3) 噪声分布。
-
-    模型（匀加速）：level_k=level+vel·dt+½·acc·dt²；vel_k=vel+acc·dt；acc_k=acc。
-    二阶 Taylor 预测：p(t+h)=level+vel·h·dt+½·acc·(h·dt)²。
-
-    Returns: DataFrame[level, velocity, acceleration, R, q11,q12,q13,q22,q23,q33]。
-    """
-    return _run(series, win, dim=3, gs=(g1, g2, g3), dt=dt, r_min=r_min,
-                p0_scale=p0_scale, q_init_scale=q_init_scale)
-
-
-# ════════════════════════════════════════════════════════════
-# 通用实现（dim=2 或 3）
-# ════════════════════════════════════════════════════════════
 def _F(dt: float, dim: int) -> np.ndarray:
     """状态转移矩阵（运动学积分）。"""
     if dim == 2:
         return np.array([[1.0, dt], [0.0, 1.0]])
-    # dim == 3：匀加速，含 ½·acc·dt²
     return np.array([[1.0, dt, 0.5 * dt * dt],
                      [0.0, 1.0, dt],
                      [0.0, 0.0, 1.0]])
 
 
-def _run(series, win, *, dim, gs, dt, r_min, p0_scale, q_init_scale) -> pd.DataFrame:
-    s = pd.Series(series).astype(float).dropna()
-    z = s.to_numpy(dtype=float)
-    n = len(z)
-    state_names = ["level", "velocity"] if dim == 2 else ["level", "velocity", "acceleration"]
-    qcols = [f"q{i+1}{j+1}" for i in range(dim) for j in range(i, dim)]  # 上三角（含对角）
-    cols = state_names + ["R"] + qcols
-    if n == 0:
-        return pd.DataFrame({c: pd.Series(dtype=float) for c in cols})
+class AdaptiveKalmanFilter:
+    """自适应卡尔曼滤波（F/H/G 时不变，Q/R 滑窗 Myers-Tapley 自适应）。
 
-    F = _F(dt, dim)
-    H = np.zeros((1, dim)); H[0, 0] = 1.0                       # 只观测 level
-    gs = np.array(gs[:dim], dtype=float)
-    gs = np.where(np.abs(gs) > 1e-12, gs, 1e-12)                # 防 0 除
-    G = np.diag(gs)
-    I = np.eye(dim)
+    两种使用模式：
+      批量：kf.fit(series) → DataFrame（每点 level/velocity/accel/predict_value/innov/S/...）
+      流量：kf = AdaptiveKalmanFilter(win=50); for p in live: out = kf.update(p)
+            （类持有 x/P/Q/R 与窗口，逐点更新；首次 update 用 init_var 或价格量级启发式初始化）
 
-    var0 = float(np.var(z)) or 1.0
-    rmin = r_min if r_min is not None else max(var0 * 1e-8, 1e-12)
-    win = max(int(win), 3)
-    warmup = min(win // 2, 20)   # 噪声自适应启用门槛（窗口半满，至多 20）
+    predict_value = 下一时刻价格预测 (H@F@x⁺)；innov = 本步新息 (z − H@x⁻)；S = 新息协方差。
+    """
 
-    x = np.zeros(dim); x[0] = z[0]                              # x⁺(0) = [z0, 0, 0...]
-    P = np.diag([var0 * p0_scale] * dim)
-    R = var0
-    Q = np.diag([var0 * q_init_scale] * dim)
+    def __init__(
+        self,
+        win: int = 50,
+        *,
+        dim: int = 3,
+        g=(1.0, 1.0, 1.0),
+        dt: float = 1.0,
+        r_min: Optional[float] = None,
+        p0_scale: float = 10.0,
+        q_init_scale: float = 1e-3,
+        init_var: Optional[float] = None,
+    ):
+        if dim not in (2, 3):
+            raise ValueError("dim must be 2 or 3")
+        self.dim = dim
+        self.win = max(int(win), 3)
+        self.dt = float(dt)
+        self.warmup = min(self.win // 2, 20)
+        self.F = _F(self.dt, dim)
+        self.H = np.zeros((1, dim)); self.H[0, 0] = 1.0
+        gs = np.array(g[:dim], dtype=float)
+        gs = np.where(np.abs(gs) > 1e-12, gs, 1e-12)
+        self.gs = gs
+        self.G = np.diag(gs)
+        self.I = np.eye(dim)
+        self.p0_scale = p0_scale
+        self.q_init_scale = q_init_scale
+        self.init_var = init_var
+        self._rmin = r_min
+        self._reset()
 
-    out = {c: np.full(n, np.nan) for c in cols}
-    innov_win = deque(maxlen=win)
-    q_win = deque(maxlen=win)
-    x_post = deque(maxlen=win)
+    # ── 状态容器 ──────────────────────────────────────────
+    def _reset(self) -> None:
+        self.x: Optional[np.ndarray] = None
+        self.P: Optional[np.ndarray] = None
+        self.Q: Optional[np.ndarray] = None
+        self.R: Optional[float] = None
+        self.var0: Optional[float] = None
+        self.rmin: Optional[float] = None
+        self.innov_win = deque(maxlen=self.win)
+        self.q_win = deque(maxlen=self.win)
+        self.x_post = deque(maxlen=self.win)
+        self.t = 0
+        self._initialized = False
 
-    for t in range(n):
-        if t > 0:                                                # predict
-            x = F @ x
-            P = F @ P @ F.T + G @ Q @ G.T
-        nu = z[t] - (H @ x)[0]                                   # 新息
-        innov_win.append(nu)
-        if len(innov_win) > warmup:                              # 自适应 R（warmup 后启用）
-            R = max(float(np.var(np.array(innov_win), ddof=1)), rmin)
-        S = (H @ P @ H.T)[0, 0] + R
-        K = (P @ H.T).ravel() / S
-        x = x + K * nu                                           # update
-        KH = np.outer(K, H.ravel())                              # Joseph 形式协方差更新（数值稳定、保 PSD）
-        P = (I - KH) @ P @ (I - KH).T + np.outer(K, K) * R
-        x_post.append(x.copy())
-        if len(x_post) >= 2:                                     # 过程噪声样本（与 x_post 同步）
-            qv = x_post[-1] - F @ x_post[-2]
-            q_win.append(qv / gs)
-        if len(q_win) > warmup:                                  # 自适应 Q（warmup 后；对称化+jitter 防奇异）
-            Qc = np.cov(np.array(q_win).T, ddof=1)
-            if Qc.shape == (dim, dim) and np.all(np.isfinite(Qc)):
-                Q = (Qc + Qc.T) / 2.0 + np.eye(dim) * 1e-8
-        # 输出
-        for i, name in enumerate(state_names):
-            out[name][t] = x[i]
-        out["R"][t] = R
-        k = 0
-        for i in range(dim):                                     # Q 上三角（含对角）
-            for j in range(i, dim):
-                out[qcols[k]][t] = Q[i, j]
-                k += 1
+    @property
+    def state_names(self) -> list[str]:
+        return ["level", "velocity"] if self.dim == 2 else ["level", "velocity", "acceleration"]
 
-    return pd.DataFrame(out, index=s.index)
+    def _init_state(self, z0: float, var0: float) -> None:
+        self.var0 = var0
+        self.rmin = self._rmin if self._rmin is not None else max(var0 * 1e-8, 1e-12)
+        self.x = np.zeros(self.dim); self.x[0] = float(z0)
+        self.P = np.diag([var0 * self.p0_scale] * self.dim)
+        self.R = var0
+        self.Q = np.diag([var0 * self.q_init_scale] * self.dim)
+        self._initialized = True
+
+    # ── 流量模式：处理一个新观测 ─────────────────────────
+    def update(self, z: float) -> dict:
+        """处理最新价 z，更新内部状态，返回当步估计 dict。
+
+        首次调用自动初始化（用 init_var 或价格量级启发式）；后续逐点滤波。
+        """
+        z = float(z)
+        if not self._initialized:
+            var0 = self.init_var if self.init_var is not None else max((z * 0.01) ** 2, 1e-6)
+            self._init_state(z, var0)
+            self.x_post.append(self.x.copy()); self.t += 1
+            return self._outputs(predict_value=z, innov=0.0, S=self.R)
+
+        # —— predict ——
+        xm = self.F @ self.x
+        Pm = self.F @ self.P @ self.F.T + self.G @ self.Q @ self.G.T
+        pred_now = (self.H @ xm)[0]                       # 本步对当前价的预测
+        innov = z - pred_now
+        self.innov_win.append(innov)
+        if len(self.innov_win) > self.warmup:             # 自适应 R（warmup 后）
+            self.R = max(float(np.var(np.array(self.innov_win), ddof=1)), self.rmin)
+        S = (self.H @ Pm @ self.H.T)[0, 0] + self.R
+
+        # —— 增益 + Joseph 更新 ——
+        K = (Pm @ self.H.T).ravel() / S
+        self.x = xm + K * innov
+        KH = np.outer(K, self.H.ravel())
+        self.P = (self.I - KH) @ Pm @ (self.I - KH).T + np.outer(K, K) * self.R
+        self.x_post.append(self.x.copy())
+
+        # —— 自适应 Q（warmup 后；对称化 + jitter 防奇异）——
+        if len(self.x_post) >= 2:
+            qv = self.x_post[-1] - self.F @ self.x_post[-2]
+            self.q_win.append(qv / self.gs)
+        if len(self.q_win) > self.warmup:
+            Qc = np.cov(np.array(self.q_win).T, ddof=1)
+            if Qc.shape == (self.dim, self.dim) and np.all(np.isfinite(Qc)):
+                self.Q = (Qc + Qc.T) / 2.0 + np.eye(self.dim) * 1e-8
+
+        self.t += 1
+        predict_value = (self.H @ (self.F @ self.x))[0]   # 下一时刻预测
+        return self._outputs(predict_value=float(predict_value), innov=float(innov), S=float(S))
+
+    def _outputs(self, predict_value: float, innov: float, S: float) -> dict:
+        d = {n: float(self.x[i]) for i, n in enumerate(self.state_names)}
+        d["predict_value"] = predict_value
+        d["innov"] = innov
+        d["S"] = S
+        d["R"] = float(self.R)
+        for i in range(self.dim):                          # Q 上三角（含对角）
+            for j in range(i, self.dim):
+                d[f"q{i+1}{j+1}"] = float(self.Q[i, j])
+        return d
+
+    # ── 批量模式：整段序列滚动估计 ───────────────────────
+    def fit(self, series) -> pd.DataFrame:
+        """对整段序列逐点 update，返回 DataFrame（index 对齐输入）。
+
+        每次调用重新初始化（_reset）。var0 默认用全序列方差；可用 init_var 覆盖。
+        """
+        s = pd.Series(series).astype(float).dropna()
+        self._reset()
+        if len(s) == 0:
+            return pd.DataFrame()
+        var0 = self.init_var if self.init_var is not None else (float(np.var(s.to_numpy())) or 1.0)
+        self._init_state(float(s.iloc[0]), var0)
+        self.x_post.append(self.x.copy()); self.t += 1
+        rows = [self._outputs(predict_value=float(s.iloc[0]), innov=0.0, S=self.R)]
+        for z in s.iloc[1:].to_numpy():
+            rows.append(self.update(z))
+        return pd.DataFrame(rows, index=s.index)
 
 
-# 兼容旧名（已弃用，建议用 kalman_filter_adaptive_2）
-def kalman_filter_adaptive(*args, **kwargs):
-    """已弃用别名 → kalman_filter_adaptive_2。"""
-    return kalman_filter_adaptive_2(*args, **kwargs)
-
-
-__all__ = ["kalman_filter_adaptive_2", "kalman_filter_adaptive_3", "kalman_filter_adaptive"]
+__all__ = ["AdaptiveKalmanFilter"]
