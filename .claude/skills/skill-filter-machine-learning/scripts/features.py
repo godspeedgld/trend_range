@@ -1,15 +1,15 @@
 """特征工程框架：DataContext / BaseFeature / FeatureRegistry / FeatureEngineer。
 
 设计：
-  - DataContext（不可变 frozen dataclass）：持有 close/open/high/low/volume；特征按需取，生成过程中不可改。
-  - BaseFeature（抽象基类）：每个特征一个子类，实现 compute(批量) 与 update(流式增量)。
-  - FeatureRegistry：name → 特征类 的注册表；按配置字符串动态实例化（如 "ma:30"、"macd:12,26,9"）。
-  - FeatureEngineer：根据 config 实例化一组特征；fit(ctx) 批量出 DataFrame；update(bar) 流式出 dict。
+  - DataContext（不可变 frozen dataclass）：OHLCV + 卡尔曼输出(innov/s/predict_value)；特征按需取。
+  - BaseFeature（抽象基类）：每个特征实现 _compute_raw(批量向量化) 与 _update_raw(流式增量)；
+    基类统一处理 ① warmup 掩码（前 warmup 根输出 NaN）② warmstart（compute 后回放喂齐流式状态，
+    使 fit()->update() 无缝续接）。
+  - FeatureRegistry：name → 特征类；按配置字符串动态实例化（"ma:30"、"macd:12,26,9"）。
+  - FeatureEngineer：fit(ctx) 批量 → DataFrame；update(bar) 流式 → dict。
 
-批量与流式：同一特征两套实现，数学一致（流式用增量递推；warmup 区可能与批量有微小差异，
-warmup 后一致）。特征可单输出（MA/EMA/RSI/ATR）或多输出（MACD → macd/signal/hist）。
-
-起步特征：MA / EMA / MACD / RSI / ATR。新增特征：继承 BaseFeature + @FeatureRegistry.register("name")。
+批量与流式数学一致（warmstart 保证状态一致；warmstart 后流式=批量尾部）。
+起步特征：MA / EMA / MACD / RSI / ATR。新增：@FeatureRegistry.register + 继承 BaseFeature。
 依赖：numpy、pandas。
 """
 
@@ -66,7 +66,7 @@ class FeatureRegistry:
 
     @classmethod
     def build(cls, spec) -> "BaseFeature":
-        """按 spec 实例化特征。spec: "name:p1,p2,..." 或 {"name":..,"params":[..]}。"""
+        """按 spec 实例化。spec: "name:p1,p2,..." 或 {"name":..,"params":[..]}。"""
         if isinstance(spec, str):
             name, _, p = spec.partition(":")
             name = name.strip()
@@ -92,9 +92,21 @@ def _num(x: str):
 # BaseFeature
 # ════════════════════════════════════════════════════════════
 class BaseFeature:
-    """特征基类。子类实现 compute(批量) 与 update(流式)；@FeatureRegistry.register 注册。"""
+    """特征基类。
+
+    子类实现：
+      _init_stream()   —— 初始化流式状态（缓冲/EMA 状态等）
+      _compute_raw(ctx) —— 批量向量化计算，返回 {col: pd.Series}（不做 warmup 掩码）
+      _update_raw(bar)  —— 流式增量一步，返回 {col: float}（不做 warmup 掩码；状态持续累积）
+    子类设置：
+      warmup           —— 前多少根输出 NaN（统一 warmup 策略）
+
+    基类统一处理：warmup 掩码（compute/update 前 warmup 根 → NaN）；
+    _warmstart(ctx) 在 compute 后回放整段，把流式状态喂齐 → fit() 后 update() 无缝续接。
+    """
     name: str = ""
     required: tuple = ("close",)
+    warmup: int = 0
 
     def __init__(self, *params):
         self.params = params
@@ -102,21 +114,51 @@ class BaseFeature:
         self.reset()
 
     def reset(self) -> None:
-        """重置流式状态（子类覆盖：super().reset() 后再加自己的状态）。"""
+        """重置：_n_seen 归零 + 子类 _init_stream。"""
         self._n_seen = 0
+        self._init_stream()
 
+    def _init_stream(self) -> None:
+        """子类覆盖：初始化流式缓冲/状态。"""
+        pass
+
+    # —— 批量 ——
     def compute(self, ctx: DataContext) -> dict:
+        out = self._compute_raw(ctx)
+        w = self.warmup
+        for k, s in out.items():                       # 统一 warmup 掩码
+            if isinstance(s, pd.Series) and w > 0:
+                s = s.copy(); s.iloc[:w] = np.nan; out[k] = s
+        self._warmstart(ctx)                            # 喂齐流式状态
+        return out
+
+    def _compute_raw(self, ctx: DataContext) -> dict:
         raise NotImplementedError
 
+    # —— 流式 ——
     def update(self, bar: dict) -> dict:
+        self._n_seen += 1
+        out = self._update_raw(bar)
+        if self._n_seen <= self.warmup:                 # 统一 warmup 掩码
+            return {k: np.nan for k in out}
+        return out
+
+    def _update_raw(self, bar: dict) -> dict:
         raise NotImplementedError
+
+    # —— warmstart：compute 后回放整段喂齐状态（默认实现；子类可覆盖为更高效的尾部种子）——
+    def _warmstart(self, ctx: DataContext) -> None:
+        self._n_seen = 0
+        self._init_stream()
+        n = len(ctx.close)
+        fields = {f: ctx.get(f).to_numpy() for f in self.required}
+        for i in range(n):
+            bar = {f: float(fields[f][i]) for f in self.required}
+            self._n_seen += 1
+            self._update_raw(bar)
 
     def columns(self) -> list[str]:
         return [self.tag]
-
-    # —— 小工具 ——
-    def _step(self):
-        self._n_seen += 1
 
 
 # ════════════════════════════════════════════════════════════
@@ -131,23 +173,24 @@ class MA(BaseFeature):
         self.n = int(n)
         super().__init__(n)
 
-    def reset(self):
-        super().reset()
+    def _init_stream(self):
         self._win = deque(maxlen=self.n)
         self._sum = 0.0
 
-    def compute(self, ctx):
+    @property
+    def warmup(self):
+        return self.n
+
+    def _compute_raw(self, ctx):
         return {self.tag: ctx.get("close").rolling(self.n).mean()}
 
-    def update(self, bar):
-        self._step()
+    def _update_raw(self, bar):
         c = float(bar["close"])
         if len(self._win) == self.n:
             self._sum -= self._win[0]
         self._win.append(c)
         self._sum += c
-        val = self._sum / len(self._win) if self._n_seen >= self.n else np.nan
-        return {self.tag: val}
+        return {self.tag: self._sum / len(self._win)}
 
 
 @FeatureRegistry.register("ema")
@@ -160,15 +203,17 @@ class EMA(BaseFeature):
         self.alpha = 2.0 / (n + 1)
         super().__init__(n)
 
-    def reset(self):
-        super().reset()
+    def _init_stream(self):
         self._prev = None
 
-    def compute(self, ctx):
+    @property
+    def warmup(self):
+        return self.n
+
+    def _compute_raw(self, ctx):
         return {self.tag: ctx.get("close").ewm(span=self.n, adjust=False).mean()}
 
-    def update(self, bar):
-        self._step()
+    def _update_raw(self, bar):
         c = float(bar["close"])
         self._prev = c if self._prev is None else self.alpha * c + (1 - self.alpha) * self._prev
         return {self.tag: self._prev}
@@ -184,14 +229,17 @@ class MACD(BaseFeature):
         self.af, self.as_, self.asig = 2 / (fast + 1), 2 / (slow + 1), 2 / (signal + 1)
         super().__init__(fast, slow, signal)
 
-    def reset(self):
-        super().reset()
+    def _init_stream(self):
         self._ef = self._es = self._sig = None
+
+    @property
+    def warmup(self):
+        return self.slow
 
     def columns(self):
         return [f"{self.tag}_macd", f"{self.tag}_signal", f"{self.tag}_hist"]
 
-    def compute(self, ctx):
+    def _compute_raw(self, ctx):
         c = ctx.get("close")
         ef = c.ewm(span=self.fast, adjust=False).mean()
         es = c.ewm(span=self.slow, adjust=False).mean()
@@ -199,8 +247,7 @@ class MACD(BaseFeature):
         sig = macd.ewm(span=self.signal, adjust=False).mean()
         return {f"{self.tag}_macd": macd, f"{self.tag}_signal": sig, f"{self.tag}_hist": macd - sig}
 
-    def update(self, bar):
-        self._step()
+    def _update_raw(self, bar):
         c = float(bar["close"])
         self._ef = c if self._ef is None else self.af * c + (1 - self.af) * self._ef
         self._es = c if self._es is None else self.as_ * c + (1 - self.as_) * self._es
@@ -219,12 +266,15 @@ class RSI(BaseFeature):
         self.a = 1.0 / n
         super().__init__(n)
 
-    def reset(self):
-        super().reset()
+    def _init_stream(self):
         self._prev_close = None
-        self._ag = self._al = None   # avg gain / avg loss
+        self._ag = self._al = None
 
-    def compute(self, ctx):
+    @property
+    def warmup(self):
+        return self.n
+
+    def _compute_raw(self, ctx):
         c = ctx.get("close")
         d = c.diff()
         gain = d.clip(lower=0).ewm(alpha=self.a, adjust=False).mean()
@@ -232,12 +282,11 @@ class RSI(BaseFeature):
         rs = gain / loss.replace(0, np.nan)
         return {self.tag: 100 - 100 / (1 + rs)}
 
-    def update(self, bar):
-        self._step()
+    def _update_raw(self, bar):
         c = float(bar["close"])
         if self._prev_close is None:
             self._prev_close = c
-            return {self.tag: np.nan}
+            return {self.tag: 0.0}
         ch = c - self._prev_close
         g = ch if ch > 0 else 0.0
         l = -ch if ch < 0 else 0.0
@@ -245,8 +294,7 @@ class RSI(BaseFeature):
         self._al = l if self._al is None else self._al + self.a * (l - self._al)
         self._prev_close = c
         rs = self._ag / self._al if self._al and self._al > 0 else np.inf
-        rsi = 100.0 if rs == np.inf else 100 - 100 / (1 + rs)
-        return {self.tag: rsi}
+        return {self.tag: (100.0 if rs == np.inf else 100 - 100 / (1 + rs))}
 
 
 @FeatureRegistry.register("atr")
@@ -259,27 +307,28 @@ class ATR(BaseFeature):
         self.a = 1.0 / n
         super().__init__(n)
 
-    def reset(self):
-        super().reset()
+    def _init_stream(self):
         self._prev_close = None
         self._atr = None
+
+    @property
+    def warmup(self):
+        return self.n
 
     @staticmethod
     def _tr(h, l, pc):
         return max(h - l, abs(h - pc), abs(l - pc))
 
-    def compute(self, ctx):
+    def _compute_raw(self, ctx):
         h, l, c = ctx.get("high"), ctx.get("low"), ctx.get("close")
         pc = c.shift()
         tr = pd.concat([(h - l), (h - pc).abs(), (l - pc).abs()], axis=1).max(axis=1)
         return {self.tag: tr.ewm(alpha=self.a, adjust=False).mean()}
 
-    def update(self, bar):
-        self._step()
+    def _update_raw(self, bar):
         h, l, c = float(bar["high"]), float(bar["low"]), float(bar["close"])
         if self._prev_close is None:
-            # 首点种子 = h−l（与批量 tr[0] 一致：max 跳过 NaN 前收盘）
-            self._atr = h - l
+            self._atr = h - l                       # 首点种子 = h−l（与批量 tr[0] 一致）
             self._prev_close = c
             return {self.tag: self._atr}
         tr = self._tr(h, l, self._prev_close)
@@ -296,8 +345,9 @@ class FeatureEngineer:
 
     用法：
       fe = FeatureEngineer(["ma:30", "macd:12,26,9", "rsi:14", "atr:14"])
-      df = fe.fit(ctx)               # 批量：DataFrame(所有特征列)
-      fe.reset(); fe.update(bar)     # 流式：dict(各特征当步值)
+      df = fe.fit(ctx)               # 批量：DataFrame(所有特征列)，fit 后状态已 warmstart
+      fe.update(bar)                 # 流式：dict(各特征当步值)，可接在 fit 之后无缝续推
+      fe.reset()                     # 重置（重新从 warmup 开始）
     """
 
     def __init__(self, config: list):
@@ -305,7 +355,10 @@ class FeatureEngineer:
         self.features = [FeatureRegistry.build(s) for s in self.config]
 
     def fit(self, ctx: DataContext) -> pd.DataFrame:
-        """批量：对 DataContext 跑每个特征 compute，合并为 DataFrame（index 对齐 close）。"""
+        """批量：对 DataContext 跑每个特征 compute，合并为 DataFrame（index 对齐 close）。
+
+        fit 后每个特征流式状态已 warmstart，可直接 update() 续推实盘。
+        """
         cols: dict = {}
         for f in self.features:
             cols.update(f.compute(ctx))
@@ -316,7 +369,7 @@ class FeatureEngineer:
             f.reset()
 
     def update(self, bar: dict) -> dict:
-        """流式：传入最新一根 bar(dict: close/high/low/open/volume)，返回各特征当步值 dict。"""
+        """流式：传入最新一根 bar(dict)，返回各特征当步值 dict。"""
         out: dict = {}
         for f in self.features:
             out.update(f.update(bar))
