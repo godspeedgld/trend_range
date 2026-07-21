@@ -55,7 +55,7 @@ class LSTMPredictor:
         lr: float = 1e-3,
         device: Optional[str] = None,
         use_amp: bool = True,
-        compile: bool = False,
+        use_compile: bool = False,
     ):
         self.lookback = lookback
         self.hidden = hidden
@@ -64,7 +64,7 @@ class LSTMPredictor:
         self.lr = lr
         self.device = device or ("cuda" if _cuda_available() else "cpu")
         self.use_amp = use_amp and self.device != "cpu"
-        self.compile = compile
+        self.use_compile = use_compile
         self.model = None
         self.optimizer = None
         self.criterion = None
@@ -110,7 +110,7 @@ class LSTMPredictor:
 
         self._enable_gpu_opt()
         self.model = _Net(self.n_features, self.hidden, self.num_layers, self.dropout).to(self.device)
-        if self.compile:
+        if self.use_compile:
             self.model = torch.compile(self.model, mode="reduce-overhead")
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
         self.criterion = nn.MSELoss()
@@ -141,28 +141,23 @@ class LSTMPredictor:
         """批量训练。返回 history {train_loss, val_loss}。"""
         import torch
 
-        X = pd.DataFrame(X).astype(float)
+        X = pd.DataFrame(X).astype(float) if not (isinstance(X, np.ndarray) and X.ndim == 1) else pd.DataFrame(X.reshape(1, -1)).astype(float)
         y = pd.Series(y).astype(float)
         mask = X.notna().all(axis=1) & y.notna()
         X = X[mask].to_numpy(dtype=np.float32)
         y = y[mask].to_numpy(dtype=np.float32)
         self.n_features = X.shape[1]
 
-        # 标准化：先拆分再分别标准化（防泄漏——train 用 train 统计量、val 用 val 统计量）
+        # 标准化：scaler fit 于训练段，apply 到全量（train+val 统一用 train 统计量，防泄漏）
         split_raw = int(len(X) * (1 - val_split))
-        Xtr_raw, Xval_raw = X[:split_raw], X[split_raw:]
-        tr_mean, tr_std = Xtr_raw.mean(axis=0), Xtr_raw.std(axis=0); tr_std[tr_std == 0] = 1.0
-        va_mean, va_std = Xval_raw.mean(axis=0), Xval_raw.std(axis=0); va_std[va_std == 0] = 1.0
-        Xs = np.concatenate([(Xtr_raw - tr_mean) / tr_std, (Xval_raw - va_mean) / va_std],
-                            axis=0).astype(np.float32)
-        # 保存 train 统计量作为 predict/update 的生产 scaler
-        self._scaler_mean = tr_mean.astype(np.float32)
-        self._scaler_std = tr_std.astype(np.float32)
+        self._scaler_mean = X[:split_raw].mean(axis=0).astype(np.float32)
+        self._scaler_std = X[:split_raw].std(axis=0).astype(np.float32)
+        self._scaler_std[self._scaler_std == 0] = 1.0
+        Xs = self._standardize(X)
 
         # 滑窗 + 直接建在 device
         seqs, targets = self._window(Xs, y)
-        n = len(seqs)
-        splt = int(n * (1 - val_split))
+        splt = max(0, split_raw - self.lookback + 1)   # 对齐原始 split（按 target 行号）
         Xtr = self._to_device(seqs[:splt])
         ytr = self._to_device(targets[:splt])
         Xval = self._to_device(seqs[splt:])
@@ -218,13 +213,20 @@ class LSTMPredictor:
         self.model.eval()
 
         # warmstart 流式缓冲（用 train scaler 标准化，与 predict/update 一致）
-        self._buf = deque(self._standardize(X[-self.lookback:]).tolist(), maxlen=self.lookback)
+        if len(X) >= self.lookback:
+            self._buf = deque(self._standardize(X[-self.lookback:]).tolist(), maxlen=self.lookback)
+        else:
+            self._buf = deque(maxlen=self.lookback)   # X 不足 lookback，留空缓冲
         return history
 
     # ── 批量预测 ──────────────────────────────────────────
     def predict(self, X) -> pd.Series:
         import torch
 
+        if self.model is None:
+            raise RuntimeError("LSTMPredictor.predict() 需先调 fit() 训练")
+        if isinstance(X, np.ndarray) and X.ndim == 1:
+            X = X.reshape(1, -1)
         X = pd.DataFrame(X).astype(float)
         idx = X.index
         X = X.to_numpy(dtype=np.float32)
@@ -242,6 +244,8 @@ class LSTMPredictor:
     def update(self, row) -> float:
         import torch
 
+        if self.model is None:
+            raise RuntimeError("LSTMPredictor.update() 需先调 fit() 训练")
         row = np.array(list(row.values()) if isinstance(row, dict) else row, dtype=np.float32)
         rs = self._standardize(row)
         self._buf.append(rs)
