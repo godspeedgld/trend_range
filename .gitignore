@@ -33,6 +33,9 @@ reports/
 output/
 *.log
 
+# ===== 实验脚本与产物（本地分析，勿提交）=====
+.claude/skills/skill-filter-machine-learning/experiments/
+
 # ===== IDE / OS =====
 .vscode/
 .idea/
