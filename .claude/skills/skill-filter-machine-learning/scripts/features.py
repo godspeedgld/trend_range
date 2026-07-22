@@ -337,6 +337,261 @@ class ATR(BaseFeature):
         return {self.tag: self._atr}
 
 
+@FeatureRegistry.register("log_ret")
+class LogReturn(BaseFeature):
+    """对数收益率 ln(close).diff()。"""
+    required = ("close",)
+    warmup = 1
+
+    def _init_stream(self):
+        self._prev = None
+
+    def _compute_raw(self, ctx):
+        return {self.tag: np.log(ctx.get("close")).diff()}
+
+    def _update_raw(self, bar):
+        c = float(bar["close"])
+        ret = np.log(c / self._prev) if self._prev and self._prev > 0 else 0.0
+        self._prev = c
+        return {self.tag: ret}
+
+
+@FeatureRegistry.register("vol")
+class Volatility(BaseFeature):
+    """滚动波动率（log return 的 n 周期标准差）。"""
+    required = ("close",)
+
+    def __init__(self, n: int):
+        self.n = int(n)
+        super().__init__(n)
+
+    @property
+    def warmup(self):
+        return self.n
+
+    def _init_stream(self):
+        self._buf = deque(maxlen=self.n)
+        self._prev = None
+
+    def _compute_raw(self, ctx):
+        ret = np.log(ctx.get("close")).diff()
+        return {self.tag: ret.rolling(self.n).std()}
+
+    def _update_raw(self, bar):
+        c = float(bar["close"])
+        r = np.log(c / self._prev) if self._prev and self._prev > 0 else 0.0
+        self._prev = c
+        self._buf.append(r)
+        v = float(np.std(list(self._buf), ddof=1)) if len(self._buf) >= 2 else 0.0
+        return {self.tag: v}
+
+
+@FeatureRegistry.register("kalman")
+class KalmanFeature(BaseFeature):
+    """卡尔曼滤波特征（多输出）。内部运行 AdaptiveKalmanFilter。
+
+    输出列：{tag}_level, {tag}_velocity[, {tag}_acceleration],
+            {tag}_predict_value, {tag}_innov, {tag}_S
+    config 示例："kalman:50,3"（win=50, dim=3）。
+    """
+    required = ("close",)
+
+    def __init__(self, win: int = 50, dim: int = 3):
+        self.win = int(win)
+        self.dim = int(dim)
+        super().__init__(win, dim)
+
+    @property
+    def warmup(self):
+        return 0   # Kalman 从首根输出（Q/R 自适应在内部 warmup 后生效）
+
+    def columns(self):
+        t = self.tag
+        cols = [f"{t}_level", f"{t}_velocity"]
+        if self.dim >= 3:
+            cols.append(f"{t}_acceleration")
+        cols += [f"{t}_predict_value", f"{t}_innov", f"{t}_S"]
+        return cols
+
+    def _init_stream(self):
+        from scripts.filter import AdaptiveKalmanFilter
+        self._kf = AdaptiveKalmanFilter(win=self.win, dim=self.dim)
+
+    def _compute_raw(self, ctx):
+        from scripts.filter import AdaptiveKalmanFilter
+        kf = AdaptiveKalmanFilter(win=self.win, dim=self.dim)
+        r = kf.fit(ctx.get("close"))
+        t = self.tag
+        out = {f"{t}_level": r["level"], f"{t}_velocity": r["velocity"],
+               f"{t}_predict_value": r["predict_value"], f"{t}_innov": r["innov"],
+               f"{t}_S": r["S"]}
+        if self.dim >= 3:
+            out[f"{t}_acceleration"] = r.get("acceleration")
+        return out
+
+    def _update_raw(self, bar):
+        r = self._kf.update(float(bar["close"]))
+        t = self.tag
+        out = {f"{t}_level": r["level"], f"{t}_velocity": r["velocity"],
+               f"{t}_predict_value": r["predict_value"], f"{t}_innov": r["innov"],
+               f"{t}_S": r["S"]}
+        if self.dim >= 3:
+            out[f"{t}_acceleration"] = r.get("acceleration", 0.0)
+        return out
+
+
+# ════════════════════════════════════════════════════════════
+# 收益率 / 量价 / 波动率 特征
+# ════════════════════════════════════════════════════════════
+@FeatureRegistry.register("log_ret_n")
+class LogReturnN(BaseFeature):
+    """N 日对数收益率 ln(close[t]/close[t-n])。"""
+    required = ("close",)
+
+    def __init__(self, n: int):
+        self.n = int(n)
+        super().__init__(n)
+
+    @property
+    def warmup(self):
+        return self.n
+
+    def _init_stream(self):
+        self._buf = deque(maxlen=self.n + 1)
+
+    def _compute_raw(self, ctx):
+        return {self.tag: np.log(ctx.get("close")).diff(self.n)}
+
+    def _update_raw(self, bar):
+        self._buf.append(float(bar["close"]))
+        if len(self._buf) <= self.n:
+            return {self.tag: 0.0}
+        return {self.tag: np.log(self._buf[-1] / self._buf[0])}
+
+
+@FeatureRegistry.register("vol_log_ret")
+class VolLogReturn(BaseFeature):
+    """成交量对数收益率 ln(vol[t]/vol[t-1])。"""
+    required = ("volume",)
+    warmup = 1
+
+    def _init_stream(self):
+        self._prev = None
+
+    def _compute_raw(self, ctx):
+        v = ctx.get("volume")
+        return {self.tag: np.log(v.replace(0, np.nan)).diff()}
+
+    def _update_raw(self, bar):
+        v = float(bar["volume"])
+        ret = np.log(v / self._prev) if self._prev and self._prev > 0 and v > 0 else 0.0
+        self._prev = v
+        return {self.tag: ret}
+
+
+@FeatureRegistry.register("vol_ratio")
+class VolRatio(BaseFeature):
+    """成交量相对均量比 = vol / ma(vol, n)。"""
+    required = ("volume",)
+
+    def __init__(self, n: int):
+        self.n = int(n)
+        super().__init__(n)
+
+    @property
+    def warmup(self):
+        return self.n
+
+    def _init_stream(self):
+        self._buf = deque(maxlen=self.n)
+        self._sum = 0.0
+
+    def _compute_raw(self, ctx):
+        v = ctx.get("volume")
+        ma = v.rolling(self.n).mean()
+        return {self.tag: v / ma.replace(0, np.nan)}
+
+    def _update_raw(self, bar):
+        v = float(bar["volume"])
+        if len(self._buf) == self.n:
+            self._sum -= self._buf[0]
+        self._buf.append(v)
+        self._sum += v
+        ma = self._sum / len(self._buf) if self._buf else 1.0
+        return {self.tag: v / ma if ma > 0 else 1.0}
+
+
+@FeatureRegistry.register("vwap_dev")
+class VWAPDeviation(BaseFeature):
+    """(close − VWAP_n) / close。VWAP_n = Σ(close·vol)/Σ(vol) 滚动 n 期。"""
+    required = ("close", "volume")
+
+    def __init__(self, n: int):
+        self.n = int(n)
+        super().__init__(n)
+
+    @property
+    def warmup(self):
+        return self.n
+
+    def _init_stream(self):
+        self._cv_buf = deque(maxlen=self.n)   # close*vol
+        self._v_buf = deque(maxlen=self.n)    # vol
+        self._cv_sum = 0.0
+        self._v_sum = 0.0
+
+    def _compute_raw(self, ctx):
+        c, v = ctx.get("close"), ctx.get("volume")
+        cv = c * v
+        vwap = cv.rolling(self.n).sum() / v.rolling(self.n).sum().replace(0, np.nan)
+        return {self.tag: (c - vwap) / c}
+
+    def _update_raw(self, bar):
+        c, v = float(bar["close"]), float(bar["volume"])
+        cv = c * v
+        if len(self._cv_buf) == self.n:
+            self._cv_sum -= self._cv_buf[0]
+            self._v_sum -= self._v_buf[0]
+        self._cv_buf.append(cv)
+        self._v_buf.append(v)
+        self._cv_sum += cv
+        self._v_sum += v
+        vwap = self._cv_sum / self._v_sum if self._v_sum > 0 else c
+        return {self.tag: (c - vwap) / c}
+
+
+@FeatureRegistry.register("range_pct")
+class RangePct(BaseFeature):
+    """日振幅百分比 = (high − low) / close。"""
+    required = ("high", "low", "close")
+    warmup = 0
+
+    def _compute_raw(self, ctx):
+        h, l, c = ctx.get("high"), ctx.get("low"), ctx.get("close")
+        return {self.tag: (h - l) / c}
+
+    def _update_raw(self, bar):
+        h, l, c = float(bar["high"]), float(bar["low"]), float(bar["close"])
+        return {self.tag: (h - l) / c if c > 0 else 0.0}
+
+
+@FeatureRegistry.register("close_pos")
+class ClosePosition(BaseFeature):
+    """收盘在日内区间的位置 = (close − low) / (high − low)。0=收最低，1=收最高。"""
+    required = ("high", "low", "close")
+    warmup = 0
+
+    def _compute_raw(self, ctx):
+        h, l, c = ctx.get("high"), ctx.get("low"), ctx.get("close")
+        rng = (h - l).replace(0, np.nan)
+        return {self.tag: (c - l) / rng}
+
+    def _update_raw(self, bar):
+        h, l, c = float(bar["high"]), float(bar["low"]), float(bar["close"])
+        rng = h - l
+        return {self.tag: (c - l) / rng if rng > 0 else 0.5}
+
+
 # ════════════════════════════════════════════════════════════
 # FeatureEngineer
 # ════════════════════════════════════════════════════════════

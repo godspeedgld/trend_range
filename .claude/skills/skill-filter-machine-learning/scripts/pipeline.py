@@ -1,14 +1,20 @@
 """Kalman + LSTM 管线 + 模型评估器。
 
+架构分层：
+  一次特征（FeatureEngineer）：log_ret / vol / kalman / MA / MACD / ... → 从 OHLCV + ctx 计算
+  二次特征（pipeline 直接拼）：std_innov / residual / ... → 从一次特征输出再计算
+  LSTM：X=特征, y=Kalman 残差 → k 折交叉验证滚动训练（expanding / rolling）
+
+交叉验证模式：
+  - expanding：训练集随 fold 递增（blocks[:fold]），测试集=下一 block。
+    适合数据量较少、希望充分利用历史数据的场景。
+  - rolling ：固定训练窗口 + 固定测试窗口，沿时间轴滑动。
+    适合数据量充足、希望避免过时数据干扰的场景。
+    参数 rolling_train_size / rolling_test_size 控制窗口大小（bar 数）。
+
 KalmanLSTMPipeliner：
-  卡尔曼做线性估计 → 特征工程（log_ret / vol_20 / std_innov）→ LSTM 估计非线性残差
-  → Kalman 预测 + LSTM 残差 = 最终预测。支持 k 折 expanding-window 滚动训练（严格无未来数据）。
-  批量 fit(data) → OOS 预测；流式 update(bar) → 一步推理。
-
-ModelEvaluator：
-  回归指标（MAE / MSE / RMSE / MAPE / R² / 方向准确度）+ plotly 可视化。
-
-依赖：numpy、pandas、torch（间接经 LSTMPredictor）。
+  批量 fit(data) → OOS 预测（k 折滚动）；流式 update(bar) → 一步推理。
+ModelEvaluator：回归指标 + 方向准确度 + plotly 可视化。
 """
 
 from __future__ import annotations
@@ -19,7 +25,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from scripts.filter import AdaptiveKalmanFilter
+from scripts.preprocess import Preprocessor
+from scripts.features import DataContext, FeatureEngineer
 from scripts.ml import LSTMPredictor
 
 
@@ -27,17 +34,14 @@ from scripts.ml import LSTMPredictor
 # KalmanLSTMPipeliner
 # ════════════════════════════════════════════════════════════
 class KalmanLSTMPipeliner:
-    """卡尔曼线性估计 + LSTM 非线性残差校正管线。
+    """Kalman(一次特征) + LSTM(非线性残差校正) 管线。
 
     流程：
-      1. AdaptiveKalmanFilter 在 close 上做线性估计（level/velocity/accel/predict_value/innov/S）。
-      2. 残差 = close[t+1] − predict_value[t]（Kalman 一步预测误差）。
-      3. 特征 = {log_ret, vol_20, std_innov}（均为 t 时刻已知量，无未来）。
-      4. k 折 expanding-window 滚动训练 LSTM：X=特征, y=残差。
-      5. 最终预测 = Kalman predict_value + LSTM 残差预测（OOS）。
-
-    批量 fit(data) → dict(oos_pred, oos_kalman, kf_result, fold_results)。
-    流式 update(bar) → dict(final, kalman_pred, lstm_residual, ...)。
+      1. FeatureEngineer 算一次特征（含 kalman → level/velocity/accel/predict_value/innov/S）。
+      2. pipeline 拼二次特征（std_innov = innov/√S 等）。
+      3. 残差 = close[t+1] − predict_value[t]（Kalman 一步预测误差）。
+      4. k 折交叉验证滚动训练 LSTM（expanding / rolling）：X=特征, y=残差。
+      5. 最终预测 = predict_value + LSTM 残差预测。
     """
 
     def __init__(
@@ -47,14 +51,22 @@ class KalmanLSTMPipeliner:
         lstm_lookback: int = 20,
         lstm_hidden: int = 64,
         lstm_layers: int = 2,
+        feature_config: Optional[list] = None,
         n_folds: int = 5,
         val_split: float = 0.2,
         lstm_epochs: int = 50,
         lstm_batch: int = 64,
         device: str = "cuda",
+        cv_mode: str = "rolling",
+        rolling_train_size: int = 504,
+        rolling_test_size: int = 84,
     ):
+        if cv_mode not in ("expanding", "rolling"):
+            raise ValueError(f"cv_mode 必须是 'expanding' 或 'rolling'，收到 '{cv_mode}'")
         self.kalman_win = kalman_win
         self.kalman_dim = kalman_dim
+        self.kf_tag = f"kalman_{kalman_win}_{kalman_dim}"
+        self.vol_tag = "vol_20"
         self.lstm_lookback = lstm_lookback
         self.lstm_hidden = lstm_hidden
         self.lstm_layers = lstm_layers
@@ -63,140 +75,201 @@ class KalmanLSTMPipeliner:
         self.lstm_epochs = lstm_epochs
         self.lstm_batch = lstm_batch
         self.device = device
+        self.cv_mode = cv_mode
+        self.rolling_train_size = rolling_train_size
+        self.rolling_test_size = rolling_test_size
 
-        self._kf: Optional[AdaptiveKalmanFilter] = None
+        # 一次特征配置（含 kalman）；用户可通过 feature_config 追加/覆盖
+        base_config = [
+            "log_ret", "log_ret_n:5", "log_ret_n:10",
+            "vol:20", "vol_log_ret", "vol_ratio:20", "vwap_dev:20",
+            "range_pct", "close_pos", "atr:14",
+            f"kalman:{kalman_win},{kalman_dim}",
+        ]
+        if feature_config:
+            base_config += list(feature_config)
+        self._fe = FeatureEngineer(base_config)
+        self._preprocessor = Preprocessor()
+
         self._lstm: Optional[LSTMPredictor] = None
-        self._prev_close: Optional[float] = None
-        self._ret_buf: deque = deque(maxlen=30)
+        # LSTM 输入列 = 一次特征（二次特征 std_innov 在 fit 里追加）
+        self._feature_cols = [
+            "log_ret", "log_ret_n_5", "log_ret_n_10",
+            "vol_20", "vol_log_ret", "vol_ratio_20", "vwap_dev_20",
+            "range_pct", "close_pos",
+        ]
+
+    # ── 交叉验证 fold 生成 ────────────────────────────────
+    def _build_folds(self, n: int) -> list[tuple[np.ndarray, np.ndarray]]:
+        """根据 cv_mode 生成 (train_idx, test_idx) 列表。
+
+        expanding: 训练集随 fold 递增（blocks[:fold]），测试集 = 下一 block。
+        rolling  : 固定训练窗口 + 固定测试窗口，沿时间轴从前向后滑动。
+        """
+        indices = np.arange(n)
+        folds: list[tuple[np.ndarray, np.ndarray]] = []
+
+        if self.cv_mode == "expanding":
+            blocks = np.array_split(indices, self.n_folds + 1)
+            for fold in range(1, self.n_folds + 1):
+                train_idx = np.concatenate(blocks[:fold])
+                test_idx = blocks[fold]
+                folds.append((train_idx, test_idx))
+
+        elif self.cv_mode == "rolling":
+            train_size = self.rolling_train_size
+            test_size = self.rolling_test_size
+            required = train_size + test_size
+            if n < required:
+                raise ValueError(
+                    f"数据量({n})不足: rolling_train_size({train_size}) "
+                    f"+ rolling_test_size({test_size}) = {required}"
+                )
+            start = 0
+            while start + required <= n:
+                train_end = start + train_size
+                test_end = train_end + test_size
+                train_idx = indices[start:train_end]
+                test_idx = indices[train_end:test_end]
+                folds.append((train_idx, test_idx))
+                start += test_size  # 按测试窗口步长滑动
+                if self.n_folds and len(folds) >= self.n_folds:
+                    break
+
+        return folds
+
+    # ── 二次特征 ──────────────────────────────────────────
+    def _add_secondary(self, features: pd.DataFrame, close: pd.Series) -> pd.DataFrame:
+        """在一次特征基础上拼二次特征（std_innov 等）。"""
+        kf = self.kf_tag
+        innov = features[f"{kf}_innov"]
+        S = features[f"{kf}_S"].clip(lower=1e-12)
+        features["std_innov"] = innov / np.sqrt(S)
+        return features
+
+    @staticmethod
+    def _build_ctx(data: pd.DataFrame) -> DataContext:
+        """从 OHLCV DataFrame 构建 DataContext。"""
+        kwargs = {"close": data["close"].astype(float)}
+        for col, attr in [("open", "open"), ("high", "high"), ("low", "low"), ("vol", "volume"), ("volume", "volume")]:
+            if col in data.columns:
+                kwargs[attr] = data[col].astype(float)
+        return DataContext(**kwargs)
 
     # ── 批量：k 折滚动训练 ────────────────────────────────
     def fit(self, data: pd.DataFrame, verbose: bool = True) -> dict:
-        """批量管线。data 含 close（必需）+ 可选 OHLCV。返回 OOS 预测 + 各折详情。"""
-        close = pd.Series(data["close"]).astype(float).dropna()
+        """批量管线。返回 OOS 预测 + 各折详情。"""
+        # 0. 数据预处理（排序 + 缺失值 + 去重）
+        data = self._preprocessor.preprocess(data)
+        close = data["close"].astype(float)
+        ctx = self._build_ctx(data)
 
-        # 1. 卡尔曼线性估计
-        self._kf = AdaptiveKalmanFilter(win=self.kalman_win, dim=self.kalman_dim)
-        kf_result = self._kf.fit(close)
+        # 1. 一次特征（FeatureEngineer，含 Kalman）
+        primary = self._fe.fit(ctx)
 
-        # 2. 残差（Kalman 一步预测误差）= close[t+1] − predict_value[t]
-        #    作为 LSTM 的训练目标：y[t] 对齐特征 X[t]
-        residual = close.shift(-1) - kf_result["predict_value"]  # y[t] = close[t+1] − pred_val[t]
+        # 2. 二次特征（pipeline 直接拼）
+        features = self._add_secondary(primary, close)
 
-        # 3. 特征（t 时刻已知量）
-        log_ret = np.log(close).diff()
-        vol_20 = log_ret.rolling(20).std()
-        std_innov = kf_result["innov"] / np.sqrt(kf_result["S"].clip(lower=1e-12))
-        X = pd.DataFrame({"log_ret": log_ret, "vol_20": vol_20, "std_innov": std_innov},
-                         index=close.index)
+        # 3. 残差 = close[t+1] − predict_value[t]
+        predict_value = features[f"{self.kf_tag}_predict_value"]
+        residual = close.shift(-1) - predict_value
+
+        # 4. X / y 对齐
+        x_cols = self._feature_cols + ["std_innov"]
+        X = features[x_cols].copy()
         y = residual
-
-        # 去除 NaN 行（特征 warmup + residual shift 末尾）
         valid = X.notna().all(axis=1) & y.notna()
-        X = X[valid]
-        y = y[valid]
+        X, y = X[valid], y[valid]
         n = len(X)
         if n < 100:
-            raise ValueError(f"有效数据太少({n}行)，无法 k 折训练")
+            raise ValueError(f"有效数据太少({n}行)")
 
-        # 4. k 折 expanding-window 划分
-        indices = np.arange(n)
-        blocks = np.array_split(indices, self.n_folds + 1)
+        # 5. k 折交叉验证 (expanding / rolling)
+        folds = self._build_folds(n)
+        if verbose:
+            mode_desc = (f"expanding (folds={len(folds)})" if self.cv_mode == "expanding"
+                         else f"rolling (train={self.rolling_train_size}, test={self.rolling_test_size}, folds={len(folds)})")
+            print(f"[cv_mode={self.cv_mode}] {mode_desc}, n_samples={n}")
 
-        oos_lstm_preds = []      # 每折 OOS LSTM 残差预测
-        oos_indices = []          # 对应的原始 index
-        fold_results = []
-
-        for fold in range(1, self.n_folds + 1):
-            train_idx = np.concatenate(blocks[:fold])
-            test_idx = blocks[fold]
+        oos_preds, oos_indices, fold_results = [], [], []
+        for fold_idx, (train_idx, test_idx) in enumerate(folds):
+            fold_num = fold_idx + 1
             if len(test_idx) < self.lstm_lookback + 1:
                 continue
 
             X_tr, y_tr = X.iloc[train_idx], y.iloc[train_idx]
             X_te = X.iloc[test_idx]
 
-            # 每折独立训练 LSTM
             lstm = LSTMPredictor(
                 lookback=self.lstm_lookback, hidden=self.lstm_hidden,
                 num_layers=self.lstm_layers, device=self.device,
             )
-            lstm.fit(
-                X_tr, y_tr,
-                val_split=self.val_split, epochs=self.lstm_epochs,
-                batch_size=self.lstm_batch, patience=10, verbose=verbose,
-            )
+            lstm.fit(X_tr, y_tr, val_split=self.val_split,
+                     epochs=self.lstm_epochs, batch_size=self.lstm_batch,
+                     patience=10, verbose=verbose)
 
-            # OOS 预测
             pred = lstm.predict(X_te)
-            oos_lstm_preds.append(pred)
+            oos_preds.append(pred)
             oos_indices.append(X_te.index)
 
-            # 真实残差（test 块上的 actual residual）
             y_te = y.iloc[test_idx]
             corr = pred.corr(y_te) if pred.notna().any() else float("nan")
             fold_results.append({
-                "fold": fold,
-                "train_size": int(len(train_idx)),
-                "test_size": int(len(test_idx)),
-                "test_start": str(X_te.index[0].date()) if hasattr(X_te.index[0], "date") else str(X_te.index[0]),
-                "test_end": str(X_te.index[-1].date()) if hasattr(X_te.index[-1], "date") else str(X_te.index[-1]),
+                "fold": fold_num, "train_size": int(len(train_idx)), "test_size": int(len(test_idx)),
                 "residual_corr": float(corr) if np.isfinite(corr) else None,
             })
-            self._lstm = lstm  # 保留最后一折模型供流式
-
+            self._lstm = lstm
             if verbose:
-                print(f"  fold {fold}: train={len(train_idx)} test={len(test_idx)} "
-                      f"resid_corr={corr:.3f}")
+                print(f"  fold {fold_num}: train={len(train_idx)} test={len(test_idx)} corr={corr:.3f}")
 
-        # 5. 聚合 OOS
-        oos_lstm_residual = pd.concat(oos_lstm_preds).sort_index() if oos_lstm_preds else pd.Series(dtype=float)
-        oos_idx = oos_lstm_residual.index
-        oos_kalman_pred = kf_result["predict_value"].reindex(oos_idx)       # Kalman 预测
-        oos_final = oos_kalman_pred + oos_lstm_residual                      # 最终预测
-        oos_actual = close.shift(-1).reindex(oos_idx)                        # 实际 close[t+1]
-
-        # warmstart 流式状态
-        self._prev_close = float(close.iloc[-1])
-        self._ret_buf = deque(log_ret.iloc[-30:].dropna().tolist(), maxlen=30)
+        # 6. 聚合 OOS
+        oos_lstm = pd.concat(oos_preds).sort_index() if oos_preds else pd.Series(dtype=float)
+        oos_idx = oos_lstm.index
+        oos_kalman = predict_value.reindex(oos_idx)
+        oos_final = oos_kalman + oos_lstm
+        oos_actual = close.shift(-1).reindex(oos_idx)
 
         return {
-            "oos_final": oos_final,            # Kalman + LSTM（最终预测，预测 close[t+1]）
-            "oos_kalman": oos_kalman_pred,      # Kalman 单独预测
-            "oos_lstm_residual": oos_lstm_residual,
-            "oos_actual": oos_actual,           # 真实 close[t+1]
-            "kf_result": kf_result,
+            "oos_final": oos_final,
+            "oos_kalman": oos_kalman,
+            "oos_lstm_residual": oos_lstm,
+            "oos_actual": oos_actual,
+            "features": features,
             "fold_results": fold_results,
         }
 
     # ── 流式：一步推理 ────────────────────────────────────
     def update(self, bar: dict) -> dict:
         """流式推理。bar = {close, ...}。返回最终预测 + 各组件。"""
-        if self._kf is None or self._lstm is None:
+        if self._lstm is None:
             raise RuntimeError("KalmanLSTMPipeliner.update() 需先调 fit()")
 
-        close = float(bar["close"])
-        kf_out = self._kf.update(close)
+        # 1. 一次特征（FE 含 Kalman）
+        fe_out = self._fe.update(bar)
 
-        # 特征
-        log_ret = np.log(close) - np.log(self._prev_close) if self._prev_close and self._prev_close > 0 else 0.0
-        self._prev_close = close
-        self._ret_buf.append(log_ret)
-        vol_20 = float(np.std(list(self._ret_buf)[-20:], ddof=1)) if len(self._ret_buf) >= 20 else float("nan")
-        std_innov = kf_out["innov"] / np.sqrt(max(kf_out["S"], 1e-12))
-        feat_row = {"log_ret": log_ret, "vol_20": vol_20, "std_innov": std_innov}
+        # 2. 二次特征
+        kf = self.kf_tag
+        innov = fe_out[f"{kf}_innov"]
+        S = max(fe_out[f"{kf}_S"], 1e-12)
+        std_innov = innov / np.sqrt(S)
 
+        # 3. LSTM 预测残差
+        feat_row = {col: fe_out[col] for col in self._feature_cols}
+        feat_row["std_innov"] = std_innov
         lstm_resid = self._lstm.update(feat_row)
 
-        final = kf_out["predict_value"] + lstm_resid if np.isfinite(lstm_resid) else kf_out["predict_value"]
+        # 4. 最终 = Kalman 预测 + LSTM 残差
+        kalman_pred = fe_out[f"{kf}_predict_value"]
+        final = kalman_pred + lstm_resid if np.isfinite(lstm_resid) else kalman_pred
         return {
-            "final": final,               # 最终预测（预测下一根 close）
-            "kalman_pred": kf_out["predict_value"],
+            "final": final,
+            "kalman_pred": kalman_pred,
             "lstm_residual": lstm_resid,
-            "level": kf_out["level"],
-            "velocity": kf_out["velocity"],
-            "acceleration": kf_out.get("acceleration"),
-            "innov": kf_out["innov"],
-            "S": kf_out["S"],
+            "level": fe_out[f"{kf}_level"],
+            "velocity": fe_out[f"{kf}_velocity"],
+            "acceleration": fe_out.get(f"{kf}_acceleration"),
+            "innov": innov,
+            "S": fe_out[f"{kf}_S"],
         }
 
 
@@ -207,7 +280,6 @@ class ModelEvaluator:
     """模型评估器：回归指标 + 方向准确度 + plotly 可视化。"""
 
     def evaluate(self, y_true: pd.Series, y_pred: pd.Series) -> dict:
-        """回归指标：MAE, MSE, RMSE, MAPE, R²。"""
         valid = y_true.notna() & y_pred.notna()
         yt = y_true[valid].to_numpy(dtype=float)
         yp = y_pred[valid].to_numpy(dtype=float)
@@ -218,57 +290,46 @@ class ModelEvaluator:
         mae = float(np.mean(np.abs(err)))
         mse = float(np.mean(err ** 2))
         rmse = float(np.sqrt(mse))
-        mape = float(np.mean(np.abs(err / yt[np.abs(yt) > 1e-12])) * 100) if np.any(np.abs(yt) > 1e-12) else float("nan")
-        ss_res = float(np.sum(err ** 2))
+        nonzero = np.abs(yt) > 1e-12
+        mape = float(np.mean(np.abs(err[nonzero] / yt[nonzero])) * 100) if nonzero.any() else float("nan")
         ss_tot = float(np.sum((yt - yt.mean()) ** 2))
-        r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
+        r2 = float(1 - np.sum(err ** 2) / ss_tot) if ss_tot > 0 else float("nan")
         return {"MAE": mae, "MSE": mse, "RMSE": rmse, "MAPE": mape, "R2": r2, "n": n}
 
     def evaluate_direction(self, y_true: pd.Series, y_pred: pd.Series) -> dict:
-        """方向准确度：实际变化方向 vs 预测变化方向。"""
         valid = y_true.notna() & y_pred.notna()
-        yt = y_true[valid]
-        yp = y_pred[valid]
+        yt, yp = y_true[valid], y_pred[valid]
         if len(yt) < 2:
             return {"direction_accuracy": float("nan"), "n": 0}
         actual_dir = np.sign(yt.diff().dropna())
         pred_dir = np.sign(yp.diff().dropna())
         common = actual_dir.index.intersection(pred_dir.index)
-        a = actual_dir.reindex(common).fillna(0)
-        p = pred_dir.reindex(common).fillna(0)
-        acc = float((a == p).mean())
+        acc = float((actual_dir.reindex(common).fillna(0) == pred_dir.reindex(common).fillna(0)).mean())
         return {"direction_accuracy": acc, "n": int(len(common))}
 
     def plot(self, y_true: pd.Series, y_pred: pd.Series, path: str,
              title: str = "actual vs predicted") -> str:
-        """plotly 交互图：双线(actual/predicted) + 误差直方图。"""
         from plotly.subplots import make_subplots
         import plotly.graph_objects as go
 
         valid = y_true.notna() & y_pred.notna()
-        yt = y_true[valid]
-        yp = y_pred[valid]
+        yt, yp = y_true[valid], y_pred[valid]
         err = (yt - yp).dropna()
 
-        fig = make_subplots(
-            rows=2, cols=1, row_heights=[3, 1], shared_xaxes=False,
-            vertical_spacing=0.12,
-            subplot_titles=[title, "误差分布"],
-        )
+        fig = make_subplots(rows=2, cols=1, row_heights=[3, 1], vertical_spacing=0.12,
+                            subplot_titles=[title, "误差分布"])
         fig.add_trace(go.Scatter(x=yt.index, y=yt.values, name="actual",
                                  line=dict(color="#7f8c8d", width=1)), row=1, col=1)
         fig.add_trace(go.Scatter(x=yp.index, y=yp.values, name="predicted",
                                  line=dict(color="#2980b9", width=1.2)), row=1, col=1)
         fig.add_trace(go.Histogram(x=err.values, name="error", marker_color="#e74c3c",
                                    nbinsx=50), row=2, col=1)
-        fig.update_layout(hovermode="x unified", template="plotly_white",
-                          height=600, margin=dict(l=50, r=30, t=50, b=40),
-                          xaxis_rangeslider_visible=False)
+        fig.update_layout(hovermode="x unified", template="plotly_white", height=600,
+                          xaxis_rangeslider_visible=False, margin=dict(l=50, r=30, t=50, b=40))
         fig.write_html(path, include_plotlyjs="cdn")
         return path
 
     def compare(self, y_true: pd.Series, models: dict[str, pd.Series]) -> pd.DataFrame:
-        """多模型对比。models = {'Kalman': series, 'Kalman+LSTM': series}。"""
         rows = []
         for name, y_pred in models.items():
             m = self.evaluate(y_true, y_pred)
