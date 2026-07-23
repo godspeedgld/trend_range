@@ -9,6 +9,7 @@ dependencies = [
     "pandas",
     "plotly>=6.9.0",
     "scipy",
+    "statsmodels>=0.14.6",
     "torch>=2.0",
 ]
 

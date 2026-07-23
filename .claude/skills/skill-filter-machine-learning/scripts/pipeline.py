@@ -60,9 +60,13 @@ class KalmanLSTMPipeliner:
         cv_mode: str = "rolling",
         rolling_train_size: int = 504,
         rolling_test_size: int = 84,
+        target_mode: str = "return",
+        lstm_features: Optional[list[str]] = None,
     ):
         if cv_mode not in ("expanding", "rolling"):
             raise ValueError(f"cv_mode 必须是 'expanding' 或 'rolling'，收到 '{cv_mode}'")
+        if target_mode not in ("price", "return"):
+            raise ValueError(f"target_mode 必须是 'price' 或 'return'，收到 '{target_mode}'")
         self.kalman_win = kalman_win
         self.kalman_dim = kalman_dim
         self.kf_tag = f"kalman_{kalman_win}_{kalman_dim}"
@@ -78,6 +82,8 @@ class KalmanLSTMPipeliner:
         self.cv_mode = cv_mode
         self.rolling_train_size = rolling_train_size
         self.rolling_test_size = rolling_test_size
+        # target 口径：'return'=残差收益率(close 归一化，平稳) | 'price'=绝对价格残差(旧)
+        self.target_mode = target_mode
 
         # 一次特征配置（含 kalman）；用户可通过 feature_config 追加/覆盖
         base_config = [
@@ -92,12 +98,15 @@ class KalmanLSTMPipeliner:
         self._preprocessor = Preprocessor()
 
         self._lstm: Optional[LSTMPredictor] = None
-        # LSTM 输入列 = 一次特征（二次特征 std_innov 在 fit 里追加）
-        self._feature_cols = [
-            "log_ret", "log_ret_n_5", "log_ret_n_10",
-            "vol_20", "vol_log_ret", "vol_ratio_20", "vwap_dev_20",
-            "range_pct", "close_pos",
-        ]
+        # LSTM 输入列：用户可通过 lstm_features 精简（std_innov 在 fit 里自动追加）
+        if lstm_features is not None:
+            self._feature_cols = [c for c in lstm_features if c != "std_innov"]
+        else:
+            self._feature_cols = [
+                "log_ret", "log_ret_n_5", "log_ret_n_10",
+                "vol_20", "vol_log_ret", "vol_ratio_20", "vwap_dev_20",
+                "range_pct", "close_pos",
+            ]
 
     # ── 交叉验证 fold 生成 ────────────────────────────────
     def _build_folds(self, n: int) -> list[tuple[np.ndarray, np.ndarray]]:
@@ -170,9 +179,12 @@ class KalmanLSTMPipeliner:
         # 2. 二次特征（pipeline 直接拼）
         features = self._add_secondary(primary, close)
 
-        # 3. 残差 = close[t+1] − predict_value[t]
+        # 3. 残差 = close[t+1] − predict_value[t]（price 口径）或收益率化（return 口径，平稳）
         predict_value = features[f"{self.kf_tag}_predict_value"]
-        residual = close.shift(-1) - predict_value
+        if self.target_mode == "return":
+            residual = (close.shift(-1) - predict_value) / close
+        else:
+            residual = close.shift(-1) - predict_value
 
         # 4. X / y 对齐
         x_cols = self._feature_cols + ["std_innov"]
@@ -222,11 +234,14 @@ class KalmanLSTMPipeliner:
             if verbose:
                 print(f"  fold {fold_num}: train={len(train_idx)} test={len(test_idx)} corr={corr:.3f}")
 
-        # 6. 聚合 OOS
+        # 6. 聚合 OOS（return 口径需 ×close[t] 还原为价格）
         oos_lstm = pd.concat(oos_preds).sort_index() if oos_preds else pd.Series(dtype=float)
         oos_idx = oos_lstm.index
         oos_kalman = predict_value.reindex(oos_idx)
-        oos_final = oos_kalman + oos_lstm
+        if self.target_mode == "return":
+            oos_final = oos_kalman + oos_lstm * close.reindex(oos_idx)
+        else:
+            oos_final = oos_kalman + oos_lstm
         oos_actual = close.shift(-1).reindex(oos_idx)
 
         return {
@@ -258,9 +273,13 @@ class KalmanLSTMPipeliner:
         feat_row["std_innov"] = std_innov
         lstm_resid = self._lstm.update(feat_row)
 
-        # 4. 最终 = Kalman 预测 + LSTM 残差
+        # 4. 最终 = Kalman 预测 + LSTM 残差（return 口径需 ×close[t] 还原价格）
         kalman_pred = fe_out[f"{kf}_predict_value"]
-        final = kalman_pred + lstm_resid if np.isfinite(lstm_resid) else kalman_pred
+        if self.target_mode == "return":
+            adj = lstm_resid * float(bar["close"]) if np.isfinite(lstm_resid) else 0.0
+        else:
+            adj = lstm_resid if np.isfinite(lstm_resid) else 0.0
+        final = kalman_pred + adj
         return {
             "final": final,
             "kalman_pred": kalman_pred,
