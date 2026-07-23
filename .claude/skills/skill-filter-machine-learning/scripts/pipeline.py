@@ -220,19 +220,34 @@ class KalmanLSTMPipeliner:
                      epochs=self.lstm_epochs, batch_size=self.lstm_batch,
                      patience=10, verbose=verbose)
 
-            pred = lstm.predict(X_te)
+            # 预测：前面拼 lookback 根做缓冲种子（参数已冻结，纯推理），
+            # 使测试窗第一根即可预测，避免每折开头 lookback-1 根 NaN 断点。
+            lb = self.lstm_lookback
+            pre_start = max(int(test_idx[0]) - lb, 0)
+            pre_idx = np.arange(pre_start, int(test_idx[0]))
+            ctx_idx = np.concatenate([pre_idx, test_idx])
+            pred_full = lstm.predict(X.iloc[ctx_idx])
+            pred = pred_full.iloc[-len(test_idx):]
             oos_preds.append(pred)
             oos_indices.append(X_te.index)
 
             y_te = y.iloc[test_idx]
             corr = pred.corr(y_te) if pred.notna().any() else float("nan")
+            # 测试窗 regime 诊断：日期区间 + 已实现波动率（log 收益 std）
+            te_close = close.reindex(X_te.index)
+            test_vol = float(np.log(te_close / te_close.shift(1)).std())
             fold_results.append({
-                "fold": fold_num, "train_size": int(len(train_idx)), "test_size": int(len(test_idx)),
+                "fold": fold_num,
+                "test_start": str(X_te.index[0].date()),
+                "test_end": str(X_te.index[-1].date()),
+                "test_vol": test_vol,
+                "train_size": int(len(train_idx)), "test_size": int(len(test_idx)),
                 "residual_corr": float(corr) if np.isfinite(corr) else None,
             })
             self._lstm = lstm
             if verbose:
-                print(f"  fold {fold_num}: train={len(train_idx)} test={len(test_idx)} corr={corr:.3f}")
+                print(f"  fold {fold_num}: train={len(train_idx)} test={len(test_idx)} "
+                      f"vol={test_vol:.4f} corr={corr:.3f}")
 
         # 6. 聚合 OOS（return 口径需 ×close[t] 还原为价格）
         oos_lstm = pd.concat(oos_preds).sort_index() if oos_preds else pd.Series(dtype=float)
