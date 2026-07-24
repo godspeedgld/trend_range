@@ -391,7 +391,8 @@ class KalmanFeature(BaseFeature):
     """卡尔曼滤波特征（多输出）。内部运行 AdaptiveKalmanFilter。
 
     输出列：{tag}_level, {tag}_velocity[, {tag}_acceleration],
-            {tag}_predict_value, {tag}_innov, {tag}_S
+            {tag}_predict_value, {tag}_innov, {tag}_S,
+            {tag}_p_var_vel[, {tag}_p_var_accel], {tag}_p_trace   # P 状态协方差诊断
     config 示例："kalman:50,3"（win=50, dim=3）。
     """
     required = ("close",)
@@ -410,7 +411,10 @@ class KalmanFeature(BaseFeature):
         cols = [f"{t}_level", f"{t}_velocity"]
         if self.dim >= 3:
             cols.append(f"{t}_acceleration")
-        cols += [f"{t}_predict_value", f"{t}_innov", f"{t}_S"]
+        cols += [f"{t}_predict_value", f"{t}_innov", f"{t}_S",
+                 f"{t}_p_var_vel", f"{t}_p_trace"]
+        if self.dim >= 3:
+            cols.append(f"{t}_p_var_accel")
         return cols
 
     def _init_stream(self):
@@ -424,9 +428,11 @@ class KalmanFeature(BaseFeature):
         t = self.tag
         out = {f"{t}_level": r["level"], f"{t}_velocity": r["velocity"],
                f"{t}_predict_value": r["predict_value"], f"{t}_innov": r["innov"],
-               f"{t}_S": r["S"]}
+               f"{t}_S": r["S"],
+               f"{t}_p_var_vel": r["p_var_vel"], f"{t}_p_trace": r["p_trace"]}
         if self.dim >= 3:
             out[f"{t}_acceleration"] = r.get("acceleration")
+            out[f"{t}_p_var_accel"] = r.get("p_var_accel")
         return out
 
     def _update_raw(self, bar):
@@ -434,9 +440,11 @@ class KalmanFeature(BaseFeature):
         t = self.tag
         out = {f"{t}_level": r["level"], f"{t}_velocity": r["velocity"],
                f"{t}_predict_value": r["predict_value"], f"{t}_innov": r["innov"],
-               f"{t}_S": r["S"]}
+               f"{t}_S": r["S"],
+               f"{t}_p_var_vel": r["p_var_vel"], f"{t}_p_trace": r["p_trace"]}
         if self.dim >= 3:
             out[f"{t}_acceleration"] = r.get("acceleration", 0.0)
+            out[f"{t}_p_var_accel"] = r.get("p_var_accel", 0.0)
         return out
 
 

@@ -8,7 +8,7 @@ warmup 门控；Q 对称化 + jitter 防奇异。默认 3 阶（dim=3，状态 [
   流量 update(z)    —— 逐个最新价更新，类持有状态，返回当步 dict（实盘）。
 
 输出字段：level, velocity[, acceleration], predict_value(下一时刻预测), innov(新息), S(新息协方差)
-         另含 R, q11..（内部噪声，便于诊断）。
+         另含 R, q11..（内部噪声），p_var_level/p_var_vel/p_var_accel/p_trace（P 状态协方差诊断）。
 依赖：numpy、pandas。
 """
 
@@ -151,6 +151,12 @@ class AdaptiveKalmanFilter:
         for i in range(self.dim):                          # Q 上三角（含对角）
             for j in range(i, self.dim):
                 d[f"q{i+1}{j+1}"] = float(self.Q[i, j])
+        # P 状态协方差诊断：对角 = 各状态方差，trace = 总不确定性
+        d["p_var_level"] = float(self.P[0, 0])
+        d["p_var_vel"] = float(self.P[1, 1])
+        if self.dim >= 3:
+            d["p_var_accel"] = float(self.P[2, 2])
+        d["p_trace"] = float(np.trace(self.P))
         return d
 
     # ── 批量模式：整段序列滚动估计 ───────────────────────

@@ -28,7 +28,55 @@ import pandas as pd
 
 from scripts.preprocess import Preprocessor
 from scripts.features import DataContext, FeatureEngineer
-from scripts.ml import LSTMPredictor
+from scripts.ml import LSTMPredictor, XGBoostPredictor
+from scripts.evaluator import ModelEvaluator
+
+
+# ════════════════════════════════════════════════════════════
+# 交叉验证 fold 生成（模块级，供 KalmanLSTMPipeliner / KalmanXGBPipeliner 共用）
+# ════════════════════════════════════════════════════════════
+def build_cv_folds(
+    n: int,
+    cv_mode: str = "rolling",
+    n_folds: int = 0,
+    rolling_train_size: int = 504,
+    rolling_test_size: int = 84,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """生成 (train_idx, test_idx) 列表（时序，无重叠/无未来泄漏）。
+
+    expanding: 训练集随 fold 递增（blocks[:fold]），测试集 = 下一 block。n_folds 必填。
+    rolling  : 固定训练窗 + 固定测试窗，沿时间轴按 test_size 步长滑动。
+               n_folds=0 表示全量滚动（覆盖所有可行 fold）。
+    """
+    if cv_mode not in ("expanding", "rolling"):
+        raise ValueError(f"cv_mode 必须是 'expanding' 或 'rolling'，收到 '{cv_mode}'")
+    indices = np.arange(n)
+    folds: list[tuple[np.ndarray, np.ndarray]] = []
+
+    if cv_mode == "expanding":
+        if not n_folds:
+            raise ValueError("expanding 模式需指定 n_folds")
+        blocks = np.array_split(indices, n_folds + 1)
+        for fold in range(1, n_folds + 1):
+            folds.append((np.concatenate(blocks[:fold]), blocks[fold]))
+
+    elif cv_mode == "rolling":
+        required = rolling_train_size + rolling_test_size
+        if n < required:
+            raise ValueError(
+                f"数据量({n})不足: rolling_train_size({rolling_train_size}) "
+                f"+ rolling_test_size({rolling_test_size}) = {required}"
+            )
+        start = 0
+        while start + required <= n:
+            train_end = start + rolling_train_size
+            test_end = train_end + rolling_test_size
+            folds.append((indices[start:train_end], indices[train_end:test_end]))
+            start += rolling_test_size
+            if n_folds and len(folds) >= n_folds:
+                break
+
+    return folds
 
 
 # ════════════════════════════════════════════════════════════
@@ -111,42 +159,12 @@ class KalmanLSTMPipeliner:
 
     # ── 交叉验证 fold 生成 ────────────────────────────────
     def _build_folds(self, n: int) -> list[tuple[np.ndarray, np.ndarray]]:
-        """根据 cv_mode 生成 (train_idx, test_idx) 列表。
-
-        expanding: 训练集随 fold 递增（blocks[:fold]），测试集 = 下一 block。
-        rolling  : 固定训练窗口 + 固定测试窗口，沿时间轴从前向后滑动。
-        """
-        indices = np.arange(n)
-        folds: list[tuple[np.ndarray, np.ndarray]] = []
-
-        if self.cv_mode == "expanding":
-            blocks = np.array_split(indices, self.n_folds + 1)
-            for fold in range(1, self.n_folds + 1):
-                train_idx = np.concatenate(blocks[:fold])
-                test_idx = blocks[fold]
-                folds.append((train_idx, test_idx))
-
-        elif self.cv_mode == "rolling":
-            train_size = self.rolling_train_size
-            test_size = self.rolling_test_size
-            required = train_size + test_size
-            if n < required:
-                raise ValueError(
-                    f"数据量({n})不足: rolling_train_size({train_size}) "
-                    f"+ rolling_test_size({test_size}) = {required}"
-                )
-            start = 0
-            while start + required <= n:
-                train_end = start + train_size
-                test_end = train_end + test_size
-                train_idx = indices[start:train_end]
-                test_idx = indices[train_end:test_end]
-                folds.append((train_idx, test_idx))
-                start += test_size  # 按测试窗口步长滑动
-                if self.n_folds and len(folds) >= self.n_folds:
-                    break
-
-        return folds
+        """委托模块级 build_cv_folds（expanding / rolling）。"""
+        return build_cv_folds(
+            n, cv_mode=self.cv_mode, n_folds=self.n_folds,
+            rolling_train_size=self.rolling_train_size,
+            rolling_test_size=self.rolling_test_size,
+        )
 
     # ── 二次特征 ──────────────────────────────────────────
     def _add_secondary(self, features: pd.DataFrame, close: pd.Series) -> pd.DataFrame:
@@ -308,4 +326,224 @@ class KalmanLSTMPipeliner:
         }
 
 
-__all__ = ["KalmanLSTMPipeliner"]
+# ════════════════════════════════════════════════════════════
+# KalmanXGBPipeliner（趋势识别器）
+# ════════════════════════════════════════════════════════════
+class KalmanXGBPipeliner:
+    """Kalman 二次特征 → XGBoost 趋势识别器。
+
+    流程：
+      1. Kalman 滤波一次特征（level/velocity/accel/p_var_vel/p_var_accel/p_trace/innov/S）。
+         一次特征本身不直接喂 XGBoost（见 1.1）。
+      2. 二次特征（10 个"趋势识别"指标，_build_secondary）：速度异常/趋势衰竭/爆发/转折、
+         P 不确定性、regime 突变、新息持续/可预测性、量价背离、波动扩张。
+      3. 标签 = 未来 fwd_horizon 期累计 log 收益 / 同期已实现 std（Sharpe 状）。
+      4. walk-forward（build_cv_folds）训练 XGBoostPredictor（lookback=1 纯表格）。
+      5. 聚合 OOS + 特征重要度（gain，各折合计归一化）。
+    """
+
+    def __init__(
+        self,
+        kalman_win: int = 50,
+        kalman_dim: int = 3,
+        N: int = 20,
+        fwd_horizon: int = 5,
+        # XGBoost
+        xgb_n_estimators: int = 300,
+        xgb_max_depth: int = 4,
+        xgb_learning_rate: float = 0.05,
+        xgb_subsample: float = 0.8,
+        xgb_colsample: float = 0.8,
+        xgb_reg_lambda: float = 1.0,
+        xgb_reg_alpha: float = 0.0,
+        xgb_min_child: float = 1.0,
+        xgb_device: Optional[str] = None,
+        xgb_random_state: int = 0,
+        # CV
+        cv_mode: str = "rolling",
+        rolling_train_size: int = 504,
+        rolling_test_size: int = 84,
+        n_folds: int = 0,
+        val_split: float = 0.2,
+        early_stopping_rounds: int = 20,
+    ):
+        if kalman_dim < 3:
+            raise ValueError("KalmanXGBPipeliner 需要 kalman_dim>=3（依赖 acceleration）")
+        self.kalman_win = kalman_win
+        self.kalman_dim = kalman_dim
+        self.kf_tag = f"kalman_{kalman_win}_{kalman_dim}"
+        self.N = N
+        self.fwd_horizon = fwd_horizon
+        self.xgb_n_estimators = xgb_n_estimators
+        self.xgb_max_depth = xgb_max_depth
+        self.xgb_learning_rate = xgb_learning_rate
+        self.xgb_subsample = xgb_subsample
+        self.xgb_colsample = xgb_colsample
+        self.xgb_reg_lambda = xgb_reg_lambda
+        self.xgb_reg_alpha = xgb_reg_alpha
+        self.xgb_min_child = xgb_min_child
+        self.xgb_device = xgb_device
+        self.xgb_random_state = xgb_random_state
+        self.cv_mode = cv_mode
+        self.rolling_train_size = rolling_train_size
+        self.rolling_test_size = rolling_test_size
+        self.n_folds = n_folds
+        self.val_split = val_split
+        self.early_stopping_rounds = early_stopping_rounds
+
+        base_config = [f"kalman:{kalman_win},{kalman_dim}", "atr:14", "log_ret_n:5"]
+        self._fe = FeatureEngineer(base_config)
+        self._preprocessor = Preprocessor()
+        self._eval = ModelEvaluator()
+
+    @staticmethod
+    def _build_ctx(data: pd.DataFrame) -> DataContext:
+        kwargs = {"close": data["close"].astype(float)}
+        for col, attr in [("open", "open"), ("high", "high"), ("low", "low"),
+                          ("vol", "volume"), ("volume", "volume")]:
+            if col in data.columns:
+                kwargs[attr] = data[col].astype(float)
+        return DataContext(**kwargs)
+
+    # ── 二次特征（10 个趋势识别指标）──────────────────────
+    def _build_secondary(self, features: pd.DataFrame, volume: pd.Series) -> pd.DataFrame:
+        kf = self.kf_tag
+        vel = features[f"{kf}_velocity"]
+        accel = features[f"{kf}_acceleration"]
+        p_vel = features[f"{kf}_p_var_vel"]
+        p_accel = features[f"{kf}_p_var_accel"]
+        p_trace = features[f"{kf}_p_trace"]
+        innov = features[f"{kf}_innov"]
+        S = features[f"{kf}_S"].clip(lower=1e-12)
+        std_innov = innov / np.sqrt(S)
+        atr = features["atr_14"]
+        log_ret_5 = features["log_ret_n_5"]
+        vol_chg5 = np.log(volume.replace(0, np.nan)).diff(5)
+        N = self.N
+
+        f = pd.DataFrame(index=features.index)
+        f["vel_z"] = (vel - vel.rolling(N).mean()) / vel.rolling(N).std()
+        f["trend_fatigue"] = (
+            (vel.rolling(5).mean() - vel.rolling(15).mean())
+            / vel.rolling(15).mean().replace(0, np.nan)
+        )
+        f["accel_burst"] = accel / (accel.abs().rolling(N).median() + 1e-12)
+        f["accel_turn"] = accel.rolling(5).sum() - accel.rolling(N).sum()
+        f["trend_conf"] = 1.0 / (1.0 + p_vel + p_accel)
+        f["regime_shift"] = p_trace / p_trace.rolling(N).mean().replace(0, np.nan)
+        f["innov_cum"] = std_innov.rolling(N).sum()
+        f["innov_abs_mean"] = std_innov.abs().rolling(N).mean()
+        f["volprice_div"] = log_ret_5 * vol_chg5
+        f["atr_exp"] = atr / atr.rolling(20).mean().replace(0, np.nan)
+        return f
+
+    # ── 标签：未来 h 期累计收益 / 同期已实现 std ──────────
+    def _build_label(self, close: pd.Series, horizon: int) -> pd.Series:
+        log_c = np.log(close)
+        fwd_ret = log_c.shift(-horizon) - log_c
+        daily_ret = log_c.diff()
+        future = pd.concat([daily_ret.shift(-k) for k in range(1, horizon + 1)], axis=1)
+        fwd_vol = future.std(axis=1)
+        return fwd_ret / (fwd_vol + 1e-8)
+
+    # ── 批量：walk-forward 训练 ───────────────────────────
+    def fit(self, data: pd.DataFrame, verbose: bool = True) -> dict:
+        data = self._preprocessor.preprocess(data)
+        close = data["close"].astype(float)
+        vol_col = next((c for c in ("vol", "volume") if c in data.columns), None)
+        if vol_col is None:
+            raise ValueError("数据缺少成交量列 (vol/volume)")
+        volume = data[vol_col].astype(float)
+        ctx = self._build_ctx(data)
+
+        primary = self._fe.fit(ctx)
+        X = self._build_secondary(primary, volume)
+        y = self._build_label(close, self.fwd_horizon)
+
+        valid = X.notna().all(axis=1) & y.notna()
+        X, y = X[valid], y[valid]
+        n = len(X)
+        if n < 200:
+            raise ValueError(f"有效样本太少({n})")
+
+        folds = build_cv_folds(
+            n, cv_mode=self.cv_mode, n_folds=self.n_folds,
+            rolling_train_size=self.rolling_train_size,
+            rolling_test_size=self.rolling_test_size,
+        )
+        if verbose:
+            print(f"[KalmanXGB cv_mode={self.cv_mode}] folds={len(folds)} "
+                  f"n_samples={n} fwd_horizon={self.fwd_horizon} N={self.N}")
+
+        oos_preds, fold_results, importances = [], [], []
+        for fold_idx, (train_idx, test_idx) in enumerate(folds):
+            fold_num = fold_idx + 1
+            X_tr, y_tr = X.iloc[train_idx], y.iloc[train_idx]
+            X_te = X.iloc[test_idx]
+
+            xgb = XGBoostPredictor(
+                n_estimators=self.xgb_n_estimators, max_depth=self.xgb_max_depth,
+                learning_rate=self.xgb_learning_rate, subsample=self.xgb_subsample,
+                colsample_bytree=self.xgb_colsample, reg_lambda=self.xgb_reg_lambda,
+                reg_alpha=self.xgb_reg_alpha, min_child_weight=self.xgb_min_child,
+                device=self.xgb_device, random_state=self.xgb_random_state,
+            )
+            xgb.fit(X_tr, y_tr, val_split=self.val_split,
+                    early_stopping_rounds=self.early_stopping_rounds, verbose=verbose)
+            pred = xgb.predict(X_te)
+            oos_preds.append(pred)
+            importances.append(xgb.feature_importance("gain"))
+
+            y_te = y.iloc[test_idx]
+            corr = pred.corr(y_te) if pred.notna().any() else float("nan")
+            fold_results.append({
+                "fold": fold_num, "train_size": int(len(train_idx)),
+                "test_size": int(len(test_idx)),
+                "label_corr": float(corr) if np.isfinite(corr) else None,
+            })
+            if verbose:
+                print(f"  fold {fold_num}: train={len(train_idx)} test={len(test_idx)} "
+                      f"label_corr={corr:.3f}")
+
+        oos_pred = pd.concat(oos_preds).sort_index() if oos_preds else pd.Series(dtype=float)
+        oos_idx = oos_pred.index
+        oos_label = y.reindex(oos_idx)
+        fwd_ret = (np.log(close).shift(-self.fwd_horizon) - np.log(close)).reindex(oos_idx)
+
+        # 特征重要度：各折 gain 合计后归一化
+        agg: dict[str, float] = {}
+        for imp in importances:
+            for k, v in imp.items():
+                agg[k] = agg.get(k, 0.0) + v
+        total = sum(agg.values()) or 1.0
+        feature_importance = {k: v / total for k, v in sorted(agg.items(), key=lambda x: -x[1])}
+
+        # OOS 指标
+        corr_label = oos_pred.corr(oos_label)
+        corr_fwdret = oos_pred.corr(fwd_ret)
+        dir_mask = oos_pred.notna() & fwd_ret.notna()
+        dir_acc = (float((np.sign(oos_pred[dir_mask]) == np.sign(fwd_ret[dir_mask])).mean())
+                   if dir_mask.sum() else float("nan"))
+        label_metrics = self._eval.evaluate(oos_label, oos_pred)
+
+        if verbose:
+            print(f"\n[OOS] label_corr={corr_label:.3f}  fwd_ret_corr={corr_fwdret:.3f}  "
+                  f"{self.fwd_horizon}日方向准确度={dir_acc:.3f}  n={int(dir_mask.sum())}")
+            print("[feature importance] (gain, 各折合计归一化)")
+            for k, v in feature_importance.items():
+                print(f"  {k:<16} {v:.3f}")
+
+        return {
+            "oos_pred": oos_pred, "oos_label": oos_label, "oos_fwd_ret": fwd_ret,
+            "features": X, "fold_results": fold_results,
+            "feature_importance": feature_importance,
+            "metrics": {
+                "label_corr": float(corr_label) if np.isfinite(corr_label) else None,
+                "fwd_ret_corr": float(corr_fwdret) if np.isfinite(corr_fwdret) else None,
+                "direction_accuracy": dir_acc,
+                **{k: v for k, v in label_metrics.items()},
+            },
+        }
+
+
+__all__ = ["KalmanLSTMPipeliner", "KalmanXGBPipeliner", "build_cv_folds"]

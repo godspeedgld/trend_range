@@ -1,16 +1,17 @@
-"""LSTM 回归预测器（批量训练/预测 + 流式推理）。依赖 torch（GPU 优化）。
+"""回归预测器（批量训练/预测 + 流式推理）。
 
-GPU 优化：
-  - cuDNN benchmark（自动选最快 RNN 算法）
-  - TF32 高精度矩阵乘（Blackwell/Ampere+ 硬件加速）
-  - bf16 混合精度训练/推理（无需 GradScaler，Blackwell 原生）
-  - 数据直接建在 GPU（省 CPU→GPU 拷贝）
-  - 可选 torch.compile（JIT 编译，减少 Python 开销）
-
-LSTMPredictor：
+LSTMPredictor（依赖 torch，GPU 优化）：
   - 输入：特征矩阵 X [n, features] + 目标向量 y [n]（回归）。
   - 批量：fit(X, y) 训练（early stopping）；predict(X) 全序列。
   - 流式：fit 后 update(feature_row) 一步推理（lookback 缓冲 warmstart）。
+
+XGBoostPredictor（依赖 xgboost）：
+  - 与 LSTMPredictor 同构接口，但 lookback 滑窗展平成 [n, lookback*features] 表格行喂 GBT。
+  - 无需标准化（树对尺度不敏感）。批量 fit/predict + 流式 update（buffer warmstart）。
+  - 适合小特征集 + 多日目标（5 日涨跌）的表格回归。
+
+GPU 优化（LSTM）：
+  - cuDNN benchmark + TF32 + bf16 混合精度 + 数据直接建 GPU + 可选 torch.compile
 """
 
 from __future__ import annotations
@@ -260,4 +261,212 @@ class LSTMPredictor:
         self._buf = deque(maxlen=self.lookback)
 
 
-__all__ = ["LSTMPredictor"]
+# ════════════════════════════════════════════════════════════
+# XGBoostPredictor
+# ════════════════════════════════════════════════════════════
+class XGBoostPredictor:
+    """XGBoost 回归预测器（表格式）。批量 fit/predict + 流式 update。
+
+    XGBoost 是表格模型，每行特征独立 → 一个预测，**本质不需要序列窗口**
+    （默认 lookback=1 = 纯表格，流式即"输入特征 → 输出"，无 buffer）。
+    lookback>1 是可选的"滞后特征扩展"：把最近 L 根特征拍平喂 GBT，
+    仅当当前工程特征没榨干历史信息时有用。
+
+    与 LSTMPredictor 接口同构（便于 pipeline 互换）：fit/predict/update/reset_stream。
+    无需标准化（树对尺度不敏感）。
+
+    Args:
+        lookback: 滑窗长度。=1（默认）纯表格，每行直接预测、无 NaN、无 buffer；
+                  >1 时展平成 lookback×features 维滞后特征，predict 前 lookback-1 根 NaN。
+        n_estimators: 最大树数。
+        max_depth: 树深（控制过拟合，小特征集建议 3-5）。
+        learning_rate: 学习率。
+        subsample: 行采样比。
+        colsample_bytree: 列采样比。
+        reg_lambda / reg_alpha: L2 / L1 正则。
+        min_child_weight: 子节点最小样本权重和。
+        device: 'cuda' | 'cpu' | None（None 自动检测）。
+        n_jobs: CPU 线程数（device='cpu' 时生效）。
+        random_state: 随机种子。
+    """
+
+    def __init__(
+        self,
+        lookback: int = 1,
+        *,
+        n_estimators: int = 300,
+        max_depth: int = 4,
+        learning_rate: float = 0.05,
+        subsample: float = 0.8,
+        colsample_bytree: float = 0.8,
+        reg_lambda: float = 1.0,
+        reg_alpha: float = 0.0,
+        min_child_weight: float = 1.0,
+        device: Optional[str] = None,
+        n_jobs: int = -1,
+        random_state: int = 0,
+    ):
+        self.lookback = lookback
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.learning_rate = learning_rate
+        self.subsample = subsample
+        self.colsample_bytree = colsample_bytree
+        self.reg_lambda = reg_lambda
+        self.reg_alpha = reg_alpha
+        self.min_child_weight = min_child_weight
+        self.device = device or ("cuda" if _cuda_available() else "cpu")
+        self.n_jobs = n_jobs
+        self.random_state = random_state
+        self.model = None
+        self.n_features: Optional[int] = None
+        self.feature_names: Optional[list] = None
+        self._buf: deque = deque(maxlen=lookback)
+
+    # ── 数据工具 ──────────────────────────────────────────
+    def _window(self, X: np.ndarray, y=None):
+        """滑窗展平：X[n, f] → [n-L+1, L*f]，target 对齐窗口末根 y[L-1:]。
+
+        与 LSTMPredictor._window 对齐：第 i 个样本看 X[i : i+L]，预测 y[i+L-1]。
+        """
+        L = self.lookback
+        n = len(X)
+        nf = X.shape[1] if X.ndim > 1 else 1
+        if n < L:
+            empty_y = np.empty(0, dtype=np.float32) if y is not None else None
+            return np.empty((0, L * nf), dtype=np.float32), empty_y
+        seqs = sliding_window_view(X, L, axis=0)              # [n-L+1, L, f]
+        flat = np.ascontiguousarray(seqs).reshape(seqs.shape[0], L * nf).astype(np.float32)
+        targets = y[L - 1:].astype(np.float32) if y is not None else None
+        return flat, targets
+
+    def _expand_names(self, cols: list) -> list:
+        """原列名 → 展平后的特征名。lookback=1 时=原列名；>1 时加 _lag{k} 后缀。"""
+        L = self.lookback
+        if L == 1:
+            return list(cols)
+        names = []
+        for pos in range(L):                                 # pos 0 = 窗口最老
+            lag = L - 1 - pos
+            for c in cols:
+                names.append(f"{c}_lag{lag}" if lag > 0 else str(c))
+        return names
+
+    # ── 批量训练 ──────────────────────────────────────────
+    def fit(self, X, y, *, val_split: float = 0.2,
+            early_stopping_rounds: int = 20, verbose: bool = True) -> dict:
+        """批量训练。返回 {best_iteration, n_train, n_val, val_rmse}。
+
+        时序切分（chronological）：前 (1-val_split) 训练，尾部 val 做 early stopping。
+        用 xgboost 原生 DMatrix API（不依赖 scikit-learn）。
+        """
+        import xgboost as xgb
+
+        X = pd.DataFrame(X).astype(float)
+        y = pd.Series(y).astype(float)
+        cols = list(X.columns)
+        mask = X.notna().all(axis=1) & y.notna()
+        X = X[mask].to_numpy(dtype=np.float32)
+        y = y[mask].to_numpy(dtype=np.float32)
+        self.n_features = X.shape[1]
+        self.feature_names = self._expand_names(cols)
+
+        flat, targets = self._window(X, y)
+        if len(flat) == 0:
+            raise ValueError(f"有效样本不足 lookback={self.lookback}，无法训练")
+
+        split = int(len(flat) * (1 - val_split))
+        Xtr, ytr = flat[:split], targets[:split]
+        Xval, yval = flat[split:], targets[split:]
+
+        params = dict(
+            objective="reg:squarederror",
+            max_depth=self.max_depth,
+            learning_rate=self.learning_rate,
+            subsample=self.subsample,
+            colsample_bytree=self.colsample_bytree,
+            reg_lambda=self.reg_lambda,
+            reg_alpha=self.reg_alpha,
+            min_child_weight=self.min_child_weight,
+            tree_method="hist",
+            device=self.device,
+            nthread=self.n_jobs,
+            seed=self.random_state,
+        )
+        fn = self.feature_names
+        dtrain = xgb.DMatrix(Xtr, label=ytr, feature_names=fn)
+        evals = [(dtrain, "train")]
+        dval = None
+        if len(Xval):
+            dval = xgb.DMatrix(Xval, label=yval, feature_names=fn)
+            evals.append((dval, "val"))
+
+        self.model = xgb.train(
+            params, dtrain, num_boost_round=self.n_estimators,
+            evals=evals, early_stopping_rounds=early_stopping_rounds if dval else None,
+            verbose_eval=False,
+        )
+
+        best_iter = getattr(self.model, "best_iteration", None)
+        history = {
+            "best_iteration": int(best_iter) if best_iter is not None else self.n_estimators,
+            "n_train": int(len(Xtr)), "n_val": int(len(Xval)),
+        }
+        if dval is not None:
+            vp = self.model.predict(dval)
+            history["val_rmse"] = float(np.sqrt(np.mean((yval - vp) ** 2)))
+        if verbose:
+            print(f"  [xgb] best_iter={history['best_iteration']} "
+                  f"n_train={len(Xtr)} n_val={len(Xval)} "
+                  f"val_rmse={history.get('val_rmse', float('nan')):.6f}")
+
+        # warmstart 流式缓冲（原始行，与 predict/update 口径一致）
+        if len(X) >= self.lookback:
+            self._buf = deque(X[-self.lookback:].tolist(), maxlen=self.lookback)
+        else:
+            self._buf = deque(maxlen=self.lookback)
+        return history
+
+    # ── 批量预测 ──────────────────────────────────────────
+    def predict(self, X) -> pd.Series:
+        if self.model is None:
+            raise RuntimeError("XGBoostPredictor.predict() 需先调 fit() 训练")
+        import xgboost as xgb
+        if isinstance(X, np.ndarray) and X.ndim == 1:
+            X = X.reshape(1, -1)
+        X = pd.DataFrame(X).astype(float)
+        idx = X.index
+        X = X.to_numpy(dtype=np.float32)
+        flat, _ = self._window(X)
+        out = np.full(len(X), np.nan, dtype=np.float32)
+        if len(flat):
+            out[self.lookback - 1 :] = self.model.predict(
+                xgb.DMatrix(flat, feature_names=self.feature_names))
+        return pd.Series(out, index=idx, name="xgb_pred")
+
+    # ── 流式推理 ──────────────────────────────────────────
+    def update(self, row) -> float:
+        if self.model is None:
+            raise RuntimeError("XGBoostPredictor.update() 需先调 fit() 训练")
+        import xgboost as xgb
+        row = np.array(list(row.values()) if isinstance(row, dict) else row, dtype=np.float32)
+        self._buf.append(row)
+        if len(self._buf) < self.lookback:
+            return float("nan")
+        flat = np.array(list(self._buf), dtype=np.float32).reshape(1, -1)
+        return float(self.model.predict(xgb.DMatrix(flat, feature_names=self.feature_names))[0])
+
+    # ── 特征重要度 ────────────────────────────────────────
+    def feature_importance(self, importance_type: str = "gain") -> dict:
+        """返回 {feature_name: score}。importance_type: 'gain'|'weight'|'cover'|'total_gain'|'total_cover'。
+        未参与任何树分裂的特征不出现（需补 0 可自行处理）。
+        """
+        if self.model is None:
+            raise RuntimeError("XGBoostPredictor.feature_importance() 需先调 fit()")
+        return dict(self.model.get_score(importance_type=importance_type))
+
+    def reset_stream(self):
+        self._buf = deque(maxlen=self.lookback)
+
+
+__all__ = ["LSTMPredictor", "XGBoostPredictor"]
