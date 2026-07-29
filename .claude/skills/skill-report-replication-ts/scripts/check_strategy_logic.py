@@ -49,14 +49,19 @@ def check_strategy_logic(project_dir):
 
         doc = doc_path.read_text(encoding="utf-8")
         checks = [
+            ("原文思路/原理", [r"原文思路", r"设计目的", r"原理", r"立论", r"为什么"]),
             ("研究问题/结论", [r"研究问题", r"结论", r"Research", r"Conclusion", r"目标"]),
             ("资产池", [r"品种", r"资产", r"universe", r"标的", r"期货", r"ETF"]),
             ("周期/频率", [r"周期", r"频率", r"日频", r"周频", r"rebalance", r"窗口", r"bar"]),
+            ("regime/市场状态", [r"市场状态", r"regime", r"趋势.*震荡", r"门控", r"TSI", r"Hurst"]),
             ("开仓规则", [r"开仓", r"入场", r"entry", r"买入", r"做空", r"金叉", r"突破", r"信号"]),
             ("止损规则", [r"止损", r"stop.?loss", r"ATR", r"移动止损", r"吊灯", r"固定百分"]),
             ("止盈/退出规则", [r"止盈", r"退出", r"平仓", r"exit", r"take.?profit", r"移动止盈", r"时间退出", r"证伪"]),
+            ("仓位控制", [r"仓位", r"position", r"满仓", r"vol.?target", r"等手数", r"风险平价", r"Kelly"]),
             ("参数", [r"参数", r"param", r"窗口", r"倍数", r"阈值", r"k\s*=", r"窗口长度"]),
+            ("参数优化", [r"参数优化", r"网格", r"贝叶斯", r"walk.?forward.*优化", r"optimization", r"搜索空间"]),
             ("假设/风控", [r"假设", r"assumption", r"成本", r"滑点", r"保证金", r"手续费", r"杠杆"]),
+            ("参考文档", [r"参考文档", r"参考文献", r"引用", r"论文", r"Moskowitz", r"Levine", r"文献"]),
         ]
         for name, keywords in checks:
             if any(re.search(kw, doc, re.IGNORECASE) for kw in keywords):

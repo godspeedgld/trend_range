@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Create a standard research output directory for a time-series CTA report replication task."""
+"""Create a standard research output directory for a report replication task."""
 
 from __future__ import annotations
 
@@ -33,62 +33,41 @@ def _load_env_upward(start: Path, max_up: int = 8) -> None:
 def _default_root() -> Path:
     """默认输出根：平台自适应。
     优先级：REPLICATION_ROOT（.env 或环境变量）> 云环境 /home/coder/project（若存在）> 本地 ~/report-replication。
-    均可用 --root 显式覆盖。
     """
     _load_env_upward(Path(__file__).parent)
     env = os.environ.get("REPLICATION_ROOT")
     if env:
         return Path(env)
     cloud = Path("/home/coder/project/replication/report-replication")
-    if cloud.parent.parent.exists():          # /home/coder/project 存在 → 云环境
+    if cloud.parent.parent.exists():
         return cloud
-    return Path.home() / "report-replication"   # 本地（Windows/Mac/Linux 桌面）
+    return Path.home() / "report-replication"
 
 
 DEFAULT_ROOT = _default_root()
 SUBDIRS = [
     "01_translation",
-    "02_strategy_logic",
-    "03_strategy_evaluation/data",
-    "03_strategy_evaluation/charts",
-    "04_backtest_strategy/backtest_logs",
-    "06_delivery",
+    "02_approach",
+    "03_backtest_strategy/backtest_logs",
+    "04_delivery",
 ]
 
 
 ARTIFACTS = {
-    # Step 2: 翻译
     "translation": "01_translation/full_translation.md",
-    # Step 3: 策略逻辑抽取（开仓/止损/止盈）
-    "strategy_summary": "02_strategy_logic/strategy_summary.md",
-    "strategy_reference_implementation": "02_strategy_logic/reference_implementation.py",
-    # Step 5: 策略评估报告（TSCTA 口径，非因子验证）
-    "evaluation_report": "03_strategy_evaluation/evaluation_report.html",
-    "direction_matrix": "03_strategy_evaluation/data/direction_matrix_from_strategy.csv",
-    "portfolio_returns_full": "03_strategy_evaluation/data/portfolio_returns_dir_full.csv",
-    "backtest_alignment_audit": "03_strategy_evaluation/data/backtest_alignment_audit.csv",
-    "benchmark_comparison": "03_strategy_evaluation/data/benchmark_comparison.csv",
-    "regime_metrics": "03_strategy_evaluation/data/regime_metrics.csv",
-    "chart_nav": "03_strategy_evaluation/charts/01_nav.png",
-    "chart_drawdown": "03_strategy_evaluation/charts/02_drawdown.png",
-    "chart_regime": "03_strategy_evaluation/charts/03_regime_nav.png",
-    "chart_benchmark": "03_strategy_evaluation/charts/04_benchmark_nav.png",
-    "chart_yearly": "03_strategy_evaluation/charts/05_yearly_return.png",
-    "chart_rolling_sharpe": "03_strategy_evaluation/charts/06_rolling_sharpe.png",
-    "chart_cost_sensitivity": "03_strategy_evaluation/charts/07_cost_sensitivity.png",
-    "chart_walkforward": "03_strategy_evaluation/charts/08_walkforward.png",
-    # Step 4: 策略 + 本地回测
-    "backtest_strategy": "04_backtest_strategy/strategy.py",
-    "backtest_config": "04_backtest_strategy/config.json",
-    "backtest_report": "04_backtest_strategy/backtest_report.html",
-    "backtest_raw_report": "04_backtest_strategy/backtest_report_raw.html",
-    "backtest_signal_log": "04_backtest_strategy/backtest_logs/signal_log.jsonl",
-    "backtest_equity_curve": "04_backtest_strategy/backtest_logs/equity_curve.csv",
-    "backtest_trades": "04_backtest_strategy/backtest_logs/trades.csv",
-    "backtest_performance_metrics": "04_backtest_strategy/backtest_logs/performance_metrics.csv",
-    "backtest_position_return_detail": "04_backtest_strategy/backtest_logs/position_return_detail.csv",
-    # Step 6: 交付
-    "final_delivery_summary": "06_delivery/final_delivery_summary.md",
+    "approach": "02_approach/main_approach.md",
+    "backtest_features": "03_backtest_strategy/backtest_features.md",
+    "reference_implementation": "03_backtest_strategy/reference_implementation.py",
+    "backtest_strategy": "03_backtest_strategy/strategy.py",
+    "backtest_config": "03_backtest_strategy/config.json",
+    "backtest_report": "03_backtest_strategy/backtest_report.html",
+    "backtest_raw_report": "03_backtest_strategy/backtest_report_raw.html",
+    "backtest_signal_log": "03_backtest_strategy/backtest_logs/signal_log.jsonl",
+    "backtest_equity_curve": "03_backtest_strategy/backtest_logs/equity_curve.csv",
+    "backtest_trades": "03_backtest_strategy/backtest_logs/trades.csv",
+    "backtest_performance_metrics": "03_backtest_strategy/backtest_logs/performance_metrics.csv",
+    "backtest_position_return_detail": "03_backtest_strategy/backtest_logs/position_return_detail.csv",
+    "final_report": "04_delivery/final_report.md",
     "failure_report": "failure_report.md",
 }
 
@@ -112,11 +91,11 @@ def build_manifest(report_id: str, title: str, source: str | None) -> dict:
             "major_minor": f"{sys.version_info.major}.{sys.version_info.minor}",
         },
         "backtest_engine": {
-            "name": "ts-cta local BACKTEST",
+            "name": "ts-cta event-driven engine",
             "version": None,
             "status": "bundled_available",
             "script": "scripts/local_backtest.py",
-            "notes": "bundled signal-driven engine; consumes external --market-data (skill never downloads). Stop-loss/take-profit live in strategy.py (emit direction).",
+            "notes": "Use the bundled local engine by default. Record external BACKTEST runner only when the user explicitly supplies one.",
         },
         "backtest_entrypoint": "scripts/local_backtest.py",
         "backtest_command": None,

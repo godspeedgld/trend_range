@@ -4,8 +4,10 @@
 
 ## Directory
 
+输出根平台自适应（`REPLICATION_ROOT` 环境变量 > 云环境 `/home/coder/project/...` > 本地 `~/report-replication`），可用 `--root` 覆盖。项目目录结构：
+
 ```text
-/home/coder/project/replication/report-replication/{report_id}/
+{输出根}/{report_id}/
   01_translation/full_translation.md
   02_strategy_logic/strategy_summary.md
   02_strategy_logic/reference_implementation.py
@@ -84,6 +86,7 @@
 
 文件：`02_strategy_logic/strategy_summary.md` + `02_strategy_logic/reference_implementation.py`
 
+- **从模板起笔**：复制 `templates/strategy_summary_template.md` 与 `templates/reference_implementation_template.py` 后填空（模板已含三要素函数骨架与必填章节）。
 - `strategy_summary.md` 含：研究问题、结论、资产池、样本周期/频率、数据源、**开仓规则**、**止损规则**、**止盈/退出规则**、参数、假设/风控（成本/滑点/保证金/杠杆）。
 - `reference_implementation.py` 含可审计的信号生成函数：读 OHLC → 计算开仓/止损/止盈 → 产出 `direction`（1/-1/0）。函数级精度，含缺失值规则与参数。
 - 必须明确三要素从研报何处抽取（引用原文公式/章节）。

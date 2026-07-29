@@ -1,13 +1,19 @@
 ---
 name: report-replication-ts
-description: 'Reproduce time-series CTA research reports and papers end to end: full Chinese
-  translation, strategy-logic extraction (entry / stop-loss / take-profit), standalone
-  beginner-readable HTML evaluation report, BACKTEST strategy generation and local
-  backtest execution, Chinese backtest explanation report, and final delivery summary.
-  Use when the user provides a time-series CTA / trend-following / momentum paper,
-  PDF, webpage, or text and asks for report replication, strategy replication, entry/stop/target
-  extraction, BACKTEST strategy code, or a beginner-readable replication package. Not
-  for cross-sectional factor reports (use skill-report-replication-factor instead).'
+description: 'Reproduce **strategy-type** time-series CTA / trend-following research
+  reports and papers end to end: full Chinese translation, strategy-logic extraction
+  (regime / entry / stop-loss & take-profit / position sizing / parameter optimization),
+  standalone beginner-readable HTML evaluation report, BACKTEST strategy generation
+  and local backtest execution, Chinese backtest explanation report, and final delivery
+  summary. Use when the user provides a time-series CTA / trend-following / momentum
+  paper, PDF, webpage, or text that contains a **concrete tradable strategy** (entry/exit
+  rules, or an empirical strategy section) and asks for report replication, strategy
+  replication, entry/stop/target extraction, BACKTEST strategy code, or a beginner-readable
+  replication package. Suitable for strategy papers and the empirical/strategy part
+  of methodology surveys. Not for pure theory/regime-survey papers without a tradable
+  strategy, and not for cross-sectional factor reports (use skill-report-replication-factor
+  instead). When the paper omits a component, fill documented defaults (regime=none,
+  entry=dual-MA, stop/target=ATR-chandelier, position=full, optimization=grid).'
 license: GPL-3.0-only
 metadata:
   organization: QuantSkills
@@ -37,7 +43,7 @@ metadata:
 
 ## Purpose
 
-把一篇**时序 CTA / 趋势跟踪**研报、论文、PDF、网页或文本，转化为完整的研究复现交付包（位于 `/home/coder/project/replication/report-replication/{report_id}`）：
+把一篇**时序 CTA / 趋势跟踪**研报、论文、PDF、网页或文本，转化为完整的研究复现交付包（位于 `{输出根}/{report_id}`，输出根平台自适应，见 Step 1）：
 
 1. 全文中文翻译。
 2. **策略逻辑抽取**：开仓 / 止损 / 止盈 + 参数 + 假设（`strategy_summary.md` + `reference_implementation.py`）。
@@ -108,7 +114,7 @@ python scripts/check_dependencies.py --install
 python scripts/create_project.py --title "<报告标题>" --source "<URL 或 PDF 路径>" [--root <输出根>]
 ```
 
-默认根 `/home/coder/project/replication/report-replication`（Windows 本地用 `--root` 覆盖）。在 `manifest.json` 记录：原始输入路径/URL、报告标题、运行日期、Python 环境、回测引擎入口（`scripts/local_backtest.py`）、数据源/假设/参数/代码哈希/运行历史。
+默认输出根**平台自适应**（`create_project.py:_default_root()`）：优先 `REPLICATION_ROOT` 环境变量；其次云环境 `/home/coder/project/replication/report-replication`（若存在）；否则本地 `~/report-replication`。可用 `--root` 显式覆盖。在 `manifest.json` 记录：原始输入路径/URL、报告标题、运行日期、Python 环境、回测引擎入口（`scripts/local_backtest.py`）、数据源/假设/参数/代码哈希/运行历史。
 
 ### 2. Extract And Translate
 
@@ -131,11 +137,25 @@ python scripts/check_step2_translation.py {project_dir}
 
 产出 `02_strategy_logic/strategy_summary.md` + `02_strategy_logic/reference_implementation.py`。
 
+**从模板起笔**（复制后填空，不要从零起结构）：
+- `cp templates/strategy_summary_template.md 02_strategy_logic/strategy_summary.md`
+- `cp templates/reference_implementation_template.py 02_strategy_logic/reference_implementation.py`
+
 `strategy_summary.md` 必须含：研究问题、结论、资产池、样本周期/频率、数据源、**开仓规则**、**止损规则**、**止盈/退出规则**、参数、假设/风控。每项标注从研报何处抽取（引用原文公式/章节）。
 
-`reference_implementation.py` 必须含可审计的信号生成函数：读 OHLC → 计算开仓/止损/止盈 → 产出 `direction`（1/-1/0）。函数级精度，含缺失值规则与参数。
+`reference_implementation.py` 必须含可审计的信号生成函数：读 OHLC → 计算开仓/止损/止盈 → 产出 `direction`（1/-1/0）。模板已含 `entry_signal()` / `stop_loss()` / `take_profit()` / `compute_direction()` / `build_signal_log()` 骨架，替换为研报实际逻辑即可。
 
-读 `references/tscta_evaluation.md` 的"三要素抽取清单"与"评估指标"再动手。
+读 `references/tscta_evaluation.md` 的"要素抽取清单"与"评估指标"再动手。
+
+**抽取默认值**（研报侧重各异：有的只讲开仓/止盈止损，有的讲 regime/仓位/参数优化，有的综合。研报未明确的要素填默认值，并在抽取溯源表标"默认值"，不要留空也不要臆造）：
+
+| 要素 | 默认值 |
+|------|--------|
+| regime 判断 | 无（不门控） |
+| 开仓 | 双均线交叉（5/20） |
+| 止盈止损 | ATR 吊灯（k=2.0） |
+| 仓位控制 | 满仓 |
+| 参数优化 | 网格搜索 + IS/OOS |
 
 完成后跑：
 
