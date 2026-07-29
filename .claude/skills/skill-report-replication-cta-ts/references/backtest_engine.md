@@ -1,87 +1,66 @@
-# BACKTEST Engine Rules
+# 时序 CTA 回测引擎规则（backtest_engine.md）
 
-Use the bundled local BACKTEST engine as the default strategy execution and backtest engine for Step 5.
+本技能用**事件驱动引擎**（`scripts/local_backtest.py`），不是 -factor 的 signal 驱动引擎。
+时序 CTA 的回测结果由**开仓 + 止盈止损 + 策略逻辑共同、即时**决定，故引擎逐根推进状态机。
 
-## Entry Point
-
-Default entrypoint:
+## 引擎接口
 
 ```bash
-python scripts/local_backtest.py /home/coder/project/replication/report-replication/{report_id} --market-data /path/to/market_data.csv
+python scripts/local_backtest.py {project_dir} --market-data /path/to/ohlc.csv
 ```
 
-Market data supports CSV or Parquet. By default it expects:
+- 行情：OHLCV CSV/Parquet（`date,symbol,open,high,low,close`[+volume]），**外部提供，技能不下载**。
+- 策略：`03_backtest_strategy/strategy.py` 暴露 `build_strategy(df)->spec`，引擎 per-symbol 调用。
 
-- `date`
-- `symbol`
-- `close`
+### strategy.py 的 spec 格式
 
-Use `--date-col`, `--symbol-col`, and `--price-col` when the input uses different names.
-
-The engine reads signals from:
-
-```text
-04_backtest_strategy/backtest_logs/signal_log.jsonl
+```python
+def build_strategy(df):  # df: 单品种 OHLC DataFrame
+    # 指标 + 入场事件（向量化）
+    ...
+    return {
+        "entry_long":  pd.Series(bool),    # 开多事件
+        "entry_short": pd.Series(bool),    # 开空事件
+        "stop": {"type": "atr_chandelier", "atr_period": 14, "k": 2.0},
+        # stop.type: none / atr_static / atr_chandelier / percent
+        "sizing": {"type": "full"}，        # 或 vol_target: {"type":"vol_target","target_vol":0.15,"vol_window":20}
+        "allow_short": True,
+    }
 ```
 
-Each line must be:
+## 执行语义（事件驱动，防前视）
 
-```json
-{"date": "YYYY-MM-DD", "signals": {"SYM": {"factor": 1.23, "direction": 1}}}
+- **入场**：close[t] 信号确认 → 以 close[t] 进场，持有进入 bar t+1。
+- **止损**：持仓中每根 bar 用 high/low 判 ATR 吊灯（或静态/百分比）命中 → 命中则以**止损价成交**（gapped 取 open），即时平仓。
+- **收益**：close-to-close 基准；止损 bar 收益 = pos·(止损价/prev_close − 1)。
+- **成本**：进场 + 出场各扣 cost_rate（手续费 bps + 滑点 bps）。
+- **多品种**：per-symbol 跑，组合日收益等权合成。
+
+## 提速
+
+指标/入场信号向量化（numpy/pandas）；路径依赖状态机用 **numba @jit** 加速（不可用自动回退纯 Python，逻辑一致）。
+
+## 产物（引擎写出，去因子化）
+
+```
+03_backtest_strategy/backtest_logs/
+  equity_curve.csv            # date, net_return, nav, drawdown
+  performance_metrics.csv     # 单行指标
+  position_return_detail.csv  # 逐根 date/symbol/ret/pos/direction
+  signal_log.jsonl            # 引擎产出的【实现方向】（审计用，非输入）
+03_backtest_strategy/
+  backtest_report.html        # 中文回测解释
+  backtest_report_raw.html    # 原始 JSON（英文/数值）
 ```
 
-If the user explicitly supplies an external BACKTEST runner, document its module/CLI/executable, version or commit, config format, expected output files, and data source. Do not substitute another framework silently.
+指标口径（复用 -factor compute_metrics）：final_nav、total/annual_return、annual/downside_volatility、Sharpe、Sortino、Calmar、max_drawdown、win_rate、profit_factor。**不含**因子 IC/分位/多空。
 
-## Strategy Code
+## 已知局限（写进 backtest_report.html）
 
-Generated strategy code must live at:
+- bar 级别（日频/周频）事件驱动，非逐笔 intraday。
+- gap 用命中价/open 近似。
+- signal_log 为引擎产出（审计），不再是输入接口（区别于 -factor）。
 
-```text
-04_backtest_strategy/strategy.py
-```
+## 外部回测器
 
-Requirements:
-
-- Keep all editable parameters in one visible section.
-- Implement the reconstructed factor exactly enough for audit.
-- Record factor value and direction for every evaluated date/symbol.
-- Make execution assumptions explicit: rebalance timing, order timing, slippage, fees, margin, contract multiplier, capital allocation, and risk controls.
-- Write a signal log to `04_backtest_strategy/backtest_logs/signal_log.jsonl`.
-- The bundled engine applies configurable execution lag, fees, slippage, initial cash, annualization, and max per-symbol weight.
-
-## Backtest Report
-
-The user-facing report must live at:
-
-```text
-04_backtest_strategy/backtest_report.html
-```
-
-If BACKTEST emits a raw HTML/CSV/JSON report, preserve it as:
-
-```text
-04_backtest_strategy/backtest_report_raw.html
-```
-
-or another clearly named file under `04_backtest_strategy/backtest_logs/`, then reference it in the Chinese report.
-
-The bundled engine writes:
-
-```text
-04_backtest_strategy/backtest_logs/equity_curve.csv
-04_backtest_strategy/backtest_logs/performance_metrics.csv
-04_backtest_strategy/backtest_logs/trades.csv
-04_backtest_strategy/backtest_logs/position_return_detail.csv
-03_factor_validation/data/direction_matrix_from_strategy.csv
-03_factor_validation/data/portfolio_returns_dir_full.csv
-03_factor_validation/data/backtest_alignment_audit.csv
-```
-
-## Alignment
-
-After the BACKTEST run, update the factor validation report with Phase B alignment:
-
-- Compare theoretical validation NAV with BACKTEST actual equity/NAV.
-- Explain differences in data source, frequency, execution timing, position sizing, fees, slippage, and capital/margin rules.
-- Save the audit table to `03_factor_validation/data/backtest_alignment_audit.csv`.
-- Save the alignment chart to `03_factor_validation/charts/16_backtest_alignment_nav.png` when BACKTEST equity is available.
+若用户显式提供外部回测器（如 vectorbt/backtrader），在 manifest 记录其入口/命令/配置/输出映射，不得静默替换。
