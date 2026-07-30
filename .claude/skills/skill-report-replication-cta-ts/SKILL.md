@@ -28,6 +28,16 @@ metadata:
 
 **与 -factor 的差异**：去因子（无 IC/分位/多空/因子验证）；新增方法提取；回测用**事件驱动引擎**（非 signal 驱动）。
 
+## 数据与外部输入（如何取数）
+
+本技能**只消费外部输入，本身不下载任何数据**。两类输入：
+
+1. **研报/论文输入**（Step 2 翻译用）：🌐 网页 URL（WebFetch/webReader 抓取）/ 📄 本地 PDF（Read，含 OCR）/ 📝 文本。中文研报可跳过翻译。
+2. **行情数据输入**（Step 4 回测用）：用户以**外部本地路径**提供 `local_backtest.py --market-data <CSV/Parquet OHLCV>`。可用配置文件指向本地文件或远程数据 API，技能读取。引擎需 `date,symbol,open,high,low,close`（+volume 可选）——止损/止盈判断用 high/low。
+   - **必做合法性检查**（`references/data_sources.md`）：NaN、复权、正价格、时序升序、(date,symbol) 唯一、覆盖率、可用时点（防前视）。不合格→中文写明卡点、结论降级 `inconclusive`。
+   - 全部来源记入 `manifest.json` 的 `data_sources`（提供方/路径/品种/区间/频率/复权/缺失处理）。
+3. **输出位置**：复现产物写到输出根（`REPLICATION_ROOT`(.env) > 云环境 > `~/report-replication`，可 `--root` 覆盖）。
+
 ## Language / Chart / Honesty Rules
 
 - 用户可见产出全程中文；英文仅用于公式/代码/指标缩写（Sharpe/Calmar/ATR）/原文标题/合约代码/CSV 列名。
@@ -66,7 +76,7 @@ python scripts/local_backtest.py {project_dir} --market-data <外部 OHLC CSV/Pa
 **数据合法性检查**（必做，`references/data_sources.md`）：NaN/复权/正价格/时序/覆盖。
 
 ### 6. Final Report
-`04_delivery/final_report.md` 综合"方法总结 + 回测结果"，决策导向。
+`04_delivery/final_report.md` 综合"方法总结 + 回测结果"，决策导向。从 `templates/final_report_template.md` 起笔。某阶段未完成则结论标 inconclusive 并链 `failure_report.md`。
 
 ### 7. Quality Gate
 ```bash
