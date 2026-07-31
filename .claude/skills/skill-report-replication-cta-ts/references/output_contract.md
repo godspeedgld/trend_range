@@ -91,7 +91,10 @@
 | `equity_curve.csv` | date/net_return/nav/drawdown | yes |
 | `performance_metrics.csv` | 单行核心指标 | yes |
 | `position_return_detail.csv` | 逐根 date/symbol/ret/pos/direction | yes |
+| `trades.csv` | 推导的买卖点（date/symbol/action/side/price） | yes |
 | `signal_log.jsonl` | 引擎产出实现方向（审计） | yes |
+
+`backtest_report.html` 由**引擎按固定模板生成**（每次格式一致）：核心绩效（% 口径）+ 净值曲线 + 回撤 + K 线带买卖点（▲开仓/▽平仓）。`config.json` 亦由引擎自动落运行参数。LLM 不得手写覆盖该 HTML。
 
 ### 5. Final Report
 文件：`04_delivery/final_report.md`（从 `templates/final_report_template.md` 起笔）

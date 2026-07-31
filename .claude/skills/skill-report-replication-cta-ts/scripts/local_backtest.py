@@ -230,7 +230,103 @@ def compute_metrics(returns: pd.Series, cfg: BacktestConfig) -> dict:
 
 
 # ── 输出 ────────────────────────────────────────────────
-def write_outputs(cfg: BacktestConfig, daily: pd.Series, all_pos: pd.DataFrame,
+def fmt_pct(v):
+    """百分比格式（小数比率 → xx.xx%）。"""
+    if v is None or (isinstance(v, float) and not np.isfinite(v)):
+        return "NA"
+    return f"{v * 100:.2f}%"
+
+
+def fmt_num(v, w=2):
+    if v is None or (isinstance(v, float) and not np.isfinite(v)):
+        return "NA"
+    return f"{v:.{w}f}"
+
+
+def derive_trades(market: pd.DataFrame, all_pos: pd.DataFrame) -> pd.DataFrame:
+    """从持仓序列推导买卖点（entry/exit）供 K 线标注。
+    entry: pos 0→±1（开仓，价=当日 close）；exit: pos ±1→0（平仓，价=当日 close，近似）。
+    """
+    m = market[["date", "symbol", "open", "high", "low", "close"]].copy()
+    m["date"] = pd.to_datetime(m["date"])
+    g = all_pos.merge(m, on=["date", "symbol"], how="left").sort_values(["symbol", "date"])
+    g["prev_pos"] = g.groupby("symbol")["pos"].shift(1).fillna(0)
+    rows = []
+    for _, r in g.iterrows():
+        if r["prev_pos"] == 0 and r["pos"] != 0:           # 开仓
+            rows.append({"date": r["date"], "symbol": r["symbol"], "action": "open",
+                         "side": "long" if r["pos"] > 0 else "short", "price": r["close"]})
+        elif r["prev_pos"] != 0 and r["pos"] == 0:         # 平仓
+            rows.append({"date": r["date"], "symbol": r["symbol"], "action": "close",
+                         "side": "long" if r["prev_pos"] > 0 else "short", "price": r["close"]})
+    return pd.DataFrame(rows)
+
+
+def derive_trades_paired(market: pd.DataFrame, all_pos: pd.DataFrame) -> pd.DataFrame:
+    """配对完整交易记录：一次开仓→平仓 = 一行。
+
+    从持仓序列和行情数据推导完整往返交易，包含：
+    - 开仓/平仓日期和价格（开仓价=当日 close，平仓价=当日 close 近似）
+    - 方向（多/空）
+    - 交易级收益率（从日收益累积，精确含成本+止损成交价）
+    - 持仓天数（自然日）
+    - 平仓类型（止损/信号，按收益方向粗略推断）
+    """
+    m = market[["date", "symbol", "close"]].copy()
+    m["date"] = pd.to_datetime(m["date"])
+    g = all_pos.merge(m, on=["date", "symbol"], how="left").sort_values(["symbol", "date"])
+    g["prev_pos"] = g.groupby("symbol")["pos"].shift(1).fillna(0)
+
+    rows = []
+    for sym, grp in g.groupby("symbol"):
+        grp = grp.sort_values("date").reset_index(drop=True)
+        entry_idx = None
+        entry_date = None
+        entry_price = None
+        entry_side = None
+
+        for i in range(len(grp)):
+            r = grp.iloc[i]
+            if r["prev_pos"] == 0 and r["pos"] != 0:
+                # 开仓：pos 0→非0
+                entry_idx = i
+                entry_date = r["date"]
+                entry_price = float(r["close"])
+                entry_side = "long" if r["pos"] > 0 else "short"
+            elif r["prev_pos"] != 0 and r["pos"] == 0 and entry_idx is not None:
+                # 平仓：pos 非0→0，配对
+                exit_date = r["date"]
+                exit_price_approx = float(r["close"])
+
+                # 从日收益累积计算交易级收益率（精确含成本+止损成交价）
+                trade_rets = grp.iloc[entry_idx:i + 1]["ret"].values.astype(np.float64)
+                trade_mult = float(np.prod(1.0 + trade_rets))
+                trade_return = trade_mult - 1.0
+
+                holding_days = (pd.Timestamp(exit_date) - pd.Timestamp(entry_date)).days
+
+                # 平仓类型：事件驱动引擎所有平仓均由 ATR 吊灯止损触发（无主动止盈/信号平仓）；
+                # 按交易盈亏区分"盈利平仓"（trailing stop 已移至盈利区）与"止损平仓"
+                exit_type = "盈利平仓" if trade_return > 0 else "止损平仓"
+
+                rows.append({
+                    "symbol": sym,
+                    "entry_date": str(entry_date)[:10],
+                    "entry_price": round(entry_price, 2),
+                    "exit_date": str(exit_date)[:10],
+                    "exit_price": round(exit_price_approx, 2),
+                    "side": entry_side,
+                    "return_pct": round(trade_return * 100, 4),
+                    "holding_days": max(holding_days, 1),
+                    "exit_type": exit_type,
+                })
+
+                entry_idx = None  # 重置，等下一笔开仓
+
+    return pd.DataFrame(rows)
+
+
+def write_outputs(cfg: BacktestConfig, daily: pd.Series, all_pos: pd.DataFrame, market: pd.DataFrame,
                   metrics: dict, per_sym: dict, raw: dict) -> None:
     sdir = cfg.project_dir / "03_backtest_strategy"
     logs = sdir / "backtest_logs"
@@ -241,45 +337,218 @@ def write_outputs(cfg: BacktestConfig, daily: pd.Series, all_pos: pd.DataFrame,
         logs / "equity_curve.csv", index=False, encoding="utf-8-sig")
     all_pos.to_csv(logs / "position_return_detail.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame([metrics]).to_csv(logs / "performance_metrics.csv", index=False, encoding="utf-8-sig")
-    # signal_log：实现方向（审计用，引擎产出）
+    trades = derive_trades(market, all_pos)
+    trades.to_csv(logs / "trades.csv", index=False, encoding="utf-8-sig")
+    trades_paired = derive_trades_paired(market, all_pos)
+    trades_paired.to_csv(logs / "trades_paired.csv", index=False, encoding="utf-8-sig")
     with (logs / "signal_log.jsonl").open("w", encoding="utf-8") as f:
         for (d, s), grp in all_pos.groupby(["date", "symbol"]):
             f.write(json.dumps({"date": pd.Timestamp(d).strftime("%Y-%m-%d"),
                                 "signals": {str(s): {"factor": 0.0,
                                                      "direction": int(grp["direction"].iloc[0])}}},
                                ensure_ascii=False) + "\n")
-    write_html(sdir, metrics, per_sym)
+    # config.json：引擎自动落运行参数（固定模板，免去手补）
+    (sdir / "config.json").write_text(json.dumps({
+        "symbols": sorted(per_sym.keys()), "cost_bps": cfg.cost_bps, "slippage_bps": cfg.slippage_bps,
+        "initial_cash": cfg.initial_cash, "annualization": cfg.annualization, "allow_short": cfg.allow_short,
+        "engine": "ts-cta event-driven", "n_bars": int(len(all_pos))}, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_html(sdir, daily, market, trades, trades_paired, metrics, per_sym)
     (sdir / "backtest_report_raw.html").write_text(
         "<pre>" + html.escape(json.dumps(raw, ensure_ascii=False, indent=2, default=str)) + "</pre>",
         encoding="utf-8")
 
 
-def write_html(sdir: Path, metrics: dict, per_sym: dict) -> None:
-    def fmt(v):
-        if v is None:
-            return "NA"
-        try:
-            return "NA" if (isinstance(v, float) and not np.isfinite(v)) else f"{v:.4f}"
-        except Exception:
-            return str(v)
-    rows = "".join(f"<tr><th>{html.escape(str(k))}</th><td>{fmt(v)}</td></tr>" for k, v in metrics.items())
-    sym_rows = "".join(
-        f"<tr><td>{html.escape(str(s))}</td><td>{fmt(m.get('final_nav'))}</td><td>{fmt(m.get('sharpe'))}</td>"
-        f"<td>{fmt(m.get('max_drawdown'))}</td></tr>" for s, m in per_sym.items())
-    (sdir / "backtest_report.html").write_text(
-        f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>时序 CTA 回测报告</title>
-<style>body{{font-family:Arial,"Microsoft YaHei",sans-serif;margin:32px;color:#18212f;line-height:1.6;}}
-table{{border-collapse:collapse;width:100%;margin:12px 0 24px;}}
-th,td{{border:1px solid #d6dae1;padding:8px;}}th{{background:#f3f5f8;}}
-.note{{background:#f8fafc;border-left:4px solid #64748b;padding:12px;}}</style></head><body>
+def write_html(sdir: Path, daily: pd.Series, market: pd.DataFrame, trades: pd.DataFrame,
+               trades_paired: pd.DataFrame, metrics: dict, per_sym: dict) -> None:
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    # 横式绩效表：行=标的（含中文），列=指标
+    metric_cols = [  # (key, label, kind)
+        ("final_nav", "净值", "num"), ("total_return", "总收益", "pct"),
+        ("annual_return", "年化收益", "pct"), ("annual_volatility", "年化波动", "pct"),
+        ("downside_volatility", "下行波动", "pct"), ("sharpe", "Sharpe", "num"),
+        ("sortino", "Sortino", "num"), ("calmar", "Calmar", "num"),
+        ("max_drawdown", "最大回撤", "pct"), ("win_rate", "胜率", "pct"),
+        ("profit_factor", "盈亏比", "num"),
+    ]
+    SYMBOL_ZH = {"au": "黄金", "ag": "白银", "hc": "螺纹钢", "rb": "螺纹钢", "i": "铁矿石",
+                 "j": "焦炭", "jm": "焦煤", "cu": "铜", "al": "铝", "zn": "锌", "ni": "镍",
+                 "if": "沪深300", "ih": "上证50", "ic": "中证500"}
+
+    def cell(kind, v):
+        return fmt_pct(v) if kind == "pct" else fmt_num(v)
+
+    head = "<tr><th>标的</th>" + "".join(f"<th>{lbl}</th>" for _, lbl, _ in metric_cols) + "</tr>"
+    body_rows = ""
+    if len(per_sym) > 1:  # 多品种时加组合行
+        body_rows += "<tr><td>组合 Portfolio</td>" + "".join(
+            f"<td>{cell(k, metrics.get(key))}</td>" for key, _, k in metric_cols) + "</tr>"
+    for s, m in per_sym.items():
+        lab = f"{s}（{SYMBOL_ZH.get(s.lower(), s)}）"
+        body_rows += f"<tr><td>{html.escape(lab)}</td>" + "".join(
+            f"<td>{cell(k, m.get(key))}</td>" for key, _, k in metric_cols) + "</tr>"
+    stats_table = f'<table style="width:100%">{head}{body_rows}</table>'
+
+    # 配对交易记录表（一次开仓→平仓 = 一行）
+    SIDE_ZH = {"long": "多", "short": "空"}
+    EXIT_TYPE_ZH = {"盈利平仓": "盈利平仓", "止损平仓": "止损平仓"}
+    if trades_paired is not None and len(trades_paired):
+        # 汇总统计
+        n_trades = len(trades_paired)
+        win_trades = int((trades_paired["return_pct"] > 0).sum())
+        loss_trades = int((trades_paired["return_pct"] <= 0).sum())
+        win_rate = win_trades / n_trades * 100 if n_trades else 0
+        avg_ret = float(trades_paired["return_pct"].mean())
+        avg_hold = float(trades_paired["holding_days"].mean())
+        total_ret = float(trades_paired["return_pct"].sum())
+        best = trades_paired.loc[trades_paired["return_pct"].idxmax()]
+        worst = trades_paired.loc[trades_paired["return_pct"].idxmin()]
+
+        summary_html = (
+            f'<div style="display:flex;gap:24px;flex-wrap:wrap;margin:12px 0 20px;">'
+            f'<div><b>总交易</b><br>{n_trades} 笔</div>'
+            f'<div><b>盈利</b><br><span style="color:#27ae60">{win_trades} 笔</span></div>'
+            f'<div><b>亏损</b><br><span style="color:#e74c3c">{loss_trades} 笔</span></div>'
+            f'<div><b>胜率</b><br>{win_rate:.1f}%</div>'
+            f'<div><b>平均收益</b><br><span style="color:{"#27ae60" if avg_ret>0 else "#e74c3c"}">{avg_ret:+.2f}%</span></div>'
+            f'<div><b>累计收益</b><br><span style="color:{"#27ae60" if total_ret>0 else "#e74c3c"}">{total_ret:+.2f}%</span></div>'
+            f'<div><b>平均持仓</b><br>{avg_hold:.0f} 天</div>'
+            f'<div><b>最佳单笔</b><br><span style="color:#27ae60">+{best["return_pct"]:.2f}%</span> ({best["entry_date"]})</div>'
+            f'<div><b>最差单笔</b><br><span style="color:#e74c3c">{worst["return_pct"]:+.2f}%</span> ({worst["entry_date"]})</div>'
+            f'</div>'
+        )
+
+        tr_rows = ""
+        for i, r in enumerate(trades_paired.itertuples()):
+            ret_str = f'{r.return_pct:+.2f}%'
+            ret_color = "#27ae60" if r.return_pct > 0 else "#e74c3c"
+            tr_rows += (
+                f"<tr>"
+                f"<td>{i + 1}</td>"
+                f"<td>{r.entry_date}</td>"
+                f"<td>{fmt_num(r.entry_price)}</td>"
+                f"<td>{r.exit_date}</td>"
+                f"<td>{fmt_num(r.exit_price)}</td>"
+                f"<td>{SIDE_ZH.get(r.side, r.side)}</td>"
+                f"<td style='color:{ret_color};font-weight:600'>{ret_str}</td>"
+                f"<td>{r.holding_days}</td>"
+                f"<td>{EXIT_TYPE_ZH.get(r.exit_type, r.exit_type)}</td>"
+                f"</tr>"
+            )
+        trades_table = (
+            f'{summary_html}'
+            f'<table style="width:100%">'
+            f'<tr><th>#</th><th>开仓日期</th><th>开仓价</th><th>平仓日期</th>'
+            f'<th>平仓价</th><th>方向</th><th>收益率</th><th>持仓天数</th><th>平仓类型</th></tr>'
+            f'{tr_rows}'
+            f'</table>'
+            f'<p style="color:#888;font-size:12px">注：平仓价用当日 close 近似（真实止损成交价见 position_return_detail.csv），'
+            f'交易收益率从日收益累积计算（精确含成本+止损成交价）。引擎所有平仓均由 ATR 吊灯止损触发，"盈利平仓"=trailing stop 已移至盈利区。</p>'
+        )
+    else:
+        trades_table = "<p>无交易记录。</p>"
+
+    # —— 三页签：净值曲线 / K线 / 统计指标（固定模板）——
+    symbols = sorted(per_sym.keys())
+    nav = (1 + daily).cumprod()
+    dd = nav / nav.cummax() - 1.0
+
+    # 页签1：净值 + 回撤
+    fig_nav = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
+                            row_heights=[0.7, 0.3], subplot_titles=("Strategy NAV", "Drawdown"))
+    fig_nav.add_trace(go.Scatter(x=nav.index, y=nav.values, name="NAV",
+                                 line=dict(color="#2980b9", width=1.4)), row=1, col=1)
+    fig_nav.add_trace(go.Scatter(x=dd.index, y=dd.values, name="Drawdown", fill="tozeroy",
+                                 line=dict(color="#c0392b", width=0.7),
+                                 fillcolor="rgba(192,57,43,0.15)"), row=2, col=1)
+    fig_nav.update_layout(template="plotly_white", height=460, hovermode="x unified",
+                          margin=dict(l=50, r=30, t=40, b=30), showlegend=False)
+    nav_html = fig_nav.to_html(full_html=False, include_plotlyjs=False, div_id="fig_nav",
+                               config={"responsive": True})
+
+    # 页签2：K线 + 买卖点（每品种一行）
+    fig_kl = make_subplots(rows=len(symbols), cols=1, shared_xaxes=True, vertical_spacing=0.04,
+                           subplot_titles=[f"{s} OHLC + Entry/Exit" for s in symbols]) if len(symbols) > 1 else None
+    for i, s in enumerate(symbols):
+        md = market[market["symbol"] == s].sort_values("date")
+        cd = go.Candlestick(x=md["date"], open=md["open"], high=md["high"], low=md["low"],
+                            close=md["close"], name=s, increasing_line_color="#27ae60",
+                            decreasing_line_color="#e74c3c")
+        if fig_kl is not None:
+            fig_kl.add_trace(cd, row=i + 1, col=1)
+        else:
+            fig_kl = go.Figure(cd)
+        tr = trades[trades["symbol"] == s] if len(trades) else pd.DataFrame()
+        if len(tr):
+            op, cl = tr[tr["action"] == "open"], tr[tr["action"] == "close"]
+            r = i + 1 if len(symbols) > 1 else None
+            kw = dict(row=r, col=1) if r else {}
+            fig_kl.add_trace(go.Scatter(x=op["date"], y=op["price"], mode="markers",
+                                        marker=dict(symbol="triangle-up", size=12, color="#2980b9"),
+                                        name="entry", showlegend=(i == 0)), **kw)
+            fig_kl.add_trace(go.Scatter(x=cl["date"], y=cl["price"], mode="markers",
+                                        marker=dict(symbol="triangle-down", size=12, color="#f39c12"),
+                                        name="exit", showlegend=(i == 0)), **kw)
+    fig_kl.update_layout(template="plotly_white", height=320 + 260 * len(symbols),
+                         hovermode="x unified", xaxis_rangeslider_visible=False,
+                         margin=dict(l=50, r=30, t=40, b=30))
+    kline_html = fig_kl.to_html(full_html=False, include_plotlyjs=False, div_id="fig_kline",
+                                config={"responsive": True})
+
+    body = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>时序 CTA 回测报告</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+body{{font-family:Arial,"Microsoft YaHei",sans-serif;margin:24px;color:#18212f;line-height:1.6;}}
+table{{border-collapse:collapse;width:100%;margin:12px 0 20px;}}
+th,td{{border:1px solid #d6dae1;padding:7px 10px;}}th{{background:#f3f5f8;}}
+.note{{background:#f8fafc;border-left:4px solid #64748b;padding:12px;margin:12px 0;}}
+.tabs{{display:flex;gap:4px;border-bottom:2px solid #2980b9;margin:16px 0 0;}}
+.tab{{padding:9px 20px;cursor:pointer;border:1px solid #d6dae1;border-bottom:none;background:#f3f5f8;
+border-radius:6px 6px 0 0;font-size:14px;}}
+.tab.active{{background:#2980b9;color:#fff;border-color:#2980b9;}}
+.pane{{display:none;padding:14px 0;}}.pane.active{{display:block;}}
+h2{{border-bottom:2px solid #2980b9;padding-bottom:4px;}}
+</style></head><body>
 <h1>时序 CTA 回测报告（事件驱动引擎）</h1>
-<div class="note">由 skill 内置<b>事件驱动引擎</b>生成：开仓信号即时进场、ATR 吊灯止损用 high/low 命中价即时触发、
-收益 close-to-close、含手续费/滑点。日频 bar 口径，非逐笔 intraday。</div>
-<h2>核心绩效</h2><table>{rows}</table>
-<h2>分品种</h2><table><tr><th>品种</th><th>final_nav</th><th>sharpe</th><th>max_drawdown</th></tr>{sym_rows}</table>
-<h2>已知局限</h2><ul><li>bar 级别（日频/周频）事件驱动，非逐笔 intraday</li>
-<li>gap 用命中价/open 近似</li><li>signal_log.jsonl 为引擎产出的实现方向（审计），非输入</li></ul>
-</body></html>""", encoding="utf-8")
+<div class="note">由 skill 内置<b>事件驱动引擎</b>生成（固定模板，每次格式一致）：开仓信号即时进场、ATR 吊灯止损用 high/low 命中价即时触发、
+收益 close-to-close、含手续费/滑点。日频 bar 口径，非逐笔 intraday。K 线 ▲=开仓、▽=平仓（平仓价当日 close 近似）。</div>
+<div class="tabs">
+  <div class="tab active" onclick="showTab('nav')">净值曲线</div>
+  <div class="tab" onclick="showTab('kline')">K 线</div>
+  <div class="tab" onclick="showTab('stats')">统计指标</div>
+  <div class="tab" onclick="showTab('trades')">交易记录</div>
+</div>
+<div id="pane-nav" class="pane active">{nav_html}</div>
+<div id="pane-kline" class="pane">{kline_html}</div>
+<div id="pane-stats" class="pane">
+  <h2>核心绩效（每标的一行，指标为列）</h2>
+  {stats_table}
+  <h2>已知局限</h2><ul>
+  <li>bar 级别（日频/周频）事件驱动，非逐笔 intraday；gap 用命中价/open 近似。</li>
+  <li>K 线平仓标记用当日 close 近似（真实止损成交价见 position_return_detail.csv）。</li>
+  <li>signal_log.jsonl 为引擎产出的实现方向（审计），非输入。</li>
+  <li>胜率为 bar 级口径（含 flat bar）；交易级胜率见 trades.csv。</li>
+  </ul>
+</div>
+<div id="pane-trades" class="pane">
+  <h2>交易明细（共 {len(trades_paired) if trades_paired is not None else 0} 笔往返交易）</h2>
+  {trades_table}
+</div>
+<script>
+function showTab(id){{
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',i===['nav','kline','stats','trades'].indexOf(id)));
+  document.querySelectorAll('.pane').forEach(p=>p.classList.remove('active'));
+  document.getElementById('pane-'+id).classList.add('active');
+  // 切到图页签时重绘 plotly（修复隐藏页签渲染窄的问题）
+  if(window.Plotly){{
+    if(id==='nav') Plotly.Plots.resize('fig_nav');
+    if(id==='kline') Plotly.Plots.resize('fig_kline');
+  }}
+}}
+</script>
+</body></html>"""
+    (sdir / "backtest_report.html").write_text(body, encoding="utf-8")
 
 
 def update_manifest(cfg: BacktestConfig, metrics: dict) -> None:
@@ -334,7 +603,7 @@ def main() -> int:
     all_pos = pd.concat(frames, ignore_index=True)
     daily = all_pos.groupby("date")["ret"].mean().sort_index()
     metrics = compute_metrics(daily, cfg)
-    write_outputs(cfg, daily, all_pos, metrics, per_sym,
+    write_outputs(cfg, daily, all_pos, market, metrics, per_sym,
                   {"metrics": metrics, "per_symbol": per_sym, "numba": _HAS_NUMBA,
                    "n_bars": int(len(all_pos)), "symbols": list(per_sym.keys())})
     update_manifest(cfg, metrics)
