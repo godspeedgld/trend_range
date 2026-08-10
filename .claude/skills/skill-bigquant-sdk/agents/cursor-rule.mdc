@@ -1,0 +1,5 @@
+# Cursor Rule — BigQuant SDK Skill
+
+Always read `.claude/skills/skill-bigquant-sdk/SKILL.md` when the user asks about BigQuant data, fetching market data from BigQuant, or querying BigQuant tables.
+
+Prefer `DataSource().read()` for data access. Use `references/data_tables.md` for table schemas.
