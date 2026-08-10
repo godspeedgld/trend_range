@@ -1,86 +1,85 @@
-# BigQuant SDK — 数据获取与本地存储
+# BigQuant SDK — 数据获取 + 本地仓库
 
-把自然语言数据需求路由到 BigQuant DataSource / dai API，拉取行情数据并保存到本地。
-
-## 核心能力
-
-- **数据获取**：通过 `DataSource().read()` 拉取期货/股票日线、分钟线、因子等数据
-- **本地存储**：保存为 Parquet / CSV
-- **SQL 查询**：通过 `dai.query()` 在 BigQuant 云端执行 SQL（可选）
+两段式流水线：`dai.query(SQL)` 拉取行情 → Parquet 分区 + DuckDB 视图存本地。
 
 ## 快速开始
 
 ```bash
-# 安装依赖
-pip install -r requirements.txt
+pip install bigquant pandas duckdb pyarrow
+```
 
-# 拉取期货日线数据
-python scripts/call_api.py \
-  --table bar1d_CN_FUTURE \
-  --instruments AU2506.SHF \
-  --start 2024-01-01 --end 2025-06-30 \
-  --output ./au_daily.parquet \
-  --format parquet
+### 数据拉取
 
-# 拉取A股日线
+```python
+from bigquant import dai
+
+df = dai.query(
+    "SELECT date, instrument, close, volume "
+    "FROM cn_stock_bar1d "
+    "WHERE instrument = '000001.SZ' AND date >= '2024-01-01'"
+).df()
+```
+
+### CLI 工具
+
+```bash
 python scripts/call_api.py \
-  --table bar1d_CN_STOCK_A \
-  --instruments 000001.SZ,600000.SH \
+  --table cn_stock_bar1d \
+  --instruments 000001.SZ \
   --start 2024-01-01 --end 2025-06-30 \
   --output ./stocks.parquet
+```
+
+### 本地仓库
+
+```python
+# 拉取 → 分区 Parquet → DuckDB 视图
+import pandas as pd; from pathlib import Path; import duckdb
+
+ROOT = Path("data_cache/bigquant_warehouse")
+df["year"] = pd.to_datetime(df["date"]).dt.year
+for year, grp in df.groupby("year"):
+    (ROOT / f"stock_bar1d/year={year}").mkdir(parents=True, exist_ok=True)
+    grp.to_parquet(ROOT / f"stock_bar1d/year={year}/part.parquet", index=False)
+
+con = duckdb.connect(str(ROOT / "bigquant_warehouse.duckdb"))
+con.execute("CREATE VIEW stock_bar1d AS SELECT * FROM read_parquet('.../year=*/part.parquet', hive_partitioning=true)")
 ```
 
 ## 目录结构
 
 ```
 skill-bigquant-sdk/
-  SKILL.md              # AI agent 主指令
-  README.md             # 人类阅读
-  requirements.txt      # Python 依赖
-  scripts/
-    call_api.py         # CLI 数据拉取工具
-    bigquant_runtime.py # SDK 运行时引导
+  SKILL.md                     # AI agent 主指令
+  README.md
+  scripts/call_api.py          # CLI: SQL → fetch → Parquet/CSV
   references/
-    data_tables.md      # 数据表目录（字段+示例）
-    api_reference.md    # API 详细文档
-  agents/               # 多平台适配
+    data_tables.md             # 表结构目录（字段+类型+示例）
+    sql_templates.md           # 常用 SQL 查询模板
+    warehouse-playbook.md      # 仓库设计规范（分区/刷新/校验）
 ```
 
-## 数据表支持
+## 支持的数据表
 
-| 表 ID | 说明 |
-|-------|------|
-| bar1d_CN_FUTURE | 期货日线行情 |
-| bar1d_CN_FUTURE_adjust | 期货复权日线 |
-| bar1d_CN_STOCK_A | A股后复权日线 |
-| bar1d_CN_STOCK_A_adjust | A股前复权日线 |
-| bar1d_CN_INDEX | 指数日线 |
-| cn_stock_prefactors_community | 预计算因子社区版 |
+| 表名 | 说明 |
+|------|------|
+| cn_stock_bar1d | A股后复权日线 |
+| cn_future_bar1d | 期货日线 |
+| cn_future_bar1d_adjust | 期货复权日线 |
+| cn_fund_bar1d | 基金后复权日线 |
+| cn_stock_bar1m_c | A股1分钟截面 |
+| cn_future_bar1m_c | 期货1分钟截面 |
+| all_trading_days | 交易日历 |
 
-详见 `references/data_tables.md`。
+## 认证
 
-## 首次使用
-
-1. `pip install bigquant -U`
-2. 去 BigQuant 控制台获取 AK/SK：https://bigquant.com/account/settings
-3. 配置凭据到 `~/.bigquant/config.json`：
+AK/SK 密钥对，配置到 `~/.bigquant/config.json`：
 
 ```json
-{
-  "auth": {
-    "ak": "your_access_key",
-    "sk": "your_secret_key"
-  }
-}
+{"auth": {"ak": "your_key", "sk": "your_secret"}}
 ```
 
-## 与 Pandadata 的差异
-
-| 维度 | BigQuant | Pandadata |
-|------|----------|-----------|
-| 日期格式 | yyyy-mm-dd | YYYYMMDD |
-| 期货代码 | IF2506.CFX | IF_DOMINANT.CFX |
-| 认证 | AK/SK 密钥对 | username/password |
+获取密钥：https://bigquant.com/account/settings
 
 ## License
 

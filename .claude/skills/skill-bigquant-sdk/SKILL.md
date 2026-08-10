@@ -1,55 +1,30 @@
 ---
 name: bigquant-sdk
-description: BigQuant SDK data acquisition skill. Use when the user asks to fetch market
-  data from BigQuant platform, query BigQuant data tables (futures/stock daily bars,
-  minutes, factors, etc.), download historical OHLCV data, cache BigQuant data locally
-  as CSV/Parquet, or write Python code that calls BigQuant DataSource/dai APIs.
+description: BigQuant SDK data acquisition and local warehouse skill. Use when the user
+  asks to fetch market data from BigQuant, query BigQuant data tables, download OHLCV
+  data, cache BigQuant data locally as Parquet with DuckDB views, or write Python
+  code that calls BigQuant dai.query APIs.
 license: GPL-3.0-only
 metadata:
   project_type: skill
   category: data-api
-  tags:
-  - bigquant
-  - market-data
-  - python-sdk
-  - futures
-  - stock
+  tags: [bigquant, market-data, python-sdk, futures, stock, warehouse, duckdb, parquet]
   status: dev
   validation_level: runnable
-  summary_zh: 调用 BigQuant SDK 获取期货/股票行情数据并保存本地（Parquet/CSV），支持 DSL 自然语言转 API 调用。
+  summary_zh: BigQuant 数据获取 + 本地仓库：dai.query() SQL 拉取行情，Parquet 分区存储，DuckDB 视图查询。
 ---
 
-# BigQuant SDK — 数据获取与本地存储
+# BigQuant SDK — 数据获取 + 本地仓库
 
-把自然语言数据需求路由到 BigQuant DataSource / dai API，拉取行情数据并保存到本地。
+两段式流水线：① `dai.query(SQL)` 拉数据 → ② Parquet 分区 + DuckDB 视图本地存库。
 
-## 核心能力
+---
 
-1. **数据获取**：通过 `DataSource().read()` 拉取期货/股票日线、分钟线、因子等数据
-2. **本地存储**：保存为 Parquet / CSV，支持分区（按品种/年份）
-3. **SQL 查询**（可选）：通过 `dai.query()` 在 BigQuant 云端执行 SQL
+# Part 1：数据获取
 
-## 安装与初始化
+## 认证（AK/SK）
 
-```bash
-# 安装 BigQuant SDK
-pip install bigquant -U
-
-# 验证安装
-python -c "import bigquant; print('bigquant SDK OK')"
-```
-
-## 认证（AK/SK 密钥对）
-
-BigQuant SDK 使用 **AK/SK 密钥对**认证，不是浏览器 OAuth。
-
-### 获取密钥
-
-访问 BigQuant 控制台生成：https://bigquant.com/account/settings → API 密钥
-
-### 配置方式（三选一）
-
-**方式 1：配置文件（推荐）** — `~/.bigquant/config.json`
+去 https://bigquant.com/account/settings 获取密钥，配置到 `~/.bigquant/config.json`：
 
 ```json
 {
@@ -60,120 +35,191 @@ BigQuant SDK 使用 **AK/SK 密钥对**认证，不是浏览器 OAuth。
 }
 ```
 
-SDK 自动读取，无需手动调登录函数。
+## dai.query() — 统一 SQL 接口
 
-**方式 2：环境变量**
-
-```bash
-export BIGQUANT_AK=your_access_key
-export BIGQUANT_SK=your_secret_key
-```
-
-**方式 3：代码中显式设置**
-
-```python
-import bigquant
-bigquant.set_token(ak="your_ak", sk="your_sk")
-```
-
-## 数据获取模式
-
-### dai.query() SQL 接口（推荐）
-
-直接写 SQL 从 BigQuant 云端查询，返回 DataFrame。
+BigQuant 所有行情数据通过一个接口获取：`dai.query(sql)` → `result.df()`。
 
 ```python
 from bigquant import dai
 
-result = dai.query(
+# 股票日线
+df = dai.query(
     "SELECT date, instrument, open, high, low, close, volume "
-    "FROM cn_future_bar1d "
-    "WHERE date >= '2024-01-01' AND date <= '2025-06-30' "
-    "AND instrument IN ('AU2506.SHF', 'IF2506.CFX') "
-    "ORDER BY date, instrument"
-)
-df = result.df()  # -> pd.DataFrame
-```
-
-```python
-# A股日线
-result = dai.query(
-    "SELECT date, instrument, close, volume "
     "FROM cn_stock_bar1d "
     "WHERE instrument = '000001.SZ' AND date >= '2024-01-01'"
-)
-df = result.df()
+).df()
+
+# 期货日线（需要账号有期货数据权限）
+df = dai.query(
+    "SELECT * FROM cn_future_bar1d "
+    "WHERE instrument IN ('AU2506.SHF', 'IF2506.CFX') "
+    "AND date >= '2024-01-01' AND date <= '2025-06-30' "
+    "ORDER BY date, instrument"
+).df()
+
+# 交易日历
+td = dai.query("SELECT date, market_code FROM all_trading_days").df()
 ```
 
-## 常用数据表（详见 references/data_tables.md）
+## 表名速查
 
-| 表 ID / SQL 表名 | 说明 | 频率 |
-|---|---|---|
-| `bar1d_CN_FUTURE` / `cn_future_bar1d` | 期货日线行情 | 日 |
-| `bar1d_CN_STOCK_A` / `cn_stock_bar1d` | A股后复权日线 | 日 |
-| `bar1d_CN_STOCK_A_adjust` | A股前复权日线 | 日 |
-| `bar1d_CN_INDEX` | 指数日线 | 日 |
-| `cn_stock_prefactors_community` | 预计算因子（社区版） | 日 |
+| SQL 表名 | 说明 | 主键 |
+|----------|------|------|
+| `cn_stock_bar1d` | A股后复权日线 | (instrument, date) |
+| `cn_stock_bar1m_c` | A股1分钟截面 | (instrument, date) |
+| `cn_future_bar1d` | 期货日线 | (instrument, date) |
+| `cn_future_bar1m_c` | 期货1分钟截面 | (instrument, date) |
+| `cn_fund_bar1d` | 基金后复权日线 | (instrument, date) |
+| `cn_stock_chips_distribution` | 筹码分布 | (instrument, date) |
+| `all_trading_days` | 交易日历 | (date, market_code) |
+
+完整字段见 `references/data_tables.md`，SQL 模板见 `references/sql_templates.md`。
+
+## 安装
+
+```bash
+pip install bigquant pandas pyarrow duckdb
+```
+
+---
+
+# Part 2：本地仓库
+
+## 仓库布局
+
+```text
+data_cache/bigquant_warehouse/
+  _meta.json                     # 全局元数据（watermark + 状态）
+  bigquant_warehouse.duckdb      # DuckDB 视图库
+  trading_days/part.parquet      # 交易日历基准（全量覆盖）
+  stock_bar1d/year=2024/part.parquet
+  future_bar1d/year=2024/part.parquet
+  future_bar1m_c/year=2024/month=01/part.parquet
+  fund_bar1d/year=2024/part.parquet
+  stock_chips/year=2024/part.parquet
+```
+
+分区键：日线 → `year`，分钟 → `year/month`。
+
+## 拉取 + 入库（核心流水线）
+
+```python
+from pathlib import Path
+from datetime import datetime
+import pandas as pd
+import duckdb
+from bigquant import dai
+
+ROOT = Path("data_cache/bigquant_warehouse")
+TABLE = "stock_bar1d"                # 仓库表名
+SOURCE = "cn_stock_bar1d"            # BigQuant SQL 表名
+START, END = "2024-01-01", "2025-06-30"
+
+# 1. 拉取
+sql = f"SELECT * FROM {SOURCE} WHERE date >= '{START}' AND date <= '{END}'"
+df = dai.query(sql).df()
+
+# 2. 按年分区写 Parquet
+df["year"] = pd.to_datetime(df["date"]).dt.year
+table_dir = ROOT / TABLE
+for year, grp in df.groupby("year"):
+    part_dir = table_dir / f"year={year}"
+    part_dir.mkdir(parents=True, exist_ok=True)
+    out = part_dir / "part.parquet"
+    if out.exists():
+        existing = pd.read_parquet(out)
+        grp = pd.concat([existing, grp], ignore_index=True)
+        grp = grp.drop_duplicates(subset=["instrument", "date"], keep="last")
+    grp.to_parquet(out, index=False)
+
+# 3. DuckDB 视图（一次性创建，后续刷新后重建）
+db = ROOT / "bigquant_warehouse.duckdb"
+con = duckdb.connect(str(db))
+con.execute(f"""
+    CREATE OR REPLACE VIEW {TABLE} AS
+    SELECT * FROM read_parquet('{table_dir}/**/*.parquet', hive_partitioning=true)
+""")
+con.close()
+
+print(f"入库完成: {len(df)} 行 → {table_dir}")
+```
+
+## DuckDB 查询
+
+```python
+import duckdb
+con = duckdb.connect("data_cache/bigquant_warehouse/bigquant_warehouse.duckdb")
+
+df = con.execute("""
+    SELECT date, instrument, close, volume
+    FROM stock_bar1d
+    WHERE instrument = '000001.SZ' AND date >= '2024-01-01'
+    ORDER BY date
+""").fetchdf()
+```
+
+## 增量刷新
+
+```python
+# 读 watermark → 只拉缺失区间
+import json
+meta = json.loads((ROOT / "_meta.json").read_text())
+wm = meta["tables"][TABLE].get("end_date", "2005-01-01")
+latest = str(pd.to_datetime("today").date())  # 或从 trading_days 取
+
+if wm < latest:
+    # 拉取 (wm, latest] + 原样入库
+    ...
+    # 更新 watermark
+    meta["tables"][TABLE]["end_date"] = latest
+    (ROOT / "_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+```
 
 ## 核心约定
 
-- 日期格式 `yyyy-mm-dd`（区别于 Pandadata 的 `YYYYMMDD`）
-- 期货合约代码格式：`IF2506.CFX`、`AU2506.SHF`、`HC2506.SHF`
-- A股代码格式：`000001.SZ`、`600000.SH`（与 Pandadata 一致）
-- 指数代码格式：`000300.SH`、`000905.SH`
-- `fields=[]` 或省略 → 返回所有字段
-- `instruments` 省略 → 返回全市场（数据量大，慎用）
+- **交易日对齐**：本地日期范围不超出 `all_trading_days` 最新日期
+- **增量追加**：历史数据不变，只拉 `(watermark, latest]` 区间
+- **主键去重**：`(instrument, date)`，写入前合并去重
+- **后复权数据**：历史稳定，可安全增量追加
+- **分钟数据**：量大（数 GB），必须指定 instruments 缩小范围
 
-## 脚本工具
+详见 `references/warehouse-playbook.md`。
 
-### call_api.py — 通用数据拉取 + 本地保存
+---
+
+## CLI 工具
+
+`scripts/call_api.py` — 快速拉取 + 保存，不走仓库：
 
 ```bash
-PYTHON_BIN="${BIGQUANT_PYTHON:-python}"
-"$PYTHON_BIN" scripts/call_api.py \
-  --table bar1d_CN_FUTURE \
-  --instruments IF2506.CFX,IC2506.CFX \
-  --start 2024-01-01 \
-  --end 2025-06-30 \
-  --output ./data/futures_daily.parquet \
-  --format parquet
+python scripts/call_api.py \
+  --table cn_stock_bar1d \
+  --instruments 000001.SZ,600000.SH \
+  --start 2024-01-01 --end 2025-06-30 \
+  --output ./data/stocks.parquet
 ```
-
-参数表：
-| 参数 | 说明 |
-|---|---|
-| `--table` | 数据表 ID |
-| `--instruments` | 合约代码（逗号分隔），省略=全市场 |
-| `--start` / `--end` | 日期范围 yyyy-mm-dd |
-| `--fields` | 字段（逗号分隔），省略=全字段 |
-| `--output` | 输出文件路径（.parquet / .csv） |
-| `--format` | 输出格式 parquet / csv |
-
-行为：
-- 若 `bigquant` SDK 未安装 → 报错提示安装 `pip install bigquant`
-- 若未登录 → SDK 自动弹出浏览器授权
-- 数据为空 → 报 warning 但不报错
-- 输出目录自动创建
 
 ## 与 Pandadata 的差异
 
 | 维度 | BigQuant | Pandadata |
-|---|---|---|
+|------|----------|-----------|
+| 数据接口 | `dai.query(sql)` 统一 SQL | 185 个 `get_*` 方法 |
 | 日期格式 | `yyyy-mm-dd` | `YYYYMMDD` |
-| 期货代码 | `IF2506.CFX` | 主力: `IF_DOMINANT.CFX` |
+| 期货主键列 | `instrument` | `symbol` |
+| 期货代码 | `AU2506.SHF`（具体合约） | `AU_DOMINANT.SHF`（主力） |
 | 认证 | AK/SK 密钥对 | username/password |
-| 数据源概念 | `DataSource('table_id')` | `panda_data.get_*()` |
-| 股指期货 | 支持 IF/IH/IC/IM | 仓库 `future_daily` 无 |
 
 ## Reference Files
 
-- `references/data_tables.md`：可用数据表目录（字段+代码示例）
-- `references/api_reference.md`：API 详细文档
+- `references/data_tables.md`：完整表结构（字段+类型+示例）
+- `references/sql_templates.md`：常用 SQL 查询模板
+- `references/warehouse-playbook.md`：仓库设计规范（分区/刷新/校验/安全）
 
 ## Agent Usage Rules
 
-- 查询数据表结构前先看 `references/data_tables.md`
-- 生成代码用 `DataSource().read()` 模式（更简洁）
-- 代码必须可直接运行，包含 import 和登录引导
-- 首次使用提示用户：SDK 会弹出浏览器授权
-- 数据拉取后报告：行数、列、日期范围、内存占用
+- 查表结构 → `references/data_tables.md`
+- 写 SQL → `references/sql_templates.md` 抄模板
+- 建仓库 → `references/warehouse-playbook.md` + 本文件 Part 2
+- 代码必须可直接运行，包含 import
+- 拉取后报告：行数、日期范围、品种数
+- 免费账号期货表可能无权限，提示升级
