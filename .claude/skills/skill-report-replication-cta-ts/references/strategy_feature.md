@@ -1,47 +1,67 @@
 # 回测特征提取规范（strategy_feature.md）
 
 本文件是 **Step 4 回测特征提取**的依据，产出 `03_backtest_strategy/backtest_features.md` + `reference_implementation.py`。
-**关键要求（5.2.6）**：每项特征都要有**文字描述 + 可执行指标代码**两份。
 
-## 一、需提取的回测特征（5.2）
+## 提取原则（优先级从高到低）
 
-### 5.2.1 regime 判断（默认：无）
-- 文字：是否做市场状态识别？方法（TSI/ρ、Hurst…）、状态划分、门控作用（仅趋势态开趋势仓？震荡态切反转？）。
-- 代码：`regime_state(df) -> pd.Series[bool/enum]`。
+1. **优先从原文实证分析提取**：如果研报的"实证分析"章节给出了确切明白的入场逻辑、离场逻辑、交易规则，直接取。这是最权威的来源——实证里写的就是报告实际跑的策略。
+2. **实现不明时查方法提取**：实证有确切规则但实现细节不明确（如参数值、计算口径），查看 `02_approach/main_approach.md`（Step 3 产出）对应小节获取详细公式和推导。
+3. **仍不明时查原文**：`main_approach.md` 也无法解决时，回到研报原文对应章节确认。
+4. **实证不明确时从 main_approach.md 推导**：如果实证章节完全没有给出三个逻辑，则从 `main_approach.md` 的核心方法中取最贴近实证描述的版本。
+5. **提取前必须先读 main_approach.md**：理解 Step 3 已提取的完整方法链条，避免重复扫原文。
+6. **逐条标注来源和偏差**：每条特征追溯到原文章节（实证 §X 或 main_approach §Y）。每个与原文的差异在 backtest_features.md §4 逐条列出并说明原因（可跑性/v1简化/数据不足）。
 
-### 5.2.2 开仓信号判断（默认：双均线）
-- 文字：具体指标（动量/均线/Kalman…）、指标融合方法（共振/打分/ML）、触发条件、参数。
-- 代码：`entry_signal(df) -> (entry_long, entry_short)` 布尔事件数组。
+## 三特征模型
 
-### 5.2.3 止盈止损判断（默认：ATR 吊灯）
-- 文字：止损类型（固定%/ATR静态/ATR移动吊灯/逻辑证伪/时间退出）、止盈类型、参数（ATR 周期、倍数 k、最大持有）。
-- 代码：止损规格 `{"stop": {"type":"atr_chandelier","atr_period":14,"k":2.0}}`，引擎据此用 high/low 命中价即时触发。
+只提取三个特征，每项**文字描述 + 可执行代码**：
 
-### 5.2.4 开仓平仓逻辑
-- 文字：空仓遇信号如何处理（进场）；多仓遇反向信号如何处理（反手/忽略）；止损触发后是否同根再进。
-- 代码：在 `build_strategy` 里以 entry_long/entry_short 事件 + stop 规格表达（引擎负责状态机）。
+### 1. 入场逻辑
 
-### 5.2.5 风险控制 / 仓位（默认：满仓）
-- 文字：仓位法（满仓/vol-target/等手数/风险平价）、目标波动、单品种最大权重、保证金、成本/滑点。
-- 代码：`{"sizing":{"type":"vol_target","target_vol":0.15,"vol_window":20}}` 或 `{"type":"full"}`。
+研报实证中**什么条件下开仓**，把 regime 门控、信号触发、方向判断统一描述为一个完整入场规则。
 
-## 二、reference_implementation.py（可审计实现）
+- 范例："收盘上穿自适应均线 AND regime=趋势上行 → 做多；下穿 AND 趋势下行 → 做空"
+- 若研报用 regime 门控，则入场逻辑统一描述"regime 条件 + 信号条件"的 AND 组合
+- 代码：`entry_signal(df) -> (entry_long, entry_short)` 布尔事件数组
 
-`03_backtest_strategy/reference_implementation.py` 必须含可审计的指标/信号函数，函数级精度，含缺失值规则与参数。它和 `strategy.py` 的关系：
-- `reference_implementation.py` = 方法可审计的"教材式"实现（强调可读、可追公式）。
-- `strategy.py` = 引擎可跑版本，暴露 `build_strategy(df)->spec` 喂事件驱动引擎（见 backtest_engine.md）。
-- 二者口径一致；strategy.py 可直接 import reference_implementation 的函数。
+### 2. 离场逻辑
 
-## 三、抽取默认值（研报未明确时填默认，并在文档标"默认值"）
+研报实证中**什么条件下平仓**，覆盖止损、止盈、时间退出、信号反转等所有离场路径。
+
+- 范例："ATR(14) 吊灯移动止损 k=2.0，持仓中 high/low 命中即平仓；无主动止盈；不反手"
+- 若有多层退出（技术止损 + 逻辑证伪 + 时间退出），逐一列出，并标注实证中实际启用了哪几层
+- 代码：止损规格 `{"type":"atr_chandelier","atr_period":14,"k":2.0}`，引擎据此状态机触发
+
+### 3. 交易规则
+
+研报实证中的**仓位、风控、成本、品种、频率等约束**。
+
+- 范例："满仓（信号 ±1 即满仓多/空）" / "vol-target 15%，vol_window=20"
+- 包含：仓位法、手续费、滑点、保证金、年化天数、是否允许做空、单品种最大权重
+- 代码：`sizing` spec + 引擎 CLI 参数
+
+## 数据与参数
+
+额外记录：
+- 品种、区间、频率、数据来源
+- 所有策略参数（窗口、阈值、乘数）
+
+## 默认值（研报未明确时）
 
 | 要素 | 默认值 |
 |------|--------|
-| regime 判断 | 无（不门控） |
-| 开仓 | 双均线交叉（5/20） |
-| 止盈止损 | ATR 吊灯（k=2.0） |
-| 仓位控制 | 满仓 |
-| 参数优化 | 网格 + IS/OOS |
+| 入场 | 双均线交叉（5/20） |
+| 离场 | ATR 吊灯（k=2.0, period=14） |
+| 交易规则 | 满仓，成本 2bps + 滑点 1bps，年化 252 |
 
-## 四、check_strategy.py 检查
+## reference_implementation.py
 
-门禁检查 backtest_features.md 含：regime、开仓、止盈止损、开平仓逻辑、风控/仓位 关键词；reference_implementation.py 有函数定义 + 方向/参数逻辑。
+`03_backtest_strategy/reference_implementation.py` 必须以"教材式"可审计风格实现入场/离场/交易规则的相关函数：
+- `entry_signal(df) -> (entry_long, entry_short)` — 入场
+- `stop_spec() -> dict` — 离场（止损规格）
+- 参数集中放在 `PARAMS` 字典
+
+`strategy.py` 直接 import 这些函数，暴露 `build_strategy(df)->spec` 喂引擎。
+
+## check_strategy.py 检查
+
+门禁检查 backtest_features.md 含：**入场逻辑/离场逻辑/交易规则** 三节关键词，且每节有文字+代码引用。reference_implementation.py 有函数定义。

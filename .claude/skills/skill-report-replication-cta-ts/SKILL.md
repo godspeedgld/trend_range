@@ -62,9 +62,14 @@ python scripts/create_project.py --title "<标题>" --source "<URL/PDF>" [--root
 **taxonomy**：regime 判断 / 指标分析与比较 / 多指标融合 / 止盈止损 / 风险控制。
 
 ### 4. Extract Backtest Features
-提取实证策略特征 → `03_backtest_strategy/backtest_features.md` + `reference_implementation.py`。从 `templates/backtest_features_template.md` 起笔。每项"文字+可执行代码"。读 `references/strategy_feature.md`。门禁 `check_strategy.py`。
+从研报**实证分析章节**直接提取三特征 → `03_backtest_strategy/backtest_features.md` + `reference_implementation.py`。从 `templates/backtest_features_template.md` 起笔。每项"文字+可执行代码"。读 `references/strategy_feature.md`。门禁 `check_strategy.py`。
 
-**抽取默认值**（研报未明确时填默认并标注）：regime=无 / 开仓=双均线 / 止盈止损=ATR 吊灯 / 仓位=满仓 / 优化=网格。
+**三特征模型**（从实证分析提取，实证未明确则从核心方法总结推导）：
+1. **入场逻辑** — 什么条件下开仓（含 regime 门控 + 信号触发 + 方向判断）
+2. **离场逻辑** — 什么条件下平仓（止损/止盈/时间退出/信号反转）
+3. **交易规则** — 仓位、风控、成本、品种约束
+
+**默认值**（研报未明确时）：入场=双均线 / 离场=ATR 吊灯 / 交易规则=满仓。
 
 ### 5. Backtest（事件驱动引擎）
 `03_backtest_strategy/strategy.py` 暴露 `build_strategy(df)->spec`（从 `templates/strategy.py` 起笔）。跑：

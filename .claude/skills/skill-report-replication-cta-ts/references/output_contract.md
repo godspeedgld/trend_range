@@ -73,8 +73,8 @@
 
 ### 3. Backtest Features
 文件：`03_backtest_strategy/backtest_features.md` + `reference_implementation.py`（从 `templates/backtest_features_template.md` 起笔）
-- backtest_features.md 含 5 项特征，每项**文字描述 + 可执行代码**：regime 判断、开仓信号、止盈止损、开仓平仓逻辑、风控/仓位。
-- 抽取默认值（研报未明确时填默认并标注）：regime=无 / 开仓=双均线 / 止盈止损=ATR 吊灯 / 仓位=满仓 / 优化=网格。
+- backtest_features.md 从研报**实证分析**提取三特征，每项**文字描述 + 可执行代码**：入场逻辑、离场逻辑、交易规则。
+- 实证未明确则从核心方法总结推导；填默认值标注。
 - reference_implementation.py 含可审计函数（指标/信号/止损），函数级精度 + 缺失值规则 + 参数；与 strategy.py 口径一致。门禁 `check_strategy.py`。
 
 ### 4. Backtest（事件驱动引擎）
