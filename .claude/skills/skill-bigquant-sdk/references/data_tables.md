@@ -162,6 +162,32 @@
 
 主键：`(instrument, date)` | 区别于股票：多了 `iopv` 字段
 
+### cn_fund_real_bar1d（基金未复权日线）
+
+实际成交价（未复权），字段与 `cn_fund_bar1d` 相同但 `adjust_factor` 为原始值、价格不做复权调整。适用于需要真实成交价的场景（如回测按实际价格撮合）。
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| instrument | string | 基金代码（含交易所后缀，如 `510300.SH`） |
+| date | timestamp[ns] | 日期 |
+| name | string | 基金名称 |
+| open | double | 开盘价（未复权） |
+| high | double | 最高价（未复权） |
+| low | double | 最低价（未复权） |
+| close | double | 收盘价（未复权） |
+| pre_close | double | 前收盘价（未复权） |
+| volume | int64 | 成交量 |
+| amount | double | 成交额 |
+| turn | double | 换手率 |
+| deal_number | int32 | 交易笔数 |
+| change_ratio | double | 涨跌幅 |
+| upper_limit | double | 涨停价 |
+| lower_limit | double | 跌停价 |
+| iopv | double | 参考净值 (IOPV) |
+| adjust_factor | double | 复权因子 |
+
+主键：`(instrument, date)` | 代码格式：`510300.SH`（需带交易所后缀）
+
 ### cn_fund_bar1m（基金分钟数据）
 
 | 字段 | 类型 | 描述 |
