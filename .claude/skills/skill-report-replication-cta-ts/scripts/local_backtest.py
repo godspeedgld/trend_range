@@ -327,7 +327,7 @@ def derive_trades_paired(market: pd.DataFrame, all_pos: pd.DataFrame) -> pd.Data
 
 
 def write_outputs(cfg: BacktestConfig, daily: pd.Series, all_pos: pd.DataFrame, market: pd.DataFrame,
-                  metrics: dict, per_sym: dict, raw: dict) -> None:
+                  metrics: dict, per_sym: dict, raw: dict, regime_df: pd.DataFrame | None = None) -> None:
     sdir = cfg.project_dir / "03_backtest_strategy"
     logs = sdir / "backtest_logs"
     logs.mkdir(parents=True, exist_ok=True)
@@ -352,14 +352,15 @@ def write_outputs(cfg: BacktestConfig, daily: pd.Series, all_pos: pd.DataFrame, 
         "symbols": sorted(per_sym.keys()), "cost_bps": cfg.cost_bps, "slippage_bps": cfg.slippage_bps,
         "initial_cash": cfg.initial_cash, "annualization": cfg.annualization, "allow_short": cfg.allow_short,
         "engine": "ts-cta event-driven", "n_bars": int(len(all_pos))}, ensure_ascii=False, indent=2), encoding="utf-8")
-    write_html(sdir, daily, market, trades, trades_paired, metrics, per_sym)
+    write_html(sdir, daily, market, trades, trades_paired, metrics, per_sym, regime_df)
     (sdir / "backtest_report_raw.html").write_text(
         "<pre>" + html.escape(json.dumps(raw, ensure_ascii=False, indent=2, default=str)) + "</pre>",
         encoding="utf-8")
 
 
 def write_html(sdir: Path, daily: pd.Series, market: pd.DataFrame, trades: pd.DataFrame,
-               trades_paired: pd.DataFrame, metrics: dict, per_sym: dict) -> None:
+               trades_paired: pd.DataFrame, metrics: dict, per_sym: dict,
+               regime_df: pd.DataFrame | None = None) -> None:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
 
@@ -454,16 +455,63 @@ def write_html(sdir: Path, daily: pd.Series, market: pd.DataFrame, trades: pd.Da
     nav = (1 + daily).cumprod()
     dd = nav / nav.cummax() - 1.0
 
+    # ── 辅助：regime 背景着色 ──
+    REGIME_COLORS = {
+        0: "rgba(173, 216, 230, 0.30)",   # 震荡：浅蓝
+        1: "rgba(255, 153, 153, 0.30)",   # 趋势上行：浅红
+        -1: "rgba(144, 238, 144, 0.30)",  # 趋势下行：浅绿
+    }
+    REGIME_LABELS = {0: "震荡", 1: "趋势上行", -1: "趋势下行"}
+
     # 页签1：净值 + 回撤
     fig_nav = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08,
-                            row_heights=[0.7, 0.3], subplot_titles=("Strategy NAV", "Drawdown"))
-    fig_nav.add_trace(go.Scatter(x=nav.index, y=nav.values, name="NAV",
-                                 line=dict(color="#2980b9", width=1.4)), row=1, col=1)
+                            row_heights=[0.7, 0.3],
+                            subplot_titles=("Strategy NAV vs Benchmark (regime shaded)", "Drawdown"))
+
+    # ── regime 背景着色 ──
+    if regime_df is not None and len(regime_df):
+        sym0 = symbols[0]
+        rg = regime_df[regime_df["symbol"] == sym0].sort_values("date").reset_index(drop=True)
+        if len(rg) > 0:
+            rg["block"] = (rg["regime"] != rg["regime"].shift(1)).cumsum()
+            for _bid, grp in rg.groupby("block"):
+                st = int(grp["regime"].iloc[0])
+                c = REGIME_COLORS.get(st)
+                if c is None:
+                    continue
+                x0, x1 = grp["date"].iloc[0], grp["date"].iloc[-1]
+                label = REGIME_LABELS.get(st, "")
+                ann = [dict(text=label, x=(x0 + (x1 - x0) / 2), xanchor="center",
+                           y=1.0, yanchor="bottom", showarrow=False,
+                           font=dict(size=10))] if label and len(grp) > 40 else None
+                fig_nav.add_shape(type="rect", x0=x0, x1=x1, y0=0, y1=1,
+                                  xref="x", yref="y domain", fillcolor=c,
+                                  layer="below", line_width=0, row=1, col=1)
+                if ann:
+                    for a in ann:
+                        fig_nav.add_annotation(a, row=1, col=1)
+
+    # ── 策略净值 ──
+    fig_nav.add_trace(go.Scatter(x=nav.index, y=nav.values, name="Strategy",
+                                 line=dict(color="#2980b9", width=1.8)), row=1, col=1)
+
+    # ── 基准曲线（首品种 Buy & Hold，归一化到 1）──
+    bench_sym = symbols[0]
+    bench_md = market[market["symbol"] == bench_sym].sort_values("date")
+    bench_raw = bench_md.set_index("date")["close"]
+    bench_nav = (bench_raw / bench_raw.dropna().iloc[0]).reindex(nav.index).ffill().bfill()
+    fig_nav.add_trace(go.Scatter(x=nav.index, y=bench_nav.values,
+                                 name=f"{bench_sym} Buy&Hold",
+                                 line=dict(color="#95a5a6", width=1.0, dash="dot")), row=1, col=1)
+
+    # ── 回撤 ──
     fig_nav.add_trace(go.Scatter(x=dd.index, y=dd.values, name="Drawdown", fill="tozeroy",
                                  line=dict(color="#c0392b", width=0.7),
                                  fillcolor="rgba(192,57,43,0.15)"), row=2, col=1)
-    fig_nav.update_layout(template="plotly_white", height=460, hovermode="x unified",
-                          margin=dict(l=50, r=30, t=40, b=30), showlegend=False)
+
+    fig_nav.update_layout(template="plotly_white", height=500, hovermode="x unified",
+                          margin=dict(l=50, r=30, t=40, b=30), showlegend=True,
+                          legend=dict(orientation="h", y=1.15, x=0, font=dict(size=11)))
     nav_html = fig_nav.to_html(full_html=False, include_plotlyjs=False, div_id="fig_nav",
                                config={"responsive": True})
 
@@ -596,16 +644,22 @@ def main() -> int:
     for sym, df in market.groupby("symbol"):
         df = df.sort_values("date").reset_index(drop=True)
         spec = strat_mod.build_strategy(df)
+        regime = spec.pop("regime_state", None)  # 提取 regime，不传入引擎
         rets, pos, direc = run_symbol(df, spec, cfg)
         per_sym[sym] = compute_metrics(rets, cfg)
-        frames.append(pd.DataFrame({"date": df["date"], "symbol": sym, "ret": rets.values,
-                                    "pos": pos.values, "direction": direc.values}))
+        row = {"date": df["date"], "symbol": sym, "ret": rets.values,
+               "pos": pos.values, "direction": direc.values}
+        if regime is not None:
+            row["regime"] = regime.values
+        frames.append(pd.DataFrame(row))
     all_pos = pd.concat(frames, ignore_index=True)
+    regime_df = all_pos[["date", "symbol", "regime"]].copy() if "regime" in all_pos.columns else None
     daily = all_pos.groupby("date")["ret"].mean().sort_index()
     metrics = compute_metrics(daily, cfg)
     write_outputs(cfg, daily, all_pos, market, metrics, per_sym,
                   {"metrics": metrics, "per_symbol": per_sym, "numba": _HAS_NUMBA,
-                   "n_bars": int(len(all_pos)), "symbols": list(per_sym.keys())})
+                   "n_bars": int(len(all_pos)), "symbols": list(per_sym.keys())},
+                  regime_df)
     update_manifest(cfg, metrics)
     print(json.dumps({"ok": True, "numba": _HAS_NUMBA, "metrics": metrics,
                       "per_symbol": per_sym}, ensure_ascii=False, indent=2, default=str))

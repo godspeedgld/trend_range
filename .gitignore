@@ -31,6 +31,7 @@ results/
 backtest_results/
 reports/
 output/
+replication/
 *.log
 
 # ===== 实验脚本与产物（本地分析，勿提交）=====
