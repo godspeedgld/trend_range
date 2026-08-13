@@ -107,20 +107,37 @@ def atr(high, low, close, period):
     return tr.ewm(alpha=1 / period, adjust=False).mean()
 
 
+def atr_truncated(high, low, close, period, lower_pct=5, upper_pct=95):
+    """ATR with TR 分位截尾（原文：TR 5%-95% 动态分位数截断）。"""
+    pc = close.shift(1)
+    tr = pd.concat([(high - low), (high - pc).abs(), (low - pc).abs()], axis=1).max(axis=1)
+    lo = tr.expanding().quantile(lower_pct / 100.0)
+    hi = tr.expanding().quantile(upper_pct / 100.0)
+    return tr.clip(lo, hi).ewm(alpha=1 / period, adjust=False).mean()
+
+
 def rolling_vol(close, window):
     return np.log(close).diff().rolling(window).std()
 
 
 # ── 事件驱动状态机（核心，numba 加速）─────────────────
 @njit(cache=True)
-def _simulate(open_, high, low, close, entry_long, entry_short, atr_v,
-              pos_size, stop_type, k_stop, pct_stop, cost_rate, allow_short):
-    """逐根事件驱动。返回 (rets, pos_series, dir_series)。"""
+def _simulate(open_, high, low, close, entry_long, entry_short, entry_is_range,
+              exit_long, exit_short, atr_v, pos_size, stop_type, k_stop, pct_stop,
+              cost_rate, allow_short):
+    """逐根事件驱动（t+1 开盘入场 + 信号触发离场）。
+
+    执行口径：
+      - 入场：close[t] 确认信号 → open[t+1] 成交（原文市价单）
+      - 离场（趋势态）：ATR 吊灯止损，日内 high/low 命中
+      - 离场（震荡态）：RSI 逻辑止损，close[t] 信号触发平仓
+    """
     n = len(close)
     rets = np.zeros(n, dtype=np.float64)
     pos_series = np.zeros(n, dtype=np.float64)
     dir_series = np.zeros(n, dtype=np.int32)
     pos = 0.0
+    pos_is_range = False
     entry_price = 0.0
     since_high = 0.0
     since_low = 0.0
@@ -132,17 +149,28 @@ def _simulate(open_, high, low, close, entry_long, entry_short, atr_v,
                 since_high = since_high if since_high > high[t] else high[t]
             else:
                 since_low = since_low if since_low < low[t] else low[t]
+
+            # 震荡态：RSI 逻辑止损（信号触发离场）
+            exit_hit = False
+            if pos_is_range:
+                exit_hit = (pos > 0 and exit_long[t]) or (pos < 0 and exit_short[t])
+
+            # 趋势态：ATR 吊灯止损
+            stop_hit = False
             sp = 0.0
-            if stop_type == 1:
-                sp = entry_price - k_stop * atr_v[t] if pos > 0 else entry_price + k_stop * atr_v[t]
-            elif stop_type == 2:
-                sp = since_high - k_stop * atr_v[t] if pos > 0 else since_low + k_stop * atr_v[t]
-            elif stop_type == 3:
-                sp = entry_price * (1 - pct_stop) if pos > 0 else entry_price * (1 + pct_stop)
-            hit = False
-            if stop_type != 0:
-                hit = (low[t] <= sp) if pos > 0 else (high[t] >= sp)
-            if hit:
+            if not pos_is_range and stop_type != 0:
+                if stop_type == 1:
+                    sp = entry_price - k_stop * atr_v[t] if pos > 0 else entry_price + k_stop * atr_v[t]
+                elif stop_type == 2:
+                    sp = since_high - k_stop * atr_v[t] if pos > 0 else since_low + k_stop * atr_v[t]
+                elif stop_type == 3:
+                    sp = entry_price * (1 - pct_stop) if pos > 0 else entry_price * (1 + pct_stop)
+                stop_hit = (low[t] <= sp) if pos > 0 else (high[t] >= sp)
+
+            if exit_hit:
+                r = pos * (close[t] / prev_close - 1.0) - abs(pos) * cost_rate
+                pos = 0.0
+            elif stop_hit:
                 fill = sp
                 if pos > 0 and open_[t] <= sp:
                     fill = open_[t]
@@ -152,22 +180,27 @@ def _simulate(open_, high, low, close, entry_long, entry_short, atr_v,
                 pos = 0.0
             else:
                 r = pos * (close[t] / prev_close - 1.0)
+
         rets[t] = r
         pos_series[t] = pos
         dir_series[t] = 1 if pos > 0 else (-1 if pos < 0 else 0)
-        if pos == 0.0:
+
+        # 入场：t 日收盘信号 → t+1 开盘成交（原文市价单）
+        if pos == 0.0 and t >= 1:
             sig = 0
-            if entry_long[t]:
+            if entry_long[t - 1]:
                 sig = 1
-            elif entry_short[t] and allow_short == 1:
+            elif entry_short[t - 1] and allow_short == 1:
                 sig = -1
             if sig != 0:
                 size = pos_size[t]
                 pos = sig * size
-                entry_price = close[t]
-                since_high = close[t]
-                since_low = close[t]
-                rets[t] = rets[t] - abs(pos) * cost_rate
+                pos_is_range = entry_is_range[t - 1]
+                entry_price = open_[t]
+                since_high = open_[t]
+                since_low = open_[t]
+                # 入场当日收益：open[t] → close[t]
+                r = pos * (close[t] / open_[t] - 1.0) - abs(pos) * cost_rate
                 pos_series[t] = pos
                 dir_series[t] = sig
     return rets, pos_series, dir_series
@@ -179,6 +212,8 @@ def run_symbol(df: pd.DataFrame, spec: dict, cfg: BacktestConfig):
     atr_period = int(stop.get("atr_period", 14))
     k_stop = float(stop.get("k", 2.0))
     pct_stop = float(stop.get("pct", 0.05))
+    tr_lower = float(stop.get("tr_lower_pct", 5.0))
+    tr_upper = float(stop.get("tr_upper_pct", 95.0))
     sizing = spec.get("sizing", {}) or {}
     vol_win = int(sizing.get("vol_window", 20))
     if sizing.get("type") == "vol_target":
@@ -187,15 +222,26 @@ def run_symbol(df: pd.DataFrame, spec: dict, cfg: BacktestConfig):
         pos_size = (tv / rv.replace(0, np.nan)).fillna(0.0).clip(upper=3.0).to_numpy()
     else:
         pos_size = np.ones(len(df))
-    atr_v = atr(df["high"], df["low"], df["close"], atr_period).bfill().to_numpy()
+    # TR 分位截尾（原文：防止极端脉冲拉宽止损）
+    if stop.get("tr_lower_pct") is not None or stop.get("tr_upper_pct") is not None:
+        atr_v = atr_truncated(df["high"], df["low"], df["close"], atr_period,
+                              tr_lower, tr_upper).bfill().to_numpy()
+    else:
+        atr_v = atr(df["high"], df["low"], df["close"], atr_period).bfill().to_numpy()
     el = spec["entry_long"].reindex(df.index).fillna(False).astype(bool).to_numpy()
     es_s = spec.get("entry_short", pd.Series(False, index=df.index))
     es = es_s.reindex(df.index).fillna(False).astype(bool).to_numpy()
+    eir_s = spec.get("entry_is_range", pd.Series(False, index=df.index))
+    eir = eir_s.reindex(df.index).fillna(False).astype(bool).to_numpy()
+    xl_s = spec.get("exit_long", pd.Series(False, index=df.index))
+    xl = xl_s.reindex(df.index).fillna(False).astype(bool).to_numpy()
+    xs_s = spec.get("exit_short", pd.Series(False, index=df.index))
+    xs = xs_s.reindex(df.index).fillna(False).astype(bool).to_numpy()
     cost_rate = (cfg.cost_bps + cfg.slippage_bps) / 10000.0
     allow = 1 if (cfg.allow_short and spec.get("allow_short", True)) else 0
     rets, pos, direc = _simulate(
         df["open"].to_numpy(), df["high"].to_numpy(), df["low"].to_numpy(), df["close"].to_numpy(),
-        el, es, atr_v, pos_size, stop_type, k_stop, pct_stop, cost_rate, allow)
+        el, es, eir, xl, xs, atr_v, pos_size, stop_type, k_stop, pct_stop, cost_rate, allow)
     return (pd.Series(rets, index=df.index, name="ret"),
             pd.Series(pos, index=df.index, name="pos"),
             pd.Series(direc, index=df.index, name="direction", dtype=int))
