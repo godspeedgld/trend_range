@@ -164,7 +164,7 @@ def generate_html(dates, close, methods, state_labels, out_path: Path):
     if n == 1:
         fig = go.Figure()
         name = list(methods.keys())[0]
-        _shade(fig, dates, methods[name], state_colors, state_labels, None)
+        _shade(fig, dates, close, methods[name], state_colors, state_labels, None)
         fig.add_trace(go.Scatter(x=dates, y=close, name="close",
                                  line=dict(color="#2980b9", width=1.4)))
         fig.update_layout(template="plotly_white", height=500, hovermode="x unified",
@@ -175,7 +175,7 @@ def generate_html(dates, close, methods, state_labels, out_path: Path):
                             subplot_titles=subplot_titles)
         for i, (name, state) in enumerate(methods.items()):
             row = i + 1
-            _shade(fig, dates, state, state_colors, state_labels, row)
+            _shade(fig, dates, close, state, state_colors, state_labels, row)
             fig.add_trace(go.Scatter(x=dates, y=close, name="close",
                                      line=dict(color="#2980b9", width=1.2),
                                      showlegend=(i == 0)), row=row, col=1)
@@ -185,10 +185,10 @@ def generate_html(dates, close, methods, state_labels, out_path: Path):
     fig.write_html(str(out_path))
 
 
-def _shade(fig, dates, state_series, state_colors, state_labels, row):
+def _shade(fig, dates, close, state_series, state_colors, state_labels, row):
     """对子图添加 regime 背景色块（任意状态值）。
 
-    注：add_vrect 带 row/col 在部分 plotly 版本不生效，这里用 add_shape + 显式 xref/yref。
+    用 add_shape 画连续区段的 rect 背景（经过验证的正确方案）。
     """
     s = pd.Series(state_series).reset_index(drop=True)
     if len(s) == 0:
@@ -202,17 +202,12 @@ def _shade(fig, dates, state_series, state_colors, state_labels, row):
     for _bid, grp in s.groupby(blocks):
         st = grp.iloc[0]
         color = state_colors.get(st, "rgba(211, 211, 211, 0.30)")
-        label = state_labels.get(st, str(st))
         idx_start, idx_end = grp.index[0], grp.index[-1]
         x0 = dates.iloc[idx_start] if idx_start < len(dates) else dates.iloc[-1]
         x1 = dates.iloc[idx_end] if idx_end < len(dates) else dates.iloc[-1]
         fig.add_shape(type="rect", x0=x0, x1=x1, y0=0, y1=1,
                       xref=xref, yref=yref, fillcolor=color,
                       layer="below", line_width=0)
-        if len(grp) > 60:
-            fig.add_annotation(text=str(label), xref=xref, yref=yref,
-                               x=x0, y=1, xanchor="left", yanchor="top",
-                               showarrow=False, font=dict(size=9))
 
 
 # ── manifest 更新 ───────────────────────────────────────

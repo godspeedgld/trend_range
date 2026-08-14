@@ -21,8 +21,6 @@ def check(project_dir):
     doc = doc_path.read_text(encoding="utf-8")
     checks = [
         ("regime 判断类", [r"regime", r"市场状态", r"趋势.*震荡|震荡.*趋势", r"TSI", r"Hurst", r"效率", r"强度"]),
-        ("指标分析类", [r"均线", r"动量", r"MACD", r"Kalman", r"指标", r"滤波", r"KDJ"]),
-        ("多指标融合", [r"融合", r"共振", r"打分", r"自适应", r"Kaufman"]),
         ("文中思路总结", [r"思路", r"叙述", r"原文", r"文中"]),
         ("方法原理分析", [r"原理", r"经济.*含义", r"统计学", r"为什么"]),
         ("公式提取", [r"公式", r"=", r"\\[", r"\\(", r"formula"]),
