@@ -71,7 +71,9 @@ def normalize_market(df: pd.DataFrame) -> pd.DataFrame:
     missing = [c for c in need if c not in df.columns]
     if missing:
         raise ValueError(f"market data missing columns: {missing}")
-    out = df[need].copy()
+    # 保留额外量列（volume/amount 等），供 regime_impl 使用
+    keep = need + [c for c in ["volume", "amount"] if c in df.columns]
+    out = df[keep].copy()
     out["date"] = pd.to_datetime(out["date"])
     for c in ["open", "high", "low", "close"]:
         out[c] = pd.to_numeric(out[c], errors="coerce")
