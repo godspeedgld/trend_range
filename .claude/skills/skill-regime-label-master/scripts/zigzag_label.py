@@ -57,7 +57,12 @@ def zigzag_peaks(close: pd.Series, turn_thresh: float):
 
 
 def zigzag_labels(close: pd.Series, params: dict) -> pd.Series:
-    """阶段1：Zig-Zag 初步趋势标注（满足最小年化收益+时长的波段=趋势）。"""
+    """阶段1：Zig-Zag 初步趋势标注（满足最小年化收益+时长的波段=趋势）。
+
+    注：曾试验"波段效率过滤"（|净位移|/路径），实证无区分力——
+    2017 慢牛(E=0.158) 与 2021 阴跌箱体(E=0.152) 效率几乎相同，
+    长波段效率与长度天然负相关。已回退（保留原三判据）。
+    """
     n = len(close)
     labels = pd.Series(0, index=close.index)
     extrema = zigzag_peaks(close, params["turn_thresh"])
@@ -90,8 +95,10 @@ def binseg_correction(close: pd.Series, labels: pd.Series) -> pd.Series:
     for s, e in segments:
         if e - s + 1 < 20:
             continue
+        # 末端窗口限制：衰竭语义上发生在趋势段末端，只在后 1/3 找断点
+        bp_start = s + max(5, (e - s + 1) * 2 // 3)
         best_bp, best_score = None, np.inf
-        for bp in range(s + 5, e - 5):
+        for bp in range(bp_start, e - 5):
             y1 = close.iloc[s:bp + 1].values
             y2 = close.iloc[bp + 1:e + 1].values
             if len(y1) < 3 or len(y2) < 3:
@@ -108,7 +115,8 @@ def binseg_correction(close: pd.Series, labels: pd.Series) -> pd.Series:
         if len(y1) >= 3 and len(y2) >= 3:
             r1 = np.polyfit(np.arange(len(y1)), y1, 1)[0]
             r2 = np.polyfit(np.arange(len(y2)), y2, 1)[0]
-            if abs(r2) < 0.5 * abs(r1):
+            # 方向一致性校验：断点后段须与前段同向（衰竭=同向变缓；反向=新趋势，不切）
+            if r1 * r2 > 0 and abs(r2) < 0.5 * abs(r1):
                 out.iloc[best_bp + 1:e + 1] = 0
     return out
 

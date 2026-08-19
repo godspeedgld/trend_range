@@ -1,11 +1,23 @@
 #!/usr/bin/env python
-"""滚动训练数据划分（HMM / 机器学习类算法用）。
+"""递增窗口（expanding + 上限）数据划分——HMM / 机器学习类算法用。
 
-规范：2 年训练 + 半年验证 + 半年测试，步长 = 测试窗（半年），滚动推进。
+模式（初始 3 年递增，训练集最大 3 年，之后滑动）：
+  2015-2017 训练 → 测试 2018   （初始 3 年）
+  2016-2018 训练 → 测试 2019   （达 3 年上限后滑动）
+  2017-2019 训练 → 测试 2020
+  2018-2020 训练 → 测试 2021
+  2019-2021 训练 → 测试 2022
+  ... 直到数据结束
+
+设计理由：
+- 3 年上限：近期市场状态与远期差异大，用最近 3 年训练最贴近当前市场
+  （比 5 年更侧重时效性；过老数据作为训练不合适）
+- 窗口滑动，始终用最近的 3 年
 
 用法：
   python split_rolling.py --market-data <csv>                 # 打印窗口
   python split_rolling.py --market-data <csv> --output out.json
+  python split_rolling.py --market-data <csv> --initial-years 3 --max-years 3
 """
 from __future__ import annotations
 
@@ -15,52 +27,53 @@ from pathlib import Path
 
 import pandas as pd
 
-TRAIN_DAYS = 504    # 2 年（约 252×2 交易日）
-VAL_DAYS = 126      # 半年（约 252/2 交易日）
-TEST_DAYS = 126     # 半年
+INITIAL_TRAIN_YEARS = 3   # 初始训练年数
+MAX_TRAIN_YEARS = 3       # 训练集最大年数（上限后滑动）
 
 
-def split_rolling(dates: pd.Series, train_days: int = TRAIN_DAYS,
-                  val_days: int = VAL_DAYS, test_days: int = TEST_DAYS) -> list[dict]:
-    """按交易日数量切滚动窗口。返回 [{train/val/test 的 start/end 日期字符串}]。"""
+def split_expanding(dates: pd.Series, initial_train_years: int = INITIAL_TRAIN_YEARS,
+                    max_train_years: int = MAX_TRAIN_YEARS) -> list[dict]:
+    """按自然年切窗口：初始递增至 max 上限，之后滑动。"""
     dates = pd.to_datetime(dates).reset_index(drop=True)
-    n = len(dates)
-    block = train_days + val_days + test_days
+    years = dates.dt.year
+    y0, y1 = int(years.min()), int(years.max())
+
     windows = []
-    start = 0
-    while start + block <= n:
-        tr0, tr1 = start, start + train_days - 1
-        va0, va1 = tr1 + 1, tr1 + val_days
-        te0, te1 = va1 + 1, va1 + test_days
+    for test_year in range(y0 + initial_train_years, y1 + 1):
+        tr_start = max(y0, test_year - max_train_years)   # 训练起点（不早于数据起点）
+        tr = (years >= tr_start) & (years <= test_year - 1)
+        te = years == test_year
+        if not tr.any() or not te.any():
+            continue
         windows.append({
-            "train": [str(dates.iloc[tr0].date()), str(dates.iloc[tr1].date())],
-            "val": [str(dates.iloc[va0].date()), str(dates.iloc[va1].date())],
-            "test": [str(dates.iloc[te0].date()), str(dates.iloc[te1].date())],
-            "n_train": tr1 - tr0 + 1, "n_val": va1 - va0 + 1, "n_test": te1 - te0 + 1,
+            "train": [str(dates[tr].iloc[0].date()), str(dates[tr].iloc[-1].date())],
+            "test": [str(dates[te].iloc[0].date()), str(dates[te].iloc[-1].date())],
+            "n_train": int(tr.sum()), "n_test": int(te.sum()),
+            "n_train_years": test_year - tr_start,
         })
-        start += test_days  # 步长 = 测试窗
     return windows
 
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--market-data", required=True)
-    p.add_argument("--train-days", type=int, default=TRAIN_DAYS)
-    p.add_argument("--val-days", type=int, default=VAL_DAYS)
-    p.add_argument("--test-days", type=int, default=TEST_DAYS)
+    p.add_argument("--initial-years", type=int, default=INITIAL_TRAIN_YEARS)
+    p.add_argument("--max-years", type=int, default=MAX_TRAIN_YEARS,
+                   help="训练集最大年数（默认 5）")
     p.add_argument("--output", help="输出 JSON 路径（省略则打印）")
     args = p.parse_args()
 
     df = pd.read_csv(args.market_data)
-    windows = split_rolling(df["date"], args.train_days, args.val_days, args.test_days)
-    payload = {"n_windows": len(windows),
-               "config": {"train_days": args.train_days, "val_days": args.val_days,
-                          "test_days": args.test_days},
+    windows = split_expanding(df["date"], args.initial_years, args.max_years)
+    payload = {"mode": "expanding_capped",
+               "n_windows": len(windows),
+               "config": {"initial_train_years": args.initial_years,
+                          "max_train_years": args.max_years},
                "windows": windows}
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
-        print(f"{len(windows)} windows → {args.output}")
+        print(f"{len(windows)} windows (expand→cap {args.max_years}y) → {args.output}")
     else:
         print(text)
     return 0
