@@ -80,6 +80,40 @@
 
 主键：`(instrument, date)` | 起始：2005-01-04
 
+### cn_stock_index_component（指数成分股）
+
+各宽基指数的成分股列表，用于成分股数据研究（如按指数成分股批量拉取行情）。
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| instrument | string | 指数代码 |
+| name | string | 指数简称 |
+| member_code | string | 成分股代码 |
+| member_name | string | 成分股简称 |
+| date | timestamp[ns] | 日期 |
+
+### cn_stock_index_bar1d（股票指数日线）
+
+宽基指数日线行情，可用于指数择时、regime 判断、大类资产配置研究。
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| instrument | string | 指数代码 |
+| name | string | 指数简称 |
+| pre_close | double | 昨收盘价 |
+| open | double | 开盘价 |
+| high | double | 最高价 |
+| low | double | 最低价 |
+| close | double | 收盘价 |
+| volume | int64 | 成交量 |
+| amount | double | 成交额 |
+| change | double | 涨跌 |
+| change_ratio | double | 涨跌幅 |
+| date | timestamp[ns] | 日期 |
+| turn | double | 换手率 |
+
+主键：`(instrument, date)` | 频率：日线
+
 ---
 
 ## 期货数据

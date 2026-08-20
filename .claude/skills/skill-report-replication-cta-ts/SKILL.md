@@ -78,6 +78,21 @@ python scripts/local_backtest.py {project_dir} --market-data <外部 OHLC CSV/Pa
 ```
 引擎逐根事件驱动（入场事件即时进场、ATR 吊灯止损用 high/low 命中价即时触发、收益 close-to-close、含成本、numba 加速）。产 equity/metrics/signal_log（实现方向，审计）+ 中文 `backtest_report.html`。读 `references/backtest_engine.md`。
 
+**组合策略**（多标的/选股/因子，`local_portfolio_backtest.py`，开仓池/平仓池框架）：
+```bash
+python scripts/local_portfolio_backtest.py {project_dir} --market-data <多标的 CSV/Parquet>
+```
+**固定框架**：每日收盘决策（持仓平仓检查→开仓池剔除→入场扫描入开仓池），次日开盘执行（平仓池卖出 + 持仓<n 从开仓池按优先序开仓，权重 1/n），现金收益 0。
+
+`strategy.py` 实现 **5 个策略接口**（从 `templates/portfolio_strategy.py` 起笔，可替换点已注释）：
+1. `entry_signal(hist_df) -> bool` — 入选逻辑
+2. `exit_check(entry_info, hist_df) -> bool` — 剔出/平仓逻辑
+3. `pool_invalidate(hist_df, signal_date) -> bool`（可选）— 开仓池剔除
+4. `select_order(open_pool) -> list` — 开仓优先选择
+5. `position_weight(sym, n, hist_df) -> float`（可选）— 单股权重（默认 1/n，可换等波动率）
+
+引擎参数：`--max-positions n --cost-bps --warmup`。产 equity/metrics/trades_paired/positions + html。
+
 **数据合法性检查**（必做，`references/data_sources.md`）：NaN/复权/正价格/时序/覆盖。
 
 ### 6. Final Report
