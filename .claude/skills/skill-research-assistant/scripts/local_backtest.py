@@ -74,11 +74,15 @@ def normalize_market(df: pd.DataFrame, cfg: BacktestConfig) -> pd.DataFrame:
     missing = [c for c in need if c not in df.columns]
     if missing:
         raise ValueError(f"market data missing columns: {missing}（引擎需要 OHLC）")
-    out = df[need].copy()
-    out.columns = ["date", "symbol", "open", "high", "low", "close"]
+    # 保留 OHLC 之外的额外列（volume/amount/turn 等）供策略读取（如量价变量）；只数值化，缺失留 NaN
+    extra = [c for c in df.columns if c not in need]
+    out = df[need + extra].copy()
+    out.columns = ["date", "symbol", "open", "high", "low", "close"] + extra
     out["date"] = pd.to_datetime(out["date"])
     out["symbol"] = out["symbol"].astype(str)
     for c in ["open", "high", "low", "close"]:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    for c in extra:
         out[c] = pd.to_numeric(out[c], errors="coerce")
     out = out.dropna(subset=["date", "symbol", "open", "high", "low", "close"])
     out = out[(out[["open", "high", "low", "close"]] > 0).all(axis=1)]
