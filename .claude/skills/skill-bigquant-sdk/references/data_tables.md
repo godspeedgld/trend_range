@@ -44,6 +44,44 @@
 
 主键：`(instrument, date)`
 
+### cn_stock_shares（股本信息）
+
+每日股本结构，配合收盘价可计算总市值（total_shares × close）。
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| date | timestamp[ns] | 日期 |
+| instrument | string | 证券代码 |
+| total_shares | double | 总股本 |
+| a_float_shares | double | 流通 A 股 |
+| free_float_shares | double | 自由流通股 |
+| total_float_shares | double | 流通股合计 |
+
+主键：`(instrument, date)`
+
+### cn_stock_valuation（估值指标）
+
+每日估值指标，数据源按 TTM/动态/静态口径现成算好，作为原始事实入库（勿自行用财报重算——报告期对齐逻辑复杂）。
+
+| 字段 | 类型 | 公式 |
+|------|------|------|
+| total_market_cap | DOUBLE | 总市值 = 当日收盘价×当日总股本 |
+| float_market_cap | DOUBLE | 流通市值 |
+| dividend_yield_ratio | DOUBLE | 股息率 = 过去一年分红总额/当日总股本 |
+| pe_ttm | DOUBLE | 市盈率TTM = 当日总市值/归母净利润TTM |
+| pe_leading | DOUBLE | 动态市盈率 = 当日总市值/最新一期归母净利润×n（1季报n=4/1, 2季报=4/2, 3季报=4/3, 4季报=1） |
+| pe_trailing | DOUBLE | 静态市盈率 = 当日总市值/最新一期年报归母净利润 |
+| pb | DOUBLE | 市净率 = 当日总市值/最新一期所有者权益 |
+| ps_ttm | DOUBLE | 市销率TTM |
+| ps_leading | DOUBLE | 动态市销率 |
+| ps_trailing | DOUBLE | 市销率（最新年报） |
+| pcf_net_ttm | DOUBLE | 市现率(净额TTM) |
+| pcf_net_leading | DOUBLE | 市现率(净额动态) |
+| pcf_op_ttm | DOUBLE | 市现率(经营TTM) |
+| pcf_op_leading | DOUBLE | 市现率(经营动态) |
+
+主键：`(instrument, date)` | 频率：日级
+
 ### cn_stock_bar1m（A股1分钟K线）
 
 适合逐只股票提取分钟数据。

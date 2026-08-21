@@ -112,6 +112,61 @@ df = con.execute("SELECT * FROM stock_bar1d WHERE date >= '2024-01-01'").fetchdf
 
 校验不过 → 标记 `partial` 或 `failed`，保留已有有效数据。
 
+## 衍生数据分层规范（原始 / 视图 / 物化）
+
+衍生指标（市值 = 价 × 股本、PE = 市值 / 利润、滚动均值等）按以下三层组织。**核心原则：单一事实源**——同一数据只存一份原始事实，一切派生量可随时重算。
+
+### 层0 原始层（Parquet 落盘）
+
+只存**不可推导的原始事实**：
+
+| 数据 | 例 |
+|------|-----|
+| 行情 | OHLCV、复权因子（stock_bar1d） |
+| 股本 | 总股本/流通股（stock_shares） |
+| **数据源算好的通用指标** | `cn_stock_valuation` 的 pe_ttm/pb/ps_ttm 等日频列 |
+
+> 数据源现成的通用指标（PE/PB/市值/股息率）**当原始事实拉取入库**，不要自己用财报重算——TTM 对齐/动态年化（1季报×4/1…）的报告期对齐逻辑复杂易错，数据源口径即权威。
+
+### 层1 视图层（DuckDB VIEW，运行时生成）
+
+**确定性派生**放视图——CREATE VIEW 只存 SQL 定义不存数据，每次查询现算：
+
+```sql
+-- 例：市值（仅当数据源没有现成列时才自建）
+CREATE VIEW v_mkt_cap AS
+SELECT b.date, b.instrument,
+       r.close * s.total_shares AS total_market_cap,
+       ln(r.close * s.total_shares) AS ln_cap
+FROM stock_bar1d b
+JOIN stock_shares s USING (instrument, date);
+```
+
+适用：join/乘除/滚动窗口（`AVG(x) OVER (... ROWS BETWEEN n PRECEDING AND CURRENT ROW)`）——DuckDB 列式引擎毫秒级，查询无感。
+
+优点：零存储、改口径只改一处、永不与原始数据不一致。
+
+### 层2 物化层（TABLE，仅计算昂贵时）
+
+只当**重算成本高到影响使用**才物化（`CREATE TABLE t AS SELECT ...`）：
+
+- 逐步回归系数（全样本迭代）
+- 全市场截面排序因子（每日 rank）
+- 复杂循环算法的输出（如转折点识别的信号序列）
+
+> 判断口诀：**能 rolling/视图的别存，存只存算不动的**。
+
+### 视图的生成时机
+
+- **通用衍生**（多项目复用、口径行业标准）：预建为常备基础设施
+- **策略特有中间量**（单策略用、口径自定义）：需求出现时建，用完**不删**（视图零存储成本）沉淀复用
+- 沉淀标准：第二个项目用到同一视图时，升级为标准视图并在文档登记口径
+
+### 口径警告
+
+- **后复权价不能算估值**：市值/PE 必须用未复权真实价（如 `cn_stock_real_bar1d`），或确认数据源列的复权口径
+- 视图命名带 `v_` 前缀与原始表区分；口径写进视图 SQL 注释
+
 ## 安全规则
 
 - 删除操作前必须列出受影响的具体文件
