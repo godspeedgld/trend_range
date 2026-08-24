@@ -175,10 +175,42 @@ JOIN stock_shares s USING (instrument, date);
 - **策略特有中间量**（单策略用、口径自定义）：需求出现时建，用完**不删**（视图零存储成本）沉淀复用
 - 沉淀标准：第二个项目用到同一视图时，升级为标准视图并在文档登记口径
 
+### 多表联合：宽表面板模式（多因子选股标准用法）
+
+行情 / 估值 / 资金流等**分域物理表** + 应用层按需拼宽表。**禁止物理合并成一张宽表**——
+各表更新节奏不同（watermark 各异），物理合并必然产生同步漂移与冗余副本。
+
+**宽表 = 层1 视图**，模式固定：
+
+```sql
+-- 锚表 = stock_bar1d（交易日 × 股票的完整骨架，停牌日也有占位行）
+CREATE OR REPLACE VIEW v_stock_panel AS
+SELECT b.date, b.instrument,
+       b.open, b.high, b.low, b.close, b.volume, b.amount, b.turn,   -- 行情
+       v.total_market_cap, v.float_market_cap, v.pe_ttm, v.pb        -- 估值
+       -- 未来新域表（资金流等）拉取入库后在此追加列，不另建宽表
+FROM stock_bar1d b
+LEFT JOIN stock_valuation v USING (instrument, date);
+```
+
+规则：
+- **锚表唯一**：一切面板以 `stock_bar1d` 为骨架，其余表 `LEFT JOIN USING (instrument, date)`
+  ——停牌/缺数据的格子自然留 NULL，不丢行
+- **join 键统一 `(instrument, date)`**：所有域表同键，新表入库即插即用
+- **指标构建直接在视图上算**：滚动窗口用 DuckDB window 函数
+  （`lag/avg/stddev OVER (PARTITION BY instrument ORDER BY date)`），
+  截面 rank/中性化用 `OVER (PARTITION BY date)`
+- **复杂循环算法才降级 pandas/层2**：视图取数 → pandas 计算 → 需要复用则物化（见层2 判断口诀）
+
+实测规模参考（668 股 × 11 年 ≈ 170 万行）：建视图 0.008s / 全量 join 扫描 0.04s /
+单日截面 0.03s / 2020 起 20 日动量窗口 + 截面相关 0.46s——**全部亚秒级**，无需物化。
+
 ### 口径警告
 
 - **后复权价不能算估值**：市值/PE 必须用未复权真实价（如 `cn_stock_real_bar1d`），或确认数据源列的复权口径
 - 视图命名带 `v_` 前缀与原始表区分；口径写进视图 SQL 注释
+- 宽表视图中各表 watermark 可能不同步（如行情到 08-21、资金流到 08-19）——
+  视图尾部自然出现 NULL 列，属正常；不要为对齐而回填或删行
 
 ## 安全规则
 
