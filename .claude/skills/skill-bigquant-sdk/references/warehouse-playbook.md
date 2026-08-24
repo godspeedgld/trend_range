@@ -38,6 +38,14 @@
 }
 ```
 
+### 硬性规定
+
+- **编码 UTF-8（无 BOM）**：`_meta.json` 及一切仓库元数据必须 `encoding="utf-8"` 写入。
+  读写统一 `utf-8`，禁止 GBK/系统默认编码混入（Windows 下 `json.dump` 必须显式传 `ensure_ascii=False, encoding="utf-8"`）
+- **watermark 与数据同步**：每次写入 Parquet 后**立即**更新对应表 `end_date`（= 实际 `max(date)`）、
+  `row_count`、`last_refresh_at`，同一次提交完成。禁止"写数据后忘记更新水位"造成漂移
+  （漂移后果：增量刷新重复拉取，虽有去重兜底但违反流程）
+
 ## 交易日历基准
 
 所有本地数据日期范围以 `all_trading_days` 为硬上限：
@@ -79,16 +87,18 @@ latest_trade_date = str(td["date"].max())[:10]  # "2026-08-07"
 ```sql
 CREATE OR REPLACE VIEW stock_bar1d AS
 SELECT * FROM read_parquet(
-    'data_cache/bigquant_warehouse/stock_bar1d/**/*.parquet',
-    hive_partitioning = true
-);
-
-CREATE OR REPLACE VIEW future_bar1d AS
-SELECT * FROM read_parquet(
-    'data_cache/bigquant_warehouse/future_bar1d/**/*.parquet',
+    'C:/Quant/trend_range/data_cache/bigquant_warehouse/stock_bar1d/**/*.parquet',
     hive_partitioning = true
 );
 ```
+
+### 硬性规定
+
+- **视图路径统一绝对路径 + 正斜杠**（`Path(...).resolve().as_posix()`）。
+  禁止相对路径——相对路径视图只在创建时的 cwd 下可用，从其他目录（策略项目、脚本子目录）
+  连接 DuckDB 查询会报 `No files found that match the pattern`，且难以排查。
+  Windows 反斜杠在 SQL 字符串中需转义，统一用正斜杠避免。
+- 重建视图时**逐个验证**：创建后立即 `SELECT count(*)` 确认可查，且从**非仓库根目录**再验证一次。
 
 查询时直接 SQL：
 
@@ -109,6 +119,9 @@ df = con.execute("SELECT * FROM stock_bar1d WHERE date >= '2024-01-01'").fetchdf
 - [ ] 价格 > 0（日线级别）
 - [ ] DuckDB 可查询视图，返回预期日期范围
 - [ ] 抽样 3 品种 × 3 日期与 BigQuant 实时 API 对比
+- [ ] `_meta.json` 可用 `encoding="utf-8"` 标准读取（无 GBK 字节混入）
+- [ ] watermark `end_date` == 实际 `max(date)`（无漂移）
+- [ ] 视图路径为绝对路径+正斜杠，且从非仓库根目录可查询
 
 校验不过 → 标记 `partial` 或 `failed`，保留已有有效数据。
 

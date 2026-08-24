@@ -133,11 +133,12 @@ for year, grp in df.groupby("year"):
     grp.to_parquet(out, index=False)
 
 # 3. DuckDB 视图（一次性创建，后续刷新后重建）
+#    硬性规定：路径必须绝对路径+正斜杠（as_posix），相对路径视图在非仓库根 cwd 下查询会失效
 db = ROOT / "bigquant_warehouse.duckdb"
 con = duckdb.connect(str(db))
 con.execute(f"""
     CREATE OR REPLACE VIEW {TABLE} AS
-    SELECT * FROM read_parquet('{table_dir}/**/*.parquet', hive_partitioning=true)
+    SELECT * FROM read_parquet('{table_dir.resolve().as_posix()}/**/*.parquet', hive_partitioning=true)
 """)
 con.close()
 
