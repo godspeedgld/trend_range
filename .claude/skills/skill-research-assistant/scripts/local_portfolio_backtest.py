@@ -234,11 +234,22 @@ def write_outputs(cfg: BacktestConfig, daily: pd.Series, holdings_df, trades_df,
                       margin=dict(l=50, r=30, t=40, b=30), showlegend=False)
     nav_html = fig.to_html(full_html=False, include_plotlyjs=False, div_id="fig_nav")
 
-    trades_html = "<p>无交易记录。</p>"
+    # 交易级统计：胜率 / 盈亏比（平均盈利 ÷ 平均亏损）
+    n = int(len(trades_df)) if trades_df is not None else 0
+    trade_wr, payoff = float("nan"), float("nan")
     if trades_df is not None and len(trades_df):
-        n = len(trades_df)
-        wr = (trades_df["return_pct"] > 0).mean() * 100
-        avg = trades_df["return_pct"].mean()
+        t = trades_df
+        trade_wr = (t["return_pct"] > 0).mean() * 100
+        wins = t[t["return_pct"] > 0]["return_pct"]
+        losses = t[t["return_pct"] < 0]["return_pct"]
+        if len(wins) and len(losses) and losses.mean() != 0:
+            payoff = wins.mean() / abs(losses.mean())
+
+    def _cell(v, fmt):
+        return fmt(v) if v == v else "—"          # NaN → 占位
+
+    trades_html = "<p>无交易记录。</p>"
+    if n:
         rows = "".join(
             f"<tr><td>{i+1}</td><td>{r.symbol}</td><td>{r.entry_date}</td>"
             f"<td>{r.entry_price:.2f}</td><td>{r.exit_date}</td><td>{r.exit_price:.2f}</td>"
@@ -246,27 +257,59 @@ def write_outputs(cfg: BacktestConfig, daily: pd.Series, holdings_df, trades_df,
             f"<td>{r.holding_days}</td></tr>"
             for i, r in enumerate(trades_df.itertuples()))
         trades_html = (
-            f"<p>共 {n} 笔，胜率 {wr:.1f}%，平均收益 {avg:+.2f}%</p>"
-            f"<table style='width:100%'><tr><th>#</th><th>symbol</th><th>开仓日</th>"
-            f"<th>开仓价</th><th>平仓日</th><th>平仓价</th><th>收益</th><th>持仓天数</th></tr>"
-            f"{rows}</table>")
+            f"<p>共 {n} 笔，胜率 {trade_wr:.1f}%，盈亏比 {_cell(payoff, lambda v: f'{v:.2f}')}</p>"
+            f"<div style='max-height:480px;overflow:auto'>"
+            f"<table><tr><th>#</th><th>symbol</th><th>开仓日</th><th>开仓价</th><th>平仓日</th>"
+            f"<th>平仓价</th><th>收益</th><th>持仓天数</th></tr>{rows}</table></div>")
 
     body = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <title>组合回测报告</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-<style>body{{font-family:Arial,"Microsoft YaHei",sans-serif;margin:24px;}}
+<style>
+body{{font-family:Arial,"Microsoft YaHei",sans-serif;margin:24px;}}
 table{{border-collapse:collapse;width:100%;}}th,td{{border:1px solid #d6dae1;padding:6px 10px;}}
-th{{background:#f3f5f8;}}</style></head><body>
+th{{background:#f3f5f8;}}
+/* 页签（CSS radio，无 JS） */
+.tab-radio{{display:none;}}
+.tab-label{{display:inline-block;padding:9px 22px;cursor:pointer;border:1px solid #d6dae1;
+  border-bottom:none;background:#f3f5f8;margin-right:4px;border-radius:6px 6px 0 0;}}
+.tab-radio:checked + .tab-label{{background:#fff;font-weight:bold;border-top:2px solid #2980b9;}}
+.tab-panel{{display:none;border:1px solid #d6dae1;padding:18px;border-radius:0 6px 6px 6px;}}
+#tab_perf:checked ~ #panel_perf{{display:block;}}
+#tab_trades:checked ~ #panel_trades{{display:block;}}
+.metrics{{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0;}}
+.metrics .item{{flex:1 1 120px;text-align:center;border:1px solid #e4e8ee;border-radius:8px;padding:12px 6px;}}
+.metrics .item b{{display:block;font-size:18px;margin-top:4px;}}
+.metrics .item span{{color:#6b7480;font-size:12px;}}
+</style></head><body>
 <h1>组合回测报告（开仓池/平仓池引擎）</h1>
 <div class="note">收盘决策（平仓池/开仓池/入场扫描）→ 次日开盘执行（平仓+开仓，权重 1/n）。
 收益 close-to-close，调仓成本 {params['cost_bps']}bps 双边。</div>
-<h2>净值曲线</h2>{nav_html}
-<h2>核心绩效</h2>
-<table><tr><th>净值</th><th>年化收益</th><th>Sharpe</th><th>最大回撤</th><th>交易数</th></tr>
-<tr><td>{metrics.get('final_nav', 0):.3f}</td><td>{metrics.get('annual_return', 0)*100:.2f}%</td>
-<td>{metrics.get('sharpe', 0):.2f}</td><td>{metrics.get('max_drawdown', 0)*100:.2f}%</td>
-<td>{len(trades_df) if trades_df is not None else 0}</td></tr></table>
-<h2>交易明细</h2>{trades_html}
+
+<div class="tabs">
+<input type="radio" id="tab_perf" name="tabs" class="tab-radio" checked>
+<label for="tab_perf" class="tab-label">净值与绩效</label>
+<input type="radio" id="tab_trades" name="tabs" class="tab-radio">
+<label for="tab_trades" class="tab-label">交易记录（{n}）</label>
+
+<div class="tab-panel" id="panel_perf">
+<div class="metrics">
+  <div class="item"><span>净值</span><b>{metrics.get('final_nav', 0):.3f}</b></div>
+  <div class="item"><span>年化收益</span><b>{metrics.get('annual_return', 0)*100:.2f}%</b></div>
+  <div class="item"><span>Sharpe</span><b>{metrics.get('sharpe', 0):.2f}</b></div>
+  <div class="item"><span>最大回撤</span><b>{metrics.get('max_drawdown', 0)*100:.2f}%</b></div>
+  <div class="item"><span>交易数</span><b>{n}</b></div>
+  <div class="item"><span>交易胜率</span><b>{_cell(trade_wr, lambda v: f'{v:.1f}%')}</b></div>
+  <div class="item"><span>盈亏比</span><b>{_cell(payoff, lambda v: f'{v:.2f}')}</b></div>
+</div>
+{nav_html}
+</div>
+
+<div class="tab-panel" id="panel_trades">
+<h3 style="margin-top:0">交易明细</h3>
+{trades_html}
+</div>
+</div>
 </body></html>"""
     (sdir / "backtest_report.html").write_text(body, encoding="utf-8")
 
