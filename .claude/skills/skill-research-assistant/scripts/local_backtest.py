@@ -83,6 +83,8 @@ def normalize_market(df: pd.DataFrame, cfg: BacktestConfig) -> pd.DataFrame:
     for c in ["open", "high", "low", "close"]:
         out[c] = pd.to_numeric(out[c], errors="coerce")
     for c in extra:
+        if out[c].dtype == object:       # 字符串列（如 name 证券简称）保留原样
+            continue
         out[c] = pd.to_numeric(out[c], errors="coerce")
     out = out.dropna(subset=["date", "symbol", "open", "high", "low", "close"])
     out = out[(out[["open", "high", "low", "close"]] > 0).all(axis=1)]

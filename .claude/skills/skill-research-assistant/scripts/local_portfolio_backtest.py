@@ -147,7 +147,8 @@ def run_portfolio(market: pd.DataFrame, strat, params: dict):
                 exit_price = close_px.loc[d, sym]
             ret = exit_price / h["entry_price"] - 1.0
             trades.append({
-                "symbol": sym, "entry_date": h["entry_date"],
+                "symbol": sym, "name": h.get("name", sym),
+                "entry_date": h["entry_date"],
                 "entry_price": round(h["entry_price"], 4),
                 "exit_date": d_next, "exit_price": round(exit_price, 4),
                 "holding_days": int((pd.Timestamp(d_next) - pd.Timestamp(h["entry_date"])).days),
@@ -165,10 +166,12 @@ def run_portfolio(market: pd.DataFrame, strat, params: dict):
                     continue
                 if pd.isna(epx):
                     continue
+                hd = hist_df(sym, d)
                 w_fn = getattr(strat, "position_weight", None)
-                w = w_fn(sym, max_n, hist_df(sym, d)) if w_fn else 1.0 / max_n
+                w = w_fn(sym, max_n, hd) if w_fn else 1.0 / max_n
+                name = hd["name"].iloc[-1] if "name" in hd.columns and len(hd) else sym
                 holdings[sym] = {"entry_date": d_next, "entry_price": epx,
-                                 "peak": epx, "weight": w}
+                                 "peak": epx, "weight": w, "name": name}
                 del open_pool[sym]
                 turnover += w
 
@@ -251,7 +254,8 @@ def write_outputs(cfg: BacktestConfig, daily: pd.Series, holdings_df, trades_df,
     trades_html = "<p>无交易记录。</p>"
     if n:
         rows = "".join(
-            f"<tr><td>{i+1}</td><td>{r.symbol}</td><td>{r.entry_date}</td>"
+            f"<tr><td>{i+1}</td><td>{r.symbol}</td>"
+            f"<td>{getattr(r, 'name', r.symbol)}</td><td>{r.entry_date}</td>"
             f"<td>{r.entry_price:.2f}</td><td>{r.exit_date}</td><td>{r.exit_price:.2f}</td>"
             f"<td style='color:{'#27ae60' if r.return_pct>0 else '#e74c3c'}'>{r.return_pct:+.2f}%</td>"
             f"<td>{r.holding_days}</td></tr>"
@@ -259,8 +263,8 @@ def write_outputs(cfg: BacktestConfig, daily: pd.Series, holdings_df, trades_df,
         trades_html = (
             f"<p>共 {n} 笔，胜率 {trade_wr:.1f}%，盈亏比 {_cell(payoff, lambda v: f'{v:.2f}')}</p>"
             f"<div style='max-height:480px;overflow:auto'>"
-            f"<table><tr><th>#</th><th>symbol</th><th>开仓日</th><th>开仓价</th><th>平仓日</th>"
-            f"<th>平仓价</th><th>收益</th><th>持仓天数</th></tr>{rows}</table></div>")
+            f"<table><tr><th>#</th><th>symbol</th><th>名称</th><th>开仓日</th><th>开仓价</th>"
+            f"<th>平仓日</th><th>平仓价</th><th>收益</th><th>持仓天数</th></tr>{rows}</table></div>")
 
     body = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <title>组合回测报告</title>
