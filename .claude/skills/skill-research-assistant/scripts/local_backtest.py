@@ -254,14 +254,23 @@ def run_symbol(df: pd.DataFrame, spec: dict, cfg: BacktestConfig):
 
 
 # ── 指标（复用 -factor compute_metrics 口径）──────────
-def compute_metrics(returns: pd.Series, cfg: BacktestConfig) -> dict:
+def compute_metrics(returns: pd.Series, cfg: BacktestConfig, additive: bool = False) -> dict:
     r = returns.fillna(0.0)
     n = len(r)
     if n == 0:
         return {"periods": 0}
-    nav = (1 + r).cumprod()
-    final_nav = float(nav.iloc[-1])
-    ann_return = final_nav ** (cfg.annualization / n) - 1.0 if final_nav > 0 else float("nan")
+    if additive:
+        # 固定名义口径：收益按初始本金加总（不复利），年化 = 总收益 / 年数（算术）
+        nav = 1.0 + r.cumsum()
+        final_nav = float(nav.iloc[-1])
+        total_return = final_nav - 1.0
+        ann_return = total_return * cfg.annualization / n if n else float("nan")
+    else:
+        # 复利口径：几何累计，年化 = (1+总收益)^(252/n) - 1
+        nav = (1 + r).cumprod()
+        final_nav = float(nav.iloc[-1])
+        total_return = final_nav - 1.0
+        ann_return = final_nav ** (cfg.annualization / n) - 1.0 if final_nav > 0 else float("nan")
     ann_vol = float(r.std(ddof=1) * math.sqrt(cfg.annualization)) if n > 1 else float("nan")
     downside = r[r < 0]
     dv = float(downside.std(ddof=1) * math.sqrt(cfg.annualization)) if len(downside) > 1 else float("nan")
@@ -274,7 +283,7 @@ def compute_metrics(returns: pd.Series, cfg: BacktestConfig) -> dict:
     losses = r[r < 0]
     pf = float(gains.sum() / abs(losses.sum())) if len(losses) and losses.sum() != 0 else float("nan")
     return {
-        "periods": float(n), "final_nav": final_nav, "total_return": final_nav - 1.0,
+        "periods": float(n), "final_nav": final_nav, "total_return": total_return,
         "annual_return": ann_return, "annual_volatility": ann_vol, "downside_volatility": dv,
         "sharpe": sharpe, "sortino": sortino, "calmar": calmar, "max_drawdown": max_dd,
         "win_rate": float((r > 0).mean()), "profit_factor": pf,

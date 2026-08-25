@@ -73,6 +73,9 @@ def run_portfolio(market: pd.DataFrame, strat, params: dict):
     max_n = params["max_positions"]
     cost = params["cost_bps"] / 10000.0
     warmup = params["warmup"]
+    # 固定名义口径：每仓固定金额（不复利），weight = 名义/初始本金；None = 复利（weight=1/n）
+    fixed_notional = params.get("fixed_notional")
+    initial_cash = params.get("initial_cash", 1_000_000.0)
 
     dates = sorted(market["date"].unique())
     symbols = sorted(market["symbol"].unique())
@@ -80,6 +83,7 @@ def run_portfolio(market: pd.DataFrame, strat, params: dict):
     # 透视表（date × symbol）供快速取数
     open_px = market.pivot_table(index="date", columns="symbol", values="open").sort_index()
     close_px = market.pivot_table(index="date", columns="symbol", values="close").sort_index()
+    close_ff = close_px.ffill()          # 停牌日沿用最近收盘——复牌跳空缺口计入（不静默丢弃）
 
     # 每标的分组（供策略函数用历史 df）
     sym_groups = {sym: g.sort_values("date").reset_index(drop=True)
@@ -139,9 +143,16 @@ def run_portfolio(market: pd.DataFrame, strat, params: dict):
         if d_next is None:
             break
         turnover = 0.0
+        exit_extra = 0.0     # 当日平仓仓位的 close-to-close 收益（持有至 d 收盘，d+1 开盘才离场）
+        d_prev_x = dates[t - 1]
         # 平仓（开盘价卖出）
         for sym in close_pool:
             h = holdings.pop(sym)
+            # 补记该仓当日收益（执行段 pop 早于收益循环，此处先记）
+            cx = close_ff.loc[d, sym] if sym in close_ff.columns else np.nan
+            cp = close_ff.loc[d_prev_x, sym] if sym in close_ff.columns else np.nan
+            if pd.notna(cx) and pd.notna(cp) and cp > 0:
+                exit_extra += h["weight"] * (cx / cp - 1.0)
             exit_price = open_px.loc[d_next, sym] if sym in open_px.columns and d_next in open_px.index else np.nan
             if pd.isna(exit_price):
                 exit_price = close_px.loc[d, sym]
@@ -167,29 +178,45 @@ def run_portfolio(market: pd.DataFrame, strat, params: dict):
                 if pd.isna(epx):
                     continue
                 hd = hist_df(sym, d)
-                w_fn = getattr(strat, "position_weight", None)
-                w = w_fn(sym, max_n, hd) if w_fn else 1.0 / max_n
+                if fixed_notional:                       # 固定名义：每仓固定金额，不复利
+                    w = fixed_notional / initial_cash
+                else:                                    # 复利：weight = 1/n（施加到增长 NAV）
+                    w_fn = getattr(strat, "position_weight", None)
+                    w = w_fn(sym, max_n, hd) if w_fn else 1.0 / max_n
                 name = hd["name"].iloc[-1] if "name" in hd.columns and len(hd) else sym
                 holdings[sym] = {"entry_date": d_next, "entry_price": epx,
                                  "peak": epx, "weight": w, "name": name}
                 del open_pool[sym]
                 turnover += w
 
-        # ── 当日收益（close-to-close，基于昨日收盘持仓）──
+        # ── 当日收益（执行口径归因：入场日开盘→收盘；持仓日 close-to-close 前向填充；
+        #     次日开盘才入场的仓今日不归因；当日平仓仓在执行段已补记）──
         d_prev = dates[t - 1]
-        r = 0.0
+        r = exit_extra
+        held_today = 0
         for sym, h in holdings.items():
-            c_now = close_px.loc[d, sym] if sym in close_px.columns else np.nan
-            c_prev = close_px.loc[d_prev, sym] if sym in close_px.columns else np.nan
-            if pd.notna(c_now) and pd.notna(c_prev) and c_prev > 0:
-                r += h["weight"] * (c_now / c_prev - 1.0)
-            h["peak"] = max(h["peak"], c_now if pd.notna(c_now) else h["peak"])
+            if pd.Timestamp(h["entry_date"]) > pd.Timestamp(d):
+                continue                     # t+1 开盘入场，决策日不归因（防前视）
+            held_today += 1
+            c_now = close_ff.loc[d, sym] if sym in close_ff.columns else np.nan
+            if pd.Timestamp(h["entry_date"]) == pd.Timestamp(d):
+                o = open_px.loc[d, sym] if sym in open_px.columns else np.nan
+                if pd.notna(o) and o > 0 and pd.notna(c_now):
+                    r += h["weight"] * (c_now / o - 1.0)     # 入场日：开盘→收盘
+            else:
+                c_prev = close_ff.loc[d_prev, sym] if sym in close_ff.columns else np.nan
+                if pd.notna(c_now) and pd.notna(c_prev) and c_prev > 0:
+                    r += h["weight"] * (c_now / c_prev - 1.0)
+            c_raw = close_px.loc[d, sym] if sym in close_px.columns else np.nan
+            h["peak"] = max(h["peak"], c_raw if pd.notna(c_raw) else h["peak"])
         r -= turnover * cost  # 调仓成本
         daily_rets.append({"date": d, "ret": r,
-                           "n_holdings": len(holdings),
-                           "cash_weight": max(0.0, 1.0 - sum(h["weight"] for h in holdings.values()))})
+                           "n_holdings": held_today,
+                           "cash_weight": max(0.0, 1.0 - sum(h["weight"] for h in holdings.values()
+                                                             if pd.Timestamp(h["entry_date"]) <= pd.Timestamp(d)))})
         for sym, h in holdings.items():
-            holdings_rows.append({"date": d, "symbol": sym, "weight": h["weight"]})
+            if pd.Timestamp(h["entry_date"]) <= pd.Timestamp(d):
+                holdings_rows.append({"date": d, "symbol": sym, "weight": h["weight"]})
 
     daily_df = pd.DataFrame(daily_rets).set_index("date")
     trades_df = pd.DataFrame(trades)
@@ -207,7 +234,11 @@ def write_outputs(cfg: BacktestConfig, daily: pd.Series, holdings_df, trades_df,
     sdir = Path(sdir)
     logs = sdir / "backtest_logs"
     logs.mkdir(parents=True, exist_ok=True)
-    nav = (1 + daily).cumprod()
+    # 固定名义口径 → NAV 加总（不复利）；复利口径 → 几何累计
+    if params.get("fixed_notional"):
+        nav = 1.0 + daily.cumsum()
+    else:
+        nav = (1 + daily).cumprod()
     pd.DataFrame({"date": daily.index, "net_return": daily.values, "nav": nav.values,
                   "drawdown": (nav / nav.cummax() - 1.0).values}).to_csv(
         logs / "equity_curve.csv", index=False, encoding="utf-8-sig")
@@ -331,6 +362,8 @@ def main() -> int:
     p.add_argument("--warmup", type=int, default=DEFAULT_PARAMS["warmup"])
     p.add_argument("--output-dir", help="输出目录（默认 {project_dir}/03_backtest_strategy）")
     p.add_argument("--initial-cash", type=float, default=1_000_000.0)
+    p.add_argument("--fixed-notional", type=float, default=None,
+                   help="固定名义模式：每仓固定金额（如 150000=15万/仓，不复利）；默认 None=复利(weight=1/n)")
     p.add_argument("--annualization", type=float, default=252.0)
     args = p.parse_args()
 
@@ -350,12 +383,14 @@ def main() -> int:
 
     strat = load_portfolio_strategy(cfg.strategy_py)
     params = {"max_positions": args.max_positions, "cost_bps": args.cost_bps,
-              "warmup": args.warmup}
+              "warmup": args.warmup, "fixed_notional": args.fixed_notional,
+              "initial_cash": args.initial_cash}
 
     daily_df, holdings_df, trades_df = run_portfolio(market, strat, params)
     daily = daily_df["ret"]
     daily.index = pd.to_datetime(daily.index)
-    metrics = compute_metrics(daily, cfg)
+    additive = bool(args.fixed_notional)   # 固定名义 → 加总口径指标
+    metrics = compute_metrics(daily, cfg, additive=additive)
     out_dir = Path(args.output_dir).resolve() if args.output_dir else None
     write_outputs(cfg, daily, holdings_df, trades_df, metrics, params, out_dir)
 
