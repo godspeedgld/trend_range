@@ -388,8 +388,9 @@ def derive_trades_paired(market: pd.DataFrame, all_pos: pd.DataFrame) -> pd.Data
 
 
 def write_outputs(cfg: BacktestConfig, daily: pd.Series, all_pos: pd.DataFrame, market: pd.DataFrame,
-                  metrics: dict, per_sym: dict, raw: dict, regime_df: pd.DataFrame | None = None) -> None:
-    sdir = cfg.project_dir / "03_backtest_strategy"
+                  metrics: dict, per_sym: dict, raw: dict, regime_df: pd.DataFrame | None = None,
+                  out_dir: Path | None = None) -> None:
+    sdir = Path(out_dir) if out_dir is not None else cfg.project_dir / "03_backtest_strategy"
     logs = sdir / "backtest_logs"
     logs.mkdir(parents=True, exist_ok=True)
     nav = (1 + daily).cumprod()
@@ -576,32 +577,23 @@ def write_html(sdir: Path, daily: pd.Series, market: pd.DataFrame, trades: pd.Da
     nav_html = fig_nav.to_html(full_html=False, include_plotlyjs=False, div_id="fig_nav",
                                config={"responsive": True})
 
-    # 页签2：K线 + 买卖点（每品种一行）
+    # 页签2：K线 + 买卖点（每品种一行，公共模块 kline_viz 统一样式：
+    #   红涨绿跌 + 拖动条 + 左键平移 + hover OHLC + ▲开仓/▼平仓标记）
+    from kline_viz import add_candlestick, add_trade_markers, style_kline
     fig_kl = make_subplots(rows=len(symbols), cols=1, shared_xaxes=True, vertical_spacing=0.04,
                            subplot_titles=[f"{s} OHLC + Entry/Exit" for s in symbols]) if len(symbols) > 1 else None
     for i, s in enumerate(symbols):
         md = market[market["symbol"] == s].sort_values("date")
-        cd = go.Candlestick(x=md["date"], open=md["open"], high=md["high"], low=md["low"],
-                            close=md["close"], name=s, increasing_line_color="#27ae60",
-                            decreasing_line_color="#e74c3c")
+        r = i + 1 if len(symbols) > 1 else None
         if fig_kl is not None:
-            fig_kl.add_trace(cd, row=i + 1, col=1)
+            add_candlestick(fig_kl, md, name=s, row=r)
         else:
-            fig_kl = go.Figure(cd)
+            fig_kl = go.Figure()
+            add_candlestick(fig_kl, md, name=s)
         tr = trades[trades["symbol"] == s] if len(trades) else pd.DataFrame()
         if len(tr):
-            op, cl = tr[tr["action"] == "open"], tr[tr["action"] == "close"]
-            r = i + 1 if len(symbols) > 1 else None
-            kw = dict(row=r, col=1) if r else {}
-            fig_kl.add_trace(go.Scatter(x=op["date"], y=op["price"], mode="markers",
-                                        marker=dict(symbol="triangle-up", size=12, color="#2980b9"),
-                                        name="entry", showlegend=(i == 0)), **kw)
-            fig_kl.add_trace(go.Scatter(x=cl["date"], y=cl["price"], mode="markers",
-                                        marker=dict(symbol="triangle-down", size=12, color="#f39c12"),
-                                        name="exit", showlegend=(i == 0)), **kw)
-    fig_kl.update_layout(template="plotly_white", height=320 + 260 * len(symbols),
-                         hovermode="x unified", xaxis_rangeslider_visible=False,
-                         margin=dict(l=50, r=30, t=40, b=30))
+            add_trade_markers(fig_kl, tr, row=r)
+    style_kline(fig_kl, height=320 + 260 * len(symbols), rangeslider=(len(symbols) == 1))
     kline_html = fig_kl.to_html(full_html=False, include_plotlyjs=False, div_id="fig_kline",
                                 config={"responsive": True})
 
@@ -685,6 +677,7 @@ def main() -> int:
     p.add_argument("--initial-cash", type=float, default=1_000_000.0)
     p.add_argument("--annualization", type=float, default=252.0)
     p.add_argument("--no-short", action="store_true")
+    p.add_argument("--output-dir", help="输出目录（默认 {project_dir}/03_backtest_strategy）")
     args = p.parse_args()
 
     proj = Path(args.project_dir).resolve()
@@ -720,7 +713,8 @@ def main() -> int:
     write_outputs(cfg, daily, all_pos, market, metrics, per_sym,
                   {"metrics": metrics, "per_symbol": per_sym, "numba": _HAS_NUMBA,
                    "n_bars": int(len(all_pos)), "symbols": list(per_sym.keys())},
-                  regime_df)
+                  regime_df,
+                  out_dir=Path(args.output_dir).resolve() if args.output_dir else None)
     update_manifest(cfg, metrics)
     print(json.dumps({"ok": True, "numba": _HAS_NUMBA, "metrics": metrics,
                       "per_symbol": per_sym}, ensure_ascii=False, indent=2, default=str))
