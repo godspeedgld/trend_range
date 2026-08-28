@@ -54,6 +54,7 @@ python scripts/check_data.py {project_dir} --needs 沪深300,中证500  # 或 �
 - **分析**：根据回测结果给出改进建议
 - **报告**：final_report.md 综合思路/回测/分析/改进
 - **质控**：quality_gate_check.py
+- **指标铁律**：回测结束后，净值、统计指标与相应可视化**必须用生成的交易记录（trades）直接推算**，严禁另算一套——交易记录是策略实际执行的唯一事实源，独立归因路径易产生口径不一致或隐性前视
 - **迭代铁律**：每次迭代**严禁修改之前迭代的输出内容**——已完成迭代目录（main_idea.md / backtest_strategy/ / final_report.md 等）一律冻结，不得覆盖、删除或改写。要改进只能新建下一迭代，并在 main_idea.md 注明承接哪次迭代。
 - **共享代码**：多迭代共用的文件放工程根 `shared/`（固定输出目录），各迭代 strategy.py 只 import 不内联。已投产的 shared 文件同样冻结，新需求以新增文件方式扩展（详见 workflow.md）。
 
