@@ -228,8 +228,33 @@ def run_portfolio(market: pd.DataFrame, strat, params: dict):
 # 输出
 # ═══════════════════════════════════════════════════════════
 
+def load_benchmark(code: str, dates_index: pd.DatetimeIndex):
+    """从本地 warehouse 读指数基准（index_bar1d），对齐回测日历并归一到首日=1。
+
+    仓库不可用/代码不存在时返回 None（报告退回无基准模式，不报错）。
+    """
+    try:
+        import duckdb
+        wh = Path(__file__).resolve().parents[4] / "data_cache" / "bigquant_warehouse" / "bigquant_warehouse.duckdb"
+        if not wh.exists():
+            return None
+        con = duckdb.connect(str(wh), read_only=True)
+        df = con.execute(
+            f"SELECT date, close FROM index_bar1d WHERE instrument='{code}' ORDER BY date"
+        ).fetchdf()
+        con.close()
+        df["date"] = pd.to_datetime(df["date"])
+        s = df.set_index("date")["close"].sort_index()
+        s = s.reindex(s.index.union(dates_index)).ffill().reindex(dates_index).dropna()
+        if len(s) < 2:
+            return None
+        return s / s.iloc[0]                     # 归一：首日 = 1（与策略 NAV 同起点）
+    except Exception:
+        return None
+
+
 def write_outputs(cfg: BacktestConfig, daily: pd.Series, holdings_df, trades_df,
-                  metrics: dict, params: dict, out_dir: Path = None):
+                  metrics: dict, params: dict, out_dir: Path = None, benchmark=None):
     sdir = out_dir if out_dir is not None else cfg.project_dir / "03_backtest_strategy"
     sdir = Path(sdir)
     logs = sdir / "backtest_logs"
@@ -250,23 +275,35 @@ def write_outputs(cfg: BacktestConfig, daily: pd.Series, holdings_df, trades_df,
         holdings_df.to_csv(logs / "position_return_detail.csv", index=False, encoding="utf-8-sig")
     (sdir / "config.json").write_text(json.dumps({
         "engine": "portfolio pool-based", "params": params,
-        "cost_bps": cfg.cost_bps, "n_trades": int(len(trades_df))},
+        "cost_bps": cfg.cost_bps, "n_trades": int(len(trades_df)),
+        "benchmark": params.get("benchmark")},
         ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # html 报告（净值+回撤+交易表，与 local_backtest 风格一致）
+    # html 报告（净值+基准+超额 / 回撤 + 交易表，与 local_backtest 风格一致）
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
+    bench = None if benchmark is None else benchmark.reindex(nav.index).ffill()
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3],
-                        subplot_titles=("Strategy NAV", "Drawdown"))
-    fig.add_trace(go.Scatter(x=nav.index, y=nav.values, name="NAV",
+                        subplot_titles=("Strategy NAV vs Benchmark（超额 = 策略 − 基准）", "Drawdown"))
+    fig.add_trace(go.Scatter(x=nav.index, y=nav.values, name="策略净值",
                              line=dict(color="#2980b9", width=1.4)), row=1, col=1)
+    if bench is not None:
+        fig.add_trace(go.Scatter(x=nav.index, y=bench.values, name="基准净值",
+                                 line=dict(color="#7f8c8d", width=1.2, dash="dot")), row=1, col=1)
+        fig.add_trace(go.Scatter(x=nav.index, y=(nav - bench).values, name="超额收益",
+                                 line=dict(color="#27ae60", width=1.2)), row=1, col=1)
     dd = nav / nav.cummax() - 1.0
     fig.add_trace(go.Scatter(x=dd.index, y=dd.values, name="Drawdown", fill="tozeroy",
                              line=dict(color="#c0392b", width=0.7),
                              fillcolor="rgba(192,57,43,0.15)"), row=2, col=1)
     fig.update_layout(template="plotly_white", height=460, hovermode="x unified",
-                      margin=dict(l=50, r=30, t=40, b=30), showlegend=False)
+                      margin=dict(l=50, r=30, t=40, b=30), showlegend=True)
     nav_html = fig.to_html(full_html=False, include_plotlyjs=False, div_id="fig_nav")
+
+    bench_total = excess_total = None
+    if bench is not None:
+        bench_total = float(bench.iloc[-1] - 1.0)
+        excess_total = float(nav.iloc[-1] - bench.iloc[-1])
 
     # 交易级统计：胜率 / 盈亏比（平均盈利 ÷ 平均亏损）
     n = int(len(trades_df)) if trades_df is not None else 0
@@ -281,6 +318,14 @@ def write_outputs(cfg: BacktestConfig, daily: pd.Series, holdings_df, trades_df,
 
     def _cell(v, fmt):
         return fmt(v) if v == v else "—"          # NaN → 占位
+
+    bench_tiles = ""
+    if bench_total is not None:
+        bench_name = params.get("benchmark") or "基准"
+        bench_tiles = (f"<div class=\"item\"><span>基准（{bench_name}）</span>"
+                       f"<b>{bench_total*100:.1f}%</b></div>"
+                       f"<div class=\"item\"><span>超额收益</span>"
+                       f"<b>{excess_total*100:+.1f}%</b></div>")
 
     trades_html = "<p>无交易记录。</p>"
     if n:
@@ -336,6 +381,7 @@ th{{background:#f3f5f8;}}
   <div class="item"><span>交易数</span><b>{n}</b></div>
   <div class="item"><span>交易胜率</span><b>{_cell(trade_wr, lambda v: f'{v:.1f}%')}</b></div>
   <div class="item"><span>盈亏比</span><b>{_cell(payoff, lambda v: f'{v:.2f}')}</b></div>
+  {bench_tiles}
 </div>
 {nav_html}
 </div>
@@ -365,6 +411,8 @@ def main() -> int:
     p.add_argument("--fixed-notional", type=float, default=None,
                    help="固定名义模式：每仓固定金额（如 150000=15万/仓，不复利）；默认 None=复利(weight=1/n)")
     p.add_argument("--annualization", type=float, default=252.0)
+    p.add_argument("--benchmark", default=None,
+                   help="基准指数代码（如 000300.SH=沪深300，读本地 warehouse index_bar1d）；缺省无基准")
     args = p.parse_args()
 
     proj = Path(args.project_dir).resolve()
@@ -392,7 +440,14 @@ def main() -> int:
     additive = bool(args.fixed_notional)   # 固定名义 → 加总口径指标
     metrics = compute_metrics(daily, cfg, additive=additive)
     out_dir = Path(args.output_dir).resolve() if args.output_dir else None
-    write_outputs(cfg, daily, holdings_df, trades_df, metrics, params, out_dir)
+    benchmark = None
+    if args.benchmark:
+        benchmark = load_benchmark(args.benchmark, daily.index)
+        if benchmark is None:
+            print(f"⚠️ 基准 {args.benchmark} 不可用（warehouse/代码缺失），报告将无基准")
+        else:
+            params["benchmark"] = args.benchmark
+    write_outputs(cfg, daily, holdings_df, trades_df, metrics, params, out_dir, benchmark)
 
     out = {"ok": True, "metrics": metrics,
            "n_trades": int(len(trades_df)) if trades_df is not None else 0}
