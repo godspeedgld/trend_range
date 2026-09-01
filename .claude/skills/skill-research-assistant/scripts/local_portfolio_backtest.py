@@ -18,6 +18,9 @@
     pool_invalidate(hist_df) -> bool            # 开仓池剔除
     select_order(open_pool) -> list[sym]        # 开仓优先选择
     position_weight(sym, n, hist_df) -> float   # 单股权重（默认 1/n）
+    entry_payload(hist_df) -> dict   [可选]      # 入池载荷（如信号日止损线），随仓位存入
+                                                # entry_info["signal_info"] 供 exit_check 用
+                                                # ——池中排队多日开仓时防"信号日信息丢失"
 
 输出与 local_backtest.py 一致：equity/metrics/trades_paired/weights + html 报告。
 """
@@ -130,6 +133,7 @@ def run_portfolio(market: pd.DataFrame, strat, params: dict):
                 del open_pool[sym]
 
         # 扫描入场信号（非持仓非开仓池）
+        payload_fn = getattr(strat, "entry_payload", None)   # 可选接口：入池载荷
         for sym in symbols:
             if sym in holdings or sym in open_pool:
                 continue
@@ -138,6 +142,8 @@ def run_portfolio(market: pd.DataFrame, strat, params: dict):
                 continue
             if strat.entry_signal(hd):
                 open_pool[sym] = {"signal_date": d}
+                if payload_fn:                # 如信号日止损线——随仓位传递给 exit_check
+                    open_pool[sym].update(payload_fn(hd) or {})
 
         # ── 开盘阶段：次日执行 ──
         if d_next is None:
@@ -185,7 +191,8 @@ def run_portfolio(market: pd.DataFrame, strat, params: dict):
                     w = w_fn(sym, max_n, hd) if w_fn else 1.0 / max_n
                 name = hd["name"].iloc[-1] if "name" in hd.columns and len(hd) else sym
                 holdings[sym] = {"entry_date": d_next, "entry_price": epx,
-                                 "peak": epx, "weight": w, "name": name}
+                                 "peak": epx, "weight": w, "name": name,
+                                 "signal_info": dict(open_pool[sym])}
                 del open_pool[sym]
                 turnover += w
 
