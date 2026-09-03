@@ -118,6 +118,55 @@
 
 主键：`(instrument, date)` | 起始：2005-01-04
 
+### cn_stock_moneyflow（A股资金流向·逐日）
+
+个股逐日资金流向（按挂单额分 超大单/大单/中单/小单 × 买卖方向 × 主动/被动），
+用于主力资金动向、筹码博弈、资金流因子研究。
+
+**档位划分（挂单额）**：超大单 >100 万元；大单 20万~100万元；中单 4万~20万元；小单 <4 万元。
+**主/被动定义**：主动 = 以对手价成交（吃单，追价方）；被动 = 以本方挂单价成交（被吃，让价方）。
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| date | timestamp[ns] | 日期 |
+| instrument | string | 证券代码 |
+| active_buy_volume_large | double | 主动买入量（超大单） |
+| passive_buy_volume_large | double | 被动买入量（超大单） |
+| active_sell_volume_large | double | 主动卖出量（超大单） |
+| passive_sell_volume_large | double | 被动卖出量（超大单） |
+| active_buy_amount_large | double | 主动买入额（超大单） |
+| passive_buy_amount_large | double | 被动买入额（超大单） |
+| active_sell_amount_large | double | 主动卖出额（超大单） |
+| passive_sell_amount_large | double | 被动卖出额（超大单） |
+| active_buy_volume_big | double | 主动买入量（大单） |
+| passive_buy_volume_big | double | 被动买入量（大单） |
+| active_sell_volume_big | double | 主动卖出量（大单） |
+| passive_sell_volume_big | double | 被动卖出量（大单） |
+| active_buy_amount_big | double | 主动买入额（大单） |
+| passive_buy_amount_big | double | 被动买入额（大单） |
+| active_sell_amount_big | double | 主动卖出额（大单） |
+| passive_sell_amount_big | double | 被动卖出额（大单） |
+| active_buy_volume_mid | double | 主动买入量（中单） |
+| passive_buy_volume_mid | double | 被动买入量（中单） |
+| active_sell_volume_mid | double | 主动卖出量（中单） |
+| passive_sell_volume_mid | double | 被动卖出量（中单） |
+| active_buy_amount_mid | double | 主动买入额（中单） |
+| passive_buy_amount_mid | double | 被动买入额（中单） |
+| active_sell_amount_mid | double | 主动卖出额（中单） |
+| passive_sell_amount_mid | double | 被动卖出额（中单） |
+| active_buy_volume_small | double | 主动买入量（小单） |
+| passive_buy_volume_small | double | 被动买入量（小单） |
+| active_sell_volume_small | double | 主动卖出量（小单） |
+| passive_sell_volume_small | double | 被动卖出量（小单） |
+| active_buy_amount_small | double | 主动买入额（小单） |
+| passive_buy_amount_small | double | 被动买入额（小单） |
+| active_sell_amount_small | double | 主动卖出额（小单） |
+| passive_sell_amount_small | double | 被动卖出额（小单） |
+
+主键：`(date, instrument)` | 频率：日线 | 命名速记：`{主动/被动}_{买/卖}_{额/量}_{档}`
+
+---
+
 ### cn_stock_index_component（指数成分股）
 
 各宽基指数的成分股列表，用于成分股数据研究（如按指数成分股批量拉取行情）。
