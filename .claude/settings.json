@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm -f /tmp/_llt_*.py /tmp/_if_check.py /tmp/_cloud_analysis.py /tmp/_sig_compare.py /tmp/_first_trade.py /tmp/_align2.py /tmp/_ret_cmp.py /tmp/_z500.py /tmp/_llt_honest.py /tmp/_llt_signal_value.py /tmp/_llt_exec_loss.py 2>/dev/null; echo \"临时文件已清理\")",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe -c ' *)",
+      "Bash(awk '{print $5, $9}')",
+      "Bash(/c/Anaconda/envs/quant_env_311/python.exe .claude/skills/skill-research-assistant/scripts/local_portfolio_backtest.py replication/research-projects/hs300-enh-2017-2021 --market-data replication/research-projects/hs300-enh-2017-2021/_market_hs300_panel_2017.parquet --strategy replication/research-projects/hs300-enh-2017-2021/02_strategy_iteration/strategy_007/backtest_strategy/strategy.py --max-positions 10 --cost-bps 15 --warmup 60 --initial-cash 1000000 --fixed-notional 100000 --benchmark 000300.SH --output-dir replication/research-projects/hs300-enh-2017-2021/02_strategy_iteration/strategy_007/backtest_strategy)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe replication/research-projects/hs300-enh-2017-2021/02_strategy_iteration/strategy_005/metrics_from_trades.py --trades replication/research-projects/hs300-enh-2017-2021/02_strategy_iteration/strategy_007/backtest_strategy/backtest_logs/trades_paired.csv --market replication/research-projects/hs300-enh-2017-2021/_market_hs300_panel_2017.parquet --out-dir replication/research-projects/hs300-enh-2017-2021/02_strategy_iteration/strategy_007/backtest_strategy/backtest_logs --initial-cash 1000000 --notional 100000 --cost-bps 15)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe .claude/skills/skill-research-assistant/scripts/quality_gate_check.py replication/research-projects/hs300-enh-2017-2021)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe build_view.py)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe update1_filter.py)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe build_update1_view.py)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe .claude/skills/skill-research-assistant/scripts/local_portfolio_backtest.py replication/research-projects/hs300-enh-2017-2021 --market-data replication/research-projects/hs300-enh-2017-2021/_market_hs300_panel_2017.parquet --strategy replication/research-projects/hs300-enh-2017-2021/02_strategy_iteration/strategy_008/backtest_strategy/strategy.py --max-positions 10 --cost-bps 15 --warmup 60 --initial-cash 1000000 --fixed-notional 100000 --benchmark 000300.SH --output-dir replication/research-projects/hs300-enh-2017-2021/02_strategy_iteration/strategy_008/backtest_strategy)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe replication/research-projects/hs300-enh-2017-2021/02_strategy_iteration/strategy_005/metrics_from_trades.py --trades replication/research-projects/hs300-enh-2017-2021/02_strategy_iteration/strategy_008/backtest_strategy/backtest_logs/trades_paired.csv --market replication/research-projects/hs300-enh-2017-2021/_market_hs300_panel_2017.parquet --out-dir replication/research-projects/hs300-enh-2017-2021/02_strategy_iteration/strategy_008/backtest_strategy/backtest_logs --initial-cash 1000000 --notional 100000 --cost-bps 15)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe alpha_check.py)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe ret_stats.py)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe sf_split.py)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe build_sf_view.py)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe build_group_views.py)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe gen_trades.py)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe classify_study.py)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe build_views.py)",
+      "Edit(/.claude/skills/skill-bigquant-sdk/**)",
+      "Bash(/c/Anaconda/envs/quant_env_311/python.exe .claude/skills/skill-bigquant-sdk/scripts/fetch_hs300_moneyflow.py)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe update1_tree.py)",
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe update1_tree.py)"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
+    ]
+  }
+}
