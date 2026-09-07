@@ -75,6 +75,21 @@ td = dai.query("SELECT date, market_code FROM all_trading_days").df()
 
 完整字段见 `references/data_tables.md`，SQL 模板见 `references/sql_templates.md`。
 
+## ⚠ 列拉取铁律（2026-09-07）
+
+**只拉 `references/data_tables.md` 中该表定义列的清单，禁止 `SELECT *`。**
+BigQuant 实际表往往远多于文档列（如 cn_stock_moneyflow 实际 288+ 资金列，文档仅 32 基础列）——
+`SELECT *` 会白烧配额（按单元格计费）+ 落盘一堆不需要的列。正确写法：
+
+```python
+# 先查 data_tables.md 拿到该表列清单，再显式 SELECT
+COLS = ["date", "instrument", "active_buy_volume_large", ...]  # data_tables.md 定义列
+sql = f"SELECT {', '.join(COLS)} FROM cn_stock_moneyflow WHERE ..."
+```
+
+查询大表前先估单元格量（行数 × data_tables 列数）确认不超配额；先按 `SELECT count(*)`
+试探再拉全量。
+
 ## 安装
 
 ```bash
@@ -115,9 +130,11 @@ TABLE = "stock_bar1d"                # 仓库表名
 SOURCE = "cn_stock_bar1d"            # BigQuant SQL 表名
 START, END = "2024-01-01", "2025-06-30"
 
-# 1. 拉取
-sql = f"SELECT * FROM {SOURCE} WHERE date >= '{START}' AND date <= '{END}'"
-df = dai.query(sql).df()
+# 1. 拉取（⚠ 显式列：只拉 data_tables.md 定义列，禁 SELECT *——见上方"列拉取铁律"）
+COLS = ["date", "instrument", "open", "high", "low", "close", "volume"]
+sql = (f"SELECT {', '.join(COLS)} FROM {SOURCE} "
+       f"WHERE date >= '{START}' AND date <= '{END}'")
+df = dai.query(sql).df()[COLS]
 
 # 2. 按年分区写 Parquet
 df["year"] = pd.to_datetime(df["date"]).dt.year

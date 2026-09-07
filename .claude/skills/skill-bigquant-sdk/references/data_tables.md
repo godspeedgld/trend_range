@@ -165,6 +165,11 @@
 
 主键：`(date, instrument)` | 频率：日线 | 命名速记：`{主动/被动}_{买/卖}_{额/量}_{档}`
 
+> ⚠ **该表实际字段远超本节列出的 32 个基础列**（还含 全量 all / 主力 main 档、净额 net、
+> 流入流出净流 inflow/outflow/netflow、比率 rate、占比 proportion 等 288+ 资金列）。
+> **拉取时必须显式 SELECT 本节列出的 34 列**，禁止 `SELECT *`（按单元格计费白烧配额）。
+> 列清单即本节 34 行；如需 all/main/rate 等扩展列，另行在 SQL 中显式点名并补记本节。
+
 ---
 
 ### cn_stock_index_component（指数成分股）

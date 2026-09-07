@@ -30,6 +30,18 @@ PANEL = Path(r"C:\Quant\trend_range\replication\research-projects"
              r"/hs300-enh-2017-2021/_market_hs300_panel.parquet")
 BATCH = 60                                # 每批 instruments 数（小批省配额、断点细）
 START, END = "2015-01-05", "2026-08-21"
+# ⚠ 只拉 data_tables.md 定义的 34 列（date+instrument+32 基础资金列）——cn_stock_moneyflow
+#   实际有 288+ 资金列（all/main 档、rate/proportion、净额等），多余列不拉，省配额且与文档一致
+COLS = ["date", "instrument",
+        "active_buy_volume_large", "passive_buy_volume_large", "active_sell_volume_large", "passive_sell_volume_large",
+        "active_buy_amount_large", "passive_buy_amount_large", "active_sell_amount_large", "passive_sell_amount_large",
+        "active_buy_volume_big", "passive_buy_volume_big", "active_sell_volume_big", "passive_sell_volume_big",
+        "active_buy_amount_big", "passive_buy_amount_big", "active_sell_amount_big", "passive_sell_amount_big",
+        "active_buy_volume_mid", "passive_buy_volume_mid", "active_sell_volume_mid", "passive_sell_volume_mid",
+        "active_buy_amount_mid", "passive_buy_amount_mid", "active_sell_amount_mid", "passive_sell_amount_mid",
+        "active_buy_volume_small", "passive_buy_volume_small", "active_sell_volume_small", "passive_sell_volume_small",
+        "active_buy_amount_small", "passive_buy_amount_small", "active_sell_amount_small", "passive_sell_amount_small"]
+COLS_SQL = ", ".join(COLS)
 
 
 def done_symbols() -> set:
@@ -74,28 +86,32 @@ def main(retry_failed: bool = False) -> int:
 
     failed_now = []
     n_done = 0
+    quota_hit = False
     for i in range(0, len(todo), BATCH):
         batch = todo[i:i + BATCH]
         in_list = ",".join(f"'{s}'" for s in batch)
-        sql = (f"SELECT * FROM {SOURCE} WHERE instrument IN ({in_list}) "
+        sql = (f"SELECT {COLS_SQL} FROM {SOURCE} WHERE instrument IN ({in_list}) "
                f"AND date >= '{START}' AND date <= '{END}'")
         try:
             df = dai.query(sql).df()
+            df = df[COLS]                      # 双保险：显式列拉取 + 落盘前裁剪
             write_batch(df)
             n_done += len(df)
             print(f"  [{i // BATCH + 1}/{(len(todo) + BATCH - 1) // BATCH}] "
-                  f"{len(batch)} 只 → {len(df)} 行（累计 {n_done}）", flush=True)
+                  f"{len(batch)} 只 -> {len(df)} 行（累计 {n_done}）", flush=True)
         except Exception as e:                            # noqa: BLE001 配额/网络
             msg = str(e)[:160]
             print(f"  [{i // BATCH + 1}] 失败: {msg}", flush=True)
             failed_now.extend(batch)
             if "配额" in msg or "quota" in msg.lower():
-                print("  ⚠ 周配额耗尽，进度已保存，下周重跑续传")
+                quota_hit = True
                 break
-    # 落进度
+    # 落进度（无论正常结束还是撞配额，都写）
     prog["failed"] = failed_now
     prog_path.parent.mkdir(parents=True, exist_ok=True)
     prog_path.write_text(json.dumps(prog, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[进度] 本次新增 {n_done} 行；配额状态: {'耗尽' if quota_hit else '正常'}；"
+          f"累计已入库 {len(done_symbols())} 只（done_symbols 断点续传自动跳过）")
 
     refresh_view()
     return 0
