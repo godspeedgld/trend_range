@@ -172,6 +172,63 @@
 
 ---
 
+### hf_alpha_fzzq（方正证券高频因子）
+
+方正证券研究的高频 alpha 因子（花隐林间系列），个股逐日。按注释区分"最终因子"与"中间因子"
+（中间因子为构造最终因子的分步产出）。字段名为 alpha_91xxx；带 `:1` 后缀的同名因子为另一口径/变体。
+
+⚠ 拉取时显式 SELECT 需用的 alpha 列（此表列较多，实际含 5x+ 因子列），禁 `SELECT *`——先查
+本表所需因子清单再拉（见 SKILL.md 列拉取铁律）。
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| date | timestamp[ns] | 日期 |
+| instrument | string | 股票代码 |
+| alpha_91001 | double | 花隐林间【最终因子】 |
+| alpha_91002 | double | 朝没晨雾【中间因子】 |
+| alpha_91003 | double | 午蔽古木【中间因子】 |
+| alpha_91004 | double | 夜眠霜露【中间因子】 |
+| alpha_91005 | double | 日度朝没晨雾【中间因子】 |
+| alpha_91006 | double | 日度午蔽古木【中间因子】 |
+| alpha_91007 | double | 适度冒险【最终因子】 |
+| alpha_91008 | double | 月耀眼波动【中间因子】 |
+| alpha_91009 | double | 月耀眼收益【中间因子】 |
+| alpha_91010 | double | 适度日耀眼波动率【中间因子】 |
+| alpha_91011 | double | 适度日耀眼收益率【中间因子】 |
+| alpha_91012 | double | 云开雾散【最终因子】 |
+| alpha_91013 | double | 修正模糊价差【中间因子】 |
+| alpha_91014 | double | 月模糊关联度【中间因子】 |
+| alpha_91015 | double | 月模糊金额比【中间因子】 |
+| alpha_91016 | double | 日模糊关联度【中间因子】 |
+| alpha_91017 | double | 日模糊金额比【中间因子】 |
+| alpha_91018 | double | 勇攀高峰【最终因子】 |
+| alpha_91019 | double | 灾后重建【最终因子】 |
+| alpha_91020 | double | 日勇攀高峰【中间因子】 |
+| alpha_91021 | double | 日灾后重建【中间因子】 |
+| alpha_91022 | double | 球队硬币【最终因子】 |
+| alpha_91023 | double | 修正隔夜翻转【中间因子】 |
+| alpha_91024 | double | 修正日间翻转【中间因子】 |
+| alpha_91025 | double | 修正日内翻转【中间因子】 |
+| alpha_91026 | double | （描述缺失） |
+| alpha_91027 | double | 飞蛾扑火【最终因子】 |
+| alpha_91028 | double | 月跳跃度【中间因子】 |
+| alpha_91038 | double | 成交量博弈【中间因子】 |
+| alpha_91039 | double | 相对位置博弈【中间因子】 |
+| alpha_91040 | double | 波动率博弈【中间因子】 |
+| alpha_91041 | double | 多空博弈【最终因子】 |
+| alpha_91042 | double | （描述缺失） |
+| alpha_91043 | double | （描述缺失） |
+| alpha_91044 | double | （描述缺失） |
+| alpha_91028:1 | double | （:1 = 同名因子另一变体） |
+| alpha_91038:1 | double | 同上 |
+| alpha_91039:1 | double | 同上 |
+| alpha_91040:1 | double | 同上 |
+| alpha_91041:1 | double | 同上 |
+
+主键：`(date, instrument)` | 频率：日线
+
+---
+
 ### cn_stock_index_component（指数成分股）
 
 各宽基指数的成分股列表，用于成分股数据研究（如按指数成分股批量拉取行情）。
