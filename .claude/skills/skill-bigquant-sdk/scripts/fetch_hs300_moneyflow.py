@@ -9,9 +9,15 @@
   - 进度文件 stock_moneyflow/_progress.json 记录已完成批次；重跑从未完成处继续
   - 全部批次完成后刷新 DuckDB 视图 + 更新 _meta.json
 
-用法（下周配额刷新后直接跑）：
+用法（配额可用时直接跑）：
   python fetch_hs300_moneyflow.py            # 续传剩余 ~548 只
   python fetch_hs300_moneyflow.py --retry-failed  # 重试上次失败批次
+
+⚠ 教训（2026-09-07）：
+  - 大表务必用本脚本拉（每批立即落盘），**不要手动 dai.query().df() 试探**——试探成功不落盘
+    会白耗配额（曾 60只全量试探耗 5.7M 单元格数据丢失）
+  - 34 列请求量远小于 SELECT *（省 88%）：60 只×11.5 年×34 列 ≈ 570 万单元格可一次拉
+  - 配额看涨不必然=刷新，可能是滚动释放；剩量不足单批（~570万）时撞墙即停，等释放再跑
 主键：(instrument, date)。资金流为当日事实数据（无复权问题），历史稳定可增量。
 """
 from __future__ import annotations
@@ -28,7 +34,7 @@ TABLE = "stock_moneyflow"                 # 仓库表名
 SOURCE = "cn_stock_moneyflow"             # BigQuant SQL 表名
 PANEL = Path(r"C:\Quant\trend_range\replication\research-projects"
              r"/hs300-enh-2017-2021/_market_hs300_panel.parquet")
-BATCH = 60                                # 每批 instruments 数（小批省配额、断点细）
+BATCH = 60                                # 60只/批（34列省88%配额，实测单批可拉）
 START, END = "2015-01-05", "2026-08-21"
 # ⚠ 只拉 data_tables.md 定义的 34 列（date+instrument+32 基础资金列）——cn_stock_moneyflow
 #   实际有 288+ 资金列（all/main 档、rate/proportion、净额等），多余列不拉，省配额且与文档一致
