@@ -43,7 +43,8 @@ DEFAULT_PARAMS = {
     "min_pts": 4,      # 每侧极值最少点数（低于则当日无线；Lang 原文 10、研报示例 6，此处取 4）
 }
 
-# 表1 持续形态（互斥）：形态名 -> (p1_lo, p1_hi, p2_lo, p2_hi)
+# 表1 持续形态（互斥）：形态名 -> (p1_lo, p1_hi, p2_lo, p2_hi)。
+# 斜率阈值可整体作为参数替换（classify_duration(patterns=...)），默认=研报表1。
 DURATION_PATTERNS = {
     "上升三角形": (-0.05, 0.05, 0.05, 0.15),
     "对称三角形": (-0.15, -0.05, 0.05, 0.15),
@@ -52,6 +53,10 @@ DURATION_PATTERNS = {
     "旗形":       (-0.15, -0.05, -0.15, -0.05),
     "喇叭形":     (0.05, np.inf, -np.inf, -0.05),
 }
+
+# 表2 通道形态的可调阈值（默认=研报）：横盘区间双斜率 ∈ [flat_lo, flat_hi)；
+# 四类通道仅由符号与 p1/p2 相对大小决定，无可调阈值。
+DEFAULT_CHAN_BOUNDS = {"flat_lo": -0.15, "flat_hi": 0.05}
 
 
 def local_extrema(y: np.ndarray, w: int, causal: bool = False):
@@ -103,25 +108,32 @@ def fit_window(close_win: np.ndarray, params: dict | None = None, causal: bool =
     return out
 
 
-def classify_duration(p1: float, p2: float) -> str:
-    """(p1,p2) → 表1 六种持续形态之一；不落任何区间返回 '未分类'。"""
+def classify_duration(p1: float, p2: float, patterns: dict | None = None) -> str:
+    """(p1,p2) → 表1 六种持续形态之一；不落任何区间返回 '未分类'。
+
+    patterns: 可选自定义斜率阈值 {形态名: (p1_lo, p1_hi, p2_lo, p2_hi)}，默认研报表1。
+    """
     if not (np.isfinite(p1) and np.isfinite(p2)):
         return "未分类"
-    for name, (a, b, c, d) in DURATION_PATTERNS.items():
+    for name, (a, b, c, d) in (patterns if patterns is not None else DURATION_PATTERNS).items():
         if (a <= p1 < b) and (c <= p2 < d):
             return name
     return "未分类"
 
 
-def classify_channel(p1: float, p2: float) -> str:
-    """(p1,p2) → 表2 五种通道形态；先判四类通道，剩余且双斜率 ∈(-0.15,0.05) 记横盘。"""
+def classify_channel(p1: float, p2: float, bounds: dict | None = None) -> str:
+    """(p1,p2) → 表2 五种通道形态；先判四类通道，剩余且双斜率入横盘区记横盘。
+
+    bounds: 可选 {"flat_lo": -0.15, "flat_hi": 0.05}（默认研报表2 的横盘区间）。
+    """
     if not (np.isfinite(p1) and np.isfinite(p2)):
         return "未分类"
+    b = bounds if bounds is not None else DEFAULT_CHAN_BOUNDS
     if p1 > 0 and p2 > 0:
         return "上升通道收敛" if p1 < p2 else "上升通道发散"
     if p1 < 0 and p2 < 0:
         return "下降通道收敛" if p1 < p2 else "下降通道发散"
-    if -0.15 < p1 < 0.05 and -0.15 < p2 < 0.05:
+    if b["flat_lo"] < p1 < b["flat_hi"] and b["flat_lo"] < p2 < b["flat_hi"]:
         return "横盘"
     return "未分类"
 
@@ -141,17 +153,19 @@ def rolling_lines(df: pd.DataFrame, params: dict | None = None, causal: bool = F
     return pd.DataFrame(rows, index=df.index[N - 1:])
 
 
-def breakout_signals(lines: pd.DataFrame, close: pd.Series) -> pd.DataFrame:
+def breakout_signals(lines: pd.DataFrame, close: pd.Series,
+                     patterns: dict | None = None, chan_bounds: dict | None = None) -> pd.DataFrame:
     """在 rolling_lines 结果上判突破事件 + 形态标签。
 
     突破（上穿）：close[t] > R_t 且 close[t-1] <= R_{t-1}（两日各自的滚动拟合线值）。
+    patterns / chan_bounds：可选自定义斜率阈值（透传给 classify_*，默认研报表1/表2）。
     返回列：p1,p2,R,S,close,breakout,dur_pattern,chan_pattern。
     """
     out = lines.copy()
     out["close"] = close.reindex(lines.index)
     out["breakout"] = (out["close"] > out["R"]) & (out["close"].shift(1) <= out["R"].shift(1))
-    out["dur_pattern"] = [classify_duration(a, b) for a, b in zip(out["p1"], out["p2"])]
-    out["chan_pattern"] = [classify_channel(a, b) for a, b in zip(out["p1"], out["p2"])]
+    out["dur_pattern"] = [classify_duration(a, b, patterns) for a, b in zip(out["p1"], out["p2"])]
+    out["chan_pattern"] = [classify_channel(a, b, chan_bounds) for a, b in zip(out["p1"], out["p2"])]
     return out
 
 
