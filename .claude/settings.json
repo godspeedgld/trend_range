@@ -24,7 +24,8 @@
       "Bash(/c/Anaconda/envs/quant_env_311/python.exe .claude/skills/skill-bigquant-sdk/scripts/fetch_hs300_moneyflow.py)",
       "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe update1_tree.py)",
       "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe update1_tree.py)",
-      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe ma200_dev_abs.py)"
+      "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe ma200_dev_abs.py)",
+      "Edit(/.claude/skills/skill-python-bigquant-ssquant-tbquant/**)"
     ],
     "additionalDirectories": [
       "\\tmp"
