@@ -265,6 +265,84 @@
 
 ---
 
+### cn_stock_industry_sw_bar1d（申万行业指数日线）
+
+申万一级行业指数日线行情（约 31 个一级行业），可用于行业轮动、行业 regime 判断、
+行业动量/相对强弱特征（如 R6 行业维度：个股 60d 收益 − 所属行业 60d 收益）。
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| instrument | string | 行业指数代码 |
+| pre_close | double | 昨收盘价 |
+| open | double | 开盘价 |
+| close | double | 收盘价 |
+| high | double | 最高价 |
+| low | double | 最低价 |
+| volume | double | 成交量 |
+| amount | double | 成交额 |
+| change_ratio | double | 涨跌幅 |
+| turn | double | 换手率 |
+| date | timestamp[ns] | 日期 |
+
+主键：`(instrument, date)` | 频率：日线
+> 注意：本表**无 name 列**（行业名称需另行映射）；拉取显式 SELECT 上表 11 列（列拉取铁律）。
+
+---
+
+### cn_stock_industry_component（个股行业归属·逐日）
+
+个股 → 行业归属（申万等标准，含一/二/三级），逐日快照。用于行业过滤、行业中性化、
+行业相对强弱特征（个股 RS = 个股收益 − 所属行业收益）、行业轮动统计。
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| instrument | string | 证券代码 |
+| industry | string | 行业标准 |
+| industry_name | string | 行业简称 |
+| industry_instrument | string | 行业代码 |
+| industry_level1_code | string | 一级行业代码 |
+| industry_level1_name | string | 一级行业名称 |
+| industry_level2_code | string | 二级行业代码 |
+| industry_level2_name | string | 二级行业名称 |
+| industry_level3_code | string | 三级行业代码 |
+| industry_level3_name | string | 三级行业名称 |
+| date | timestamp[ns] | 日期 |
+
+主键：`(instrument, date)` | 频率：日线快照
+> 拉取铁律：**务必带 instrument 过滤**（如仅 000300.SH 成分股）——全表是全 A 每日快照，
+> 不过滤会拉出 5000+ 只 × 每日一行的巨量（教训同 index_component 全量 50M 单元格事故）。
+> 行业归属低频变化：如只需当前/月末归属，可按 `date IN (月末日期)` 抽样拉取，额度再省 ~97%。
+
+---
+
+### cn_stock_industry_bar1d（行业指数日线·三种加权）
+
+BigQuant 自编行业指数日线（**同一行业代码 × 3 种 method 各一行**：算术平均/总股本加权/
+流通股本加权），价格为后复权。行业动量/相对强弱特征的另一种数据源（与申万
+`cn_stock_industry_sw_bar1d` 二选一或互验）。
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| instrument | string | 行业代码 |
+| method | int8 | 计算方式(1-算术平均; 2-总股本加权平均; 3-流通股本加权平均) |
+| pre_close | double | 昨收盘价(后复权) |
+| open | double | 开盘价(后复权) |
+| close | double | 收盘价(后复权) |
+| high | double | 最高价(后复权) |
+| low | double | 最低价(后复权) |
+| volume | int64 | 成交量 |
+| deal_number | int32 | 成交笔数 |
+| amount | double | 成交金额 |
+| change_ratio | double | 涨跌幅(后复权) |
+| turn | double | 换手率 |
+| date | timestamp[ns] | 日期 |
+
+主键：`(instrument, date, method)` | 频率：日线
+> ⚠ **同一 (instrument, date) 有 3 行**（method 1/2/3）——行数估算是申万表的 ~3 倍；
+> 通常只用一种 method（建议 method=3 流通股本加权），拉取时 `WHERE method=3` 省 2/3。
+
+---
+
 ## 期货数据
 
 ### cn_future_bar1d（期货日线）
