@@ -25,7 +25,10 @@
       "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe update1_tree.py)",
       "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe update1_tree.py)",
       "Bash(PYTHONIOENCODING=utf-8 /c/Anaconda/envs/quant_env_311/python.exe ma200_dev_abs.py)",
-      "Edit(/.claude/skills/skill-python-bigquant-ssquant-tbquant/**)"
+      "Edit(/.claude/skills/skill-python-bigquant-ssquant-tbquant/**)",
+      "Bash(\"/c/Program Files \\(x86\\)/Microsoft/Edge/Application/msedge.exe\" --headless=new --disable-gpu --no-sandbox --hide-scrollbars --window-size=1360,1500 --screenshot=\"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\u4b.png\" --virtual-time-budget=9000 \"file:///C:/Quant/trend_range/replication/research-projects/hs300-enh-2017-2021/01_data_analysis/analysis_015/industry/update4_vol_minus_turn/result_view.html\")",
+      "Bash(xargs du -ch)",
+      "Bash(git commit -m ' *)"
     ],
     "additionalDirectories": [
       "\\tmp"
