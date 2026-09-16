@@ -34,9 +34,12 @@ output/
 replication/
 *.log
 
-# ===== research-projects：只入库代码/文档/清单，中间产物与可视化不入库 =====
+# ===== research-projects：只入库代码/文档/清单/成品报告，中间产物不入库 =====
 research-projects/**/*.csv
 research-projects/**/*.html
+# 例外：分析可视化与回测报告是成品（人看的最终产物），保留（28+35 个，约 58M）
+!research-projects/**/result_view.html
+!research-projects/**/backtest_report.html
 # parquet 全是可从 warehouse + 脚本重生成的中间产物（面板/事件/特征），752M，不入库
 research-projects/**/*.parquet
 
