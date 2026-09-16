@@ -29,7 +29,12 @@ def _load_env_upward(start: Path, max_up: int = 8) -> None:
 
 
 def _default_root() -> Path:
+    """工程输出根。优先 RESEARCH_PROJECTS_ROOT（本技能专用，指向工程父目录本身）；
+    回退到旧口径 REPLICATION_ROOT/research-projects；再回退 ~/research-projects。"""
     _load_env_upward(Path(__file__).parent)
+    env = os.environ.get("RESEARCH_PROJECTS_ROOT")
+    if env:
+        return Path(env)
     env = os.environ.get("REPLICATION_ROOT")
     if env:
         return Path(env) / "research-projects"

@@ -33,6 +33,8 @@
 用户明确给出投研方向 → 建工程目录 + **数据检查**：
 ```bash
 python scripts/create_project.py --title X --report-id Y [--root Z]
+# 输出根 DEFAULT_ROOT：优先 .env 的 RESEARCH_PROJECTS_ROOT（本技能专用，直接指向工程父目录）；
+#   回退 REPLICATION_ROOT/research-projects；再回退 ~/research-projects。
 python scripts/check_data.py {project_dir} --needs 沪深300,中证500  # 或 成分股/期货
 ```
 - 数据满足 → 按方向进入数据分析或策略迭代

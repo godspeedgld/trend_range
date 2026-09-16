@@ -34,6 +34,12 @@ output/
 replication/
 *.log
 
+# ===== research-projects：只入库代码/文档/清单，中间产物与可视化不入库 =====
+research-projects/**/*.csv
+research-projects/**/*.html
+# parquet 全是可从 warehouse + 脚本重生成的中间产物（面板/事件/特征），752M，不入库
+research-projects/**/*.parquet
+
 # ===== 实验脚本与产物（本地分析，勿提交）=====
 .claude/skills/skill-filter-machine-learning/experiments/
 
