@@ -1,0 +1,9 @@
+{
+  "panel": "..\\_market_hs300_panel.parquet",
+  "panel_rows": 1698600,
+  "n_symbols": 668,
+  "n_breakup_events": 9690,
+  "date_min": "2015-02-17",
+  "date_max": "2026-08-21",
+  "algo": "plateau_algo_v2.TrendlineBreakout (v2.7)"
+}

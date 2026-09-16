@@ -1,0 +1,156 @@
+{
+  "project_id": "hs300-enh-2017-2021",
+  "title": "HS300 Enhanced Plateau Break v1",
+  "created_at": "2026-08-20T12:34:13.917551+00:00",
+  "data_analyses": [
+    {
+      "id": "analysis_001",
+      "idea": "平台突破算法原理可视化：2021-06信号扫描+3只K线标注（转折点/HSAR/入选日）",
+      "created_at": "2026-08-21"
+    },
+    {
+      "id": "analysis_002",
+      "idea": "002371单股平台突破原理：2021双突破可视化 + v1漏判案例诊断(2024-09/2025-08) + plateau_algo_v2平台重锚定算法实验(17平台/12突破)",
+      "created_at": "2026-08-25"
+    },
+    {
+      "id": "analysis_003",
+      "idea": "v2.7多标的可复现性测试(江西铜业/中芯国际/新华保险/东方财富全历史):信号7~19只,◇CR提前成线在爆发式标的最活跃(东财5条)",
+      "created_at": "2026-08-26"
+    },
+    {
+      "id": "analysis_004",
+      "idea": "v2.7全市场成功率评估(668只2017~今):生成版39.7%;更新一20天窗口规则36.2%(dip5占失败87.8%);breakout_detail.parquet含全部重判字段",
+      "created_at": "2026-08-27"
+    },
+    {
+      "id": "analysis_005",
+      "idea": "26特征信号过滤三轮(决策树/LightGBM/OLS)全失败+v2.7信号零超额定论(平均20日+1.08%vs随机+1.10%);附带:当日成分过滤+1.2pp",
+      "created_at": "2026-08-27"
+    },
+    {
+      "id": "analysis_006",
+      "idea": "v3水平阻力带/支撑带算法首测(plateau_algo_v3新文件,v2.7锁死):转折点价±5%带+重叠递归合并+degree=带计数;5标的全历史,信号量≈v2.7的2倍,degree高度右偏(长历史标的6+占主导),带无老化机制",
+      "created_at": "2026-08-28"
+    },
+    {
+      "id": "analysis_007",
+      "idea": "v3水平带突破全市场评估(668只2017~今,事件缓存+ATR14预计算):更新四固化m=4吊灯+degree>=2过滤——胜率29.7%/盈亏比3.13/期望+1.62%/17bar;degree>=2过滤在本样本负贡献(degree1在m=4下期望+2.67%被剔,总体+1.76降+1.62);degree>=2后胜率无分层(29.5~30%)期望差仍2倍(2档+2.61vs6+档+1.29);年度beta形态,2020+6.89/2022-3.39",
+      "created_at": "2026-08-28"
+    }
+  ],
+  "strategy_iterations": [
+    {
+      "id": "strategy_001",
+      "idea": "HS300当日成分+平台突破+回撤10%/45天+1/10等权",
+      "annual_return": 0.5046,
+      "sharpe": 2.68,
+      "max_drawdown": -0.1212,
+      "n_trades": 414
+    },
+    {
+      "id": "strategy_002",
+      "idea": "承接strategy_001+量价信息增强（22变量逐步回归半年固定系数，拟合45日收益>0过滤；预计算查表执行）",
+      "annual_return": 0.3986,
+      "sharpe": 2.43,
+      "max_drawdown": -0.1028,
+      "n_trades": 340
+    },
+    {
+      "id": "strategy_003",
+      "idea": "承接strategy_002，数据延长至今(2015~2026.8)+市值变量纳入(26变量)；修复：事件表覆盖数据末+回归标签用策略实际离场收益(exit_rules共享)。注:引擎归因bug修复后年化4.0%/Sharpe0.25",
+      "annual_return": 0.3624,
+      "sharpe": 2.33,
+      "max_drawdown": -0.1226,
+      "n_trades": 623
+    },
+    {
+      "id": "strategy_004",
+      "idea": "跨市场移植:豆粕期货单标的+时序CTA引擎(local_backtest)+平台突破原算法+1×ATR静态止损,2000~2026全期",
+      "annual_return": -0.0017,
+      "sharpe": -0.02,
+      "max_drawdown": -0.392,
+      "n_trades": 8
+    },
+    {
+      "id": "strategy_005",
+      "idea": "组合版v2.7趋势线突破(承接001框架,数据延长至今):plateau_algo_v2开仓事件预计算查表+当日成分+固定名义10万×10仓;更新一(2026-08-27)平仓换固定止损5%(突破价基准)+吊灯2×ATR14(exit_rules_v3+ATR14预计算),替换10%回撤/30交易日;trades口径(指标铁律)年化-8.5%/Sharpe-0.41(原版-4.0%/-0.18),1931笔/成本57.9pp",
+      "annual_return": -0.0852,
+      "sharpe": -0.41,
+      "max_drawdown": -0.8426,
+      "n_trades": 1931
+    },
+    {
+      "id": "strategy_006",
+      "idea": "v3水平带突破组合版:更新三(当前版)=变体A全部规则(degree<=5+n=10/100万+最近优先+m=4吊灯)+年线开仓闸门(指数收盘>MA200才开新仓,存量仓照常止损/吊灯离场);trades口径日历口径年化+15.7%/Sharpe0.54/maxDD-31.3%/431笔/胜率38.1%/盈亏比2.89/单笔+3.83%;2018由-27.9收至-5.4/2022由-41.8收至-7.0;历史:A配置+14.3%/0.42,原版+7.84%,更新二+2.69%",
+      "annual_return": 0.1569,
+      "sharpe": 0.54,
+      "max_drawdown": -0.3133,
+      "n_trades": 431
+    }
+  ],
+  "data_check": {
+    "status": "ok",
+    "missing": [],
+    "note": null
+  },
+  "status": "strategy_completed",
+  "backtest_engine": {
+    "name": "ts-cta event-driven engine",
+    "status": "ran",
+    "script": "scripts/local_backtest.py",
+    "numba": true
+  },
+  "backtest_command": ".claude/skills/skill-research-assistant/scripts/local_portfolio_backtest.py replication/research-projects/hs300-enh-2017-2021 --market-data replication/research-projects/hs300-enh-2017-2021/_market_hs300_panel_2017.parquet --strategy replication/research-projects/hs300-enh-2017-2021/02_strategy_iteration/strategy_006/backtest_strategy/strategy.py --max-positions 10 --cost-bps 15 --warmup 60 --initial-cash 1000000 --fixed-notional 100000 --benchmark 000300.SH --output-dir replication/research-projects/hs300-enh-2017-2021/02_strategy_iteration/strategy_006/backtest_strategy",
+  "run_history": [
+    {
+      "stage": "event_driven_backtest",
+      "market_data": "C:\\Quant\\trend_range\\replication\\research-projects\\hs300-enh-2017-2021\\_fut_m_d.csv",
+      "final_nav": 0.9572655313026541,
+      "sharpe": -0.018869642652726542,
+      "max_drawdown": -0.39197496637172424
+    },
+    {
+      "stage": "event_driven_backtest",
+      "market_data": "C:\\Quant\\trend_range\\replication\\research-projects\\hs300-enh-2017-2021\\_fut_m_d.csv",
+      "final_nav": 0.9572655313026541,
+      "sharpe": -0.018869642652726542,
+      "max_drawdown": -0.39197496637172424
+    },
+    {
+      "stage": "portfolio_pool_backtest",
+      "market_data": "C:\\Quant\trend_range\replication\research-projects\\hs300-enh-2017-2021\\_market_hs300_panel_2017.parquet",
+      "final_nav": 0.636317,
+      "sharpe": -0.18123,
+      "max_drawdown": -0.740052
+    },
+    {
+      "stage": "portfolio_pool_backtest_update1_chandelier",
+      "market_data": "C:\\Quant\trend_range\replication\research-projects\\hs300-enh-2017-2021\\_market_hs300_panel_2017.parquet",
+      "final_nav": 0.230898,
+      "sharpe": -0.412333,
+      "max_drawdown": -0.842637
+    },
+    {
+      "stage": "portfolio_pool_backtest_v3_chandelier4",
+      "market_data": "C:\\Quant\trend_range\replication\research-projects\\hs300-enh-2017-2021\\_market_hs300_panel_2017.parquet",
+      "final_nav": 1.708583,
+      "sharpe": 0.259014,
+      "max_drawdown": -0.528234
+    },
+    {
+      "stage": "portfolio_pool_backtest_update2_deg5_n20",
+      "market_data": "C:\\Quant\trend_range\replication\research-projects\\hs300-enh-2017-2021\\_market_hs300_panel_2017.parquet",
+      "final_nav": 1.243477,
+      "sharpe": 0.094227,
+      "max_drawdown": -0.612428
+    },
+    {
+      "stage": "portfolio_pool_backtest_update3_A_ma200_gate",
+      "market_data": "C:\\Quant\trend_range\replication\research-projects\\hs300-enh-2017-2021\\_market_hs300_panel_2017.parquet",
+      "final_nav": 2.520859,
+      "sharpe": 0.5357,
+      "max_drawdown": -0.313273
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "engine": "portfolio pool-based",
+  "params": {
+    "max_positions": 10,
+    "cost_bps": 15.0,
+    "warmup": 60
+  },
+  "cost_bps": 15.0,
+  "n_trades": 414
+}

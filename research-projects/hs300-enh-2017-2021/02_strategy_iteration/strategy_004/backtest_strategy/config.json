@@ -1,0 +1,12 @@
+{
+  "symbols": [
+    "m"
+  ],
+  "cost_bps": 15.0,
+  "slippage_bps": 5.0,
+  "initial_cash": 1000000.0,
+  "annualization": 252.0,
+  "allow_short": false,
+  "engine": "ts-cta event-driven",
+  "n_bars": 6293
+}

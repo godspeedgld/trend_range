@@ -1,0 +1,11 @@
+{
+  "n_trades": 8,
+  "win_rate_pct": 25.0,
+  "payoff": 1.13,
+  "avg_ret_pct": -1.287,
+  "avg_hold_days": 18.2,
+  "total_return_pct": -11.6,
+  "annual_pct": -1.09,
+  "sharpe": -0.37,
+  "maxDD_pct": -16.6
+}

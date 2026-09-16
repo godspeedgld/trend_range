@@ -1,0 +1,6 @@
+{
+  "panel": "..\\_market_hs300_panel.parquet",
+  "rows": 1698600,
+  "n_symbols": 668,
+  "method": "Wilder ewm(alpha=1/14), min_periods=14"
+}

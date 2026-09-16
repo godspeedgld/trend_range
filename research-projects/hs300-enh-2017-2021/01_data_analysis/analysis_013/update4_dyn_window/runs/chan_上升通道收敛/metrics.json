@@ -1,0 +1,9 @@
+{
+  "n_trades": 11,
+  "win_rate_pct": 54.5,
+  "payoff": 2.17,
+  "total_return_pct": 12.7,
+  "annual_pct": 1.07,
+  "sharpe": 0.28,
+  "maxDD_pct": -11.9
+}
