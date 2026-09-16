@@ -42,7 +42,7 @@ def _default_root() -> Path:
 
 
 DEFAULT_ROOT = _default_root()
-SUBDIRS = ["01_data_analysis", "02_strategy_iteration", "04_delivery"]
+SUBDIRS = ["01_data_analysis", "02_strategy_iteration", "04_delivery", "research_report"]
 
 
 def slugify(value: str) -> str:
