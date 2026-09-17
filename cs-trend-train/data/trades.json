@@ -1,0 +1,15 @@
+{
+ "601318.SH": [],
+ "688981.SH": [
+  {
+   "signal_date": "2021-11-30",
+   "buy_price": 54.45,
+   "stop_price": 54,
+   "tp_price": 58.42,
+   "exit_price": 54,
+   "exit_date": "2021-12-07",
+   "exit_reason": "止损",
+   "id": "3bf39255"
+  }
+ ]
+}

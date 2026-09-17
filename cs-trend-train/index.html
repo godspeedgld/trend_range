@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>cs-trend-train · 手动趋势画线交易训练</title>
+<script src="klinecharts.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font: 13px/1.5 system-ui, "Microsoft YaHei", sans-serif; background: #16181d; color: #d8dce3; }
+  #top { display: flex; gap: 8px; align-items: center; padding: 8px 10px; flex-wrap: wrap; }
+  #top input, #top button, #top select { background: #23262e; color: #d8dce3; border: 1px solid #3a3f4b;
+      border-radius: 4px; padding: 4px 8px; font-size: 13px; }
+  #top button { cursor: pointer; }
+  #top button:hover { background: #2e323c; }
+  #symList { position: absolute; z-index: 99; background: #23262e; border: 1px solid #3a3f4b;
+      border-radius: 4px; max-height: 240px; overflow-y: auto; min-width: 220px; }
+  #symList div { padding: 5px 10px; cursor: pointer; }
+  #symList div:hover { background: #2e323c; }
+  .grp { display: flex; gap: 6px; align-items: center; padding: 2px 10px 2px 0; }
+  .grp b { color: #9aa3b2; font-weight: 600; }
+  #chart { width: 100%; height: calc(100vh - 96px); position: relative; }
+  #panel { position: absolute; right: 12px; top: 52px; z-index: 50; width: 230px;
+      background: rgba(35,38,46,.95); border: 1px solid #3a3f4b; border-radius: 6px; padding: 10px; }
+  #panel h4 { font-size: 13px; color: #9aa3b2; margin-bottom: 6px; }
+  #panel input { width: 100%; background: #1b1e24; color: #d8dce3; border: 1px solid #3a3f4b;
+      border-radius: 4px; padding: 3px 6px; margin-bottom: 6px; }
+  #panel button { width: 100%; background: #2b5fad; color: #fff; border: 0; border-radius: 4px;
+      padding: 6px; cursor: pointer; margin-top: 2px; }
+  #panel button:hover { background: #3571c4; }
+  #panel .hint { font-size: 11px; color: #7a8494; margin-top: 6px; }
+  #msg { position: absolute; left: 50%; transform: translateX(-50%); top: 48px; z-index: 60;
+      background: #2e5c2e; padding: 6px 16px; border-radius: 4px; display: none; }
+  label.ck { display: flex; gap: 4px; align-items: center; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="top">
+  <div style="position:relative">
+    <input id="sym" placeholder="代码/名称" style="width:150px" value="601318.SH 中国平安">
+    <div id="symList" style="display:none"></div>
+  </div>
+  <div class="grp"><b>起</b><input id="d0" type="date" value="2025-01-01"></div>
+  <div class="grp"><b>止</b><input id="d1" type="date" value="2026-08-31"></div>
+  <button id="load">加载</button>
+  <div class="grp" style="margin-left:12px">
+    <button class="pb" data-n="-10">◀10</button><button class="pb" data-n="-1">◀1</button>
+    <button class="pb" data-n="1">▶1</button><button class="pb" data-n="10">▶10</button>
+  </div>
+  <button id="draw">✏ 画趋势线</button>
+  <label class="ck"><input type="checkbox" id="ckLines" checked>线</label>
+  <label class="ck"><input type="checkbox" id="ckTrades" checked>交易</label>
+  <span id="status" style="color:#7a8494"></span>
+</div>
+<div id="chart"></div>
+<div id="panel">
+  <h4>记一笔交易</h4>
+  <input id="tBuy"  type="number" step="0.01" placeholder="买入价">
+  <input id="tStop" type="number" step="0.01" placeholder="止损价">
+  <input id="tTp"   type="number" step="0.01" placeholder="止盈价">
+  <input id="tExit" type="number" step="0.01" placeholder="实际平仓价（留空=自动判定）">
+  <label class="ck" style="margin-bottom:6px"><input type="checkbox" id="tAuto" checked>自动判定平仓</label>
+  <button id="tSave">保存</button>
+  <div class="hint">自动判定：止损/止盈/吊灯(最高−3×ATR14)</div>
+</div>
+<div id="msg"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let chart, allBars = [], endIdx = 0, symbol = "601318.SH", symName = "中国平安";
+let drawing = false, lineOverlays = [], tradeOverlays = [];
+// ⚠ klinecharts 的 removeOverlay() 会**无条件触发 overlay 的 onRemoved 回调** ——
+//   而 renderOverlays() 是「先删光再重建」，若不抑制，每次重建都会把刚从服务器
+//   读出来的线 DELETE 回去（表现为：一按播放键线就消失，且库里也被清空）。
+//   故重建期间置 true，让 onRemoved 区分「程序化重建」与「用户右键删除」。
+let suppressRemove = false;
+
+function toast(t, ok=true){ const m=$("#msg"); m.textContent=t;
+  m.style.background = ok?"#2e5c2e":"#8c3a3a"; m.style.display="block";
+  setTimeout(()=>m.style.display="none", 1800); }
+const status = t => $("#status").textContent = t;
+const msOf = d => new Date(d+"T00:00:00").getTime();
+// 本地日期格式化（toISOString 是 UTC，东八区会前移一天）
+const dOf = ts => { const d=new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
+// timestamp → 该 bar 的日期字符串（直接查表，避免任何时区换算）
+const tsBar = ts => allBars.find(b => b.timestamp === ts);
+async function api(p, o){ const r = await fetch(p, o); if(!r.ok) throw new Error(await r.text()); return r.json(); }
+
+// ── klinecharts v10 初始化 ──
+function initChart(){
+  chart = klinecharts.init("chart", { styles: {
+    candle: {
+      bar: { upColor:"#ef232a", downColor:"#14b143", upBorderColor:"#ef232a",
+             downBorderColor:"#14b143", upWickColor:"#ef232a", downWickColor:"#14b143" },
+      // ③ 在原有那行末尾追加「成交额」「收益率」
+      //    title 查不到 locale 键时会**原样输出**，所以可直接写中文
+      //    {turnover} / {change} 是 KLineData 标准字段，由后端随每根 bar 下发
+      tooltip: { legend: { template: [
+        { title:"time",   value:"{time}"   },
+        { title:"open",   value:"{open}"   },
+        { title:"high",   value:"{high}"   },
+        { title:"low",    value:"{low}"    },
+        { title:"close",  value:"{close}"  },
+        { title:"volume", value:"{volume}" },
+        { title:"成交额(亿)：", value:"{turnover}" },
+        { title:"收益率：",     value:"{change}" }
+      ] } }
+    },
+    grid: { horizontal:{show:true,color:"#26292f",style:"dashed",dashedValue:[2,3]},
+            vertical:{show:true,color:"#26292f",style:"dashed",dashedValue:[2,3]} },
+    // VOL 柱颜色与主图蜡烛是**两组独立配置**：蜡烛用 candle.bar，VOL 用 indicator.bars[0]
+    // （默认是美股绿涨红跌，必须显式覆盖成 A 股口径）
+    indicator: { bars: [{ upColor:"#ef232a", downColor:"#14b143", noChangeColor:"#7a8494" }] },
+    crosshair: { horizontal:{text:{backgroundColor:"#3a3f4b"}}, vertical:{text:{backgroundColor:"#3a3f4b"}} },
+    overlay: { point:{color:"#e8c35a",borderColor:"#16181d"}, line:{color:"#e8c35a",size:1} }
+  }});
+  chart.setSymbol({ ticker: symbol, pricePrecision: 2 });
+  chart.setPeriod({ span: 1, type: "day" });
+  chart.setDataLoader({ getBars: ({callback}) => callback(allBars.slice(0, endIdx)) });
+  // ① 成交量附图：calcParams 传空数组 → regenerateFigures 只留 bar，去掉默认的 MA5/10/20 均线
+  //    ⚠ createIndicator(indicators, isStack) 只有两个参数 —— 配置必须作为**第一个参数**传对象，
+  //      写成 createIndicator("VOL", false, {calcParams:[]}) 会把配置对象当成 isStack 丢掉
+  chart.createIndicator({ name: "VOL", calcParams: [] });
+  // ② tooltip 字段由下方 styles.candle.tooltip.legend.template 配置（内置，无需自绘）
+}
+
+// ── 数据加载 / 播放（6.3：endIdx 相对结束时间移动）──
+async function loadAll(){
+  const [d0, d1] = [$("#d0").value, $("#d1").value];
+  // 4.1/4.4：从「开始日期」一直拉到库内最后一条；「止日期」只是初始窗口的右边界，
+  // ▶ 可以越过它继续揭示（4.2），最多到数据库最后一根
+  allBars = await api(`/api/klines?symbol=${symbol}&start=${d0}&end=2099-12-31`);
+  if (!allBars.length){
+    const meta = await api(`/api/coverage?symbol=${symbol}`).catch(()=>null);
+    toast(meta && meta.in_db
+      ? `该标的在库内但所选区间无数据（库内范围 ${meta.first}~${meta.last}）`
+      : `本地仓库无此标的（现有覆盖：沪深300∪中证500 共 ${meta?meta.total:1578} 只），输入代码/名称可搜索可用标的`, false);
+    return;
+  }
+  // 初始视图：显示到「止日期」当根（或其前最近一根）
+  let i = allBars.findIndex(b => b.date > d1);
+  endIdx = Math.max(1, i === -1 ? allBars.length : i);
+  refresh(); renderOverlays();
+  status(`${symName} · 视图截至 ${allBars[endIdx-1].date}（库内共 ${allBars.length} 根，至 ${allBars[allBars.length-1].date}）`);
+}
+function refresh(){                       // 重新喂裁剪数据（v10：换 loader 引用触发重载）
+  chart.setDataLoader({ getBars: ({callback}) => callback(allBars.slice(0, endIdx)) });
+  chart.setOffsetRightDistance(40);
+}
+document.querySelectorAll(".pb").forEach(b => b.onclick = () => {
+  const n = +b.dataset.n;
+  const prev = endIdx;
+  // 4.2 ▶：多显示一天（库里的下一个交易日），最多到数据库最后一根
+  // 4.3 ◀：少显示一天，最多退到开始时间（开始那根不能消失）
+  endIdx = Math.max(1, Math.min(allBars.length, endIdx + n));
+  if (endIdx === prev)
+    toast(n > 0 ? `已到数据库最后一条（${allBars[allBars.length-1].date}）` : "已到开始时间", false);
+  refresh(); renderOverlays();
+  status(`${symName} · 当前最后 bar：${allBars[endIdx-1].date}（第 ${endIdx}/${allBars.length} 根）`);
+});
+
+// ── 4.2 画线：绘制 / 拖动 / 右键删除 全用 overlay 内置交互 ──
+$("#draw").onclick = () => {
+  drawing = true;
+  const myId = "ln" + Date.now().toString(36);          // 客户端生成 id，落库/重建一一对应
+  // ★ id 由闭包捕获（不读 e.overlay.id）：无论拖动整体还是拖端点、无论哪个回调，
+  //   带的都是同一个 myId → 服务端按 id upsert，绝不会把"拖动"误存成"新建"
+  chart.createOverlay({ id: myId, name: "segment", mode: "weak_magnet",
+    // ★ 画完必须登记进 lineOverlays —— 否则 renderOverlays() 的「先删光再重建」管不到它，
+    //   重新加载/播放时这条线会赖在图上不走（也不受 end_date ≤ 当前最后 bar 的过滤约束）
+    onDrawEnd: e => { drawing = false; saveLine(e.overlay, myId); lineOverlays.push(myId); },
+    onPressedMoveEnd: e => saveLine(e.overlay, myId),    // 整体拖动/端点拖动落定
+    onRemoved: () => { if (!suppressRemove) fetch(`/api/lines?symbol=${symbol}&id=${myId}`, {method:"DELETE"}); }
+  });
+};
+// 点位 → 记录：v10 事件的 points 可能带 timestamp 或 dataIndex，两种都接；
+// 日期直接查 bar 表（拿到的是服务器原样日期串，零时区换算）
+function pointRec(q){
+  let ts = q.timestamp;
+  if (ts == null && q.dataIndex != null && allBars[q.dataIndex]) ts = allBars[q.dataIndex].timestamp;
+  const bar = tsBar(ts);
+  return { date: bar ? bar.date : dOf(ts), price: q.value, ts };
+}
+async function saveLine(ov, fixedId){
+  try {
+    const id = fixedId || ov.id;
+    if (!id) return toast("画线保存失败：内部错误（overlay 无 id）", false);
+    const p = ov.points; if (!p || p.length < 2) return;
+    const a = pointRec(p[0]), b = pointRec(p[1]);
+    if (!a.date || !b.date) return toast("画线保存失败：点位无对应K线", false);
+    const rec = { id, start_date: a.date, start_price: a.price,
+                  end_date: b.date, end_price: b.price, adj: "hfq" };
+    const r = await api("/api/lines", { method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({symbol, line: rec}) });
+    if (r) status(`${r._action === "update" ? "✏ 已更新" : "✚ 已新建"}线 [${id}]：`
+                  + `${r.start_date} ${r.start_price.toFixed(2)} → ${r.end_date} ${r.end_price.toFixed(2)}`);
+  } catch (err) {
+    console.error("saveLine", err);
+    toast("画线保存失败：" + (err && err.message || err), false);
+  }
+}
+
+// ── 4.3 / 5.3 / 7.1 / 7.2：按当前视图重建 overlay ──
+async function renderOverlays(){
+  suppressRemove = true;                       // ★ 抑制 onRemoved，避免重建时误删库
+  try {
+    lineOverlays.forEach(id => chart.removeOverlay({id}));
+    tradeOverlays.forEach(id => chart.removeOverlay({id}));
+  } finally { suppressRemove = false; }
+  lineOverlays = []; tradeOverlays = [];
+  const lastDate = allBars[endIdx-1].date;
+  if ($("#ckLines").checked){
+    const lines = await api(`/api/lines?symbol=${symbol}`);
+    // 7.1 未来线不显示：4.2 **两端都判**（防御旧脏数据 start>end 的倒置记录——
+    //     只看 end 会漏放一条"start 在未来"的线）
+    lines.filter(l => l.end_date <= lastDate && l.start_date <= lastDate).forEach(l => {
+      const lid = l.id;                                              // ★ 闭包捕获，同新建逻辑
+      chart.createOverlay({ id: lid, name:"segment",
+        points:[{timestamp:msOf(l.start_date), value:l.start_price},
+                {timestamp:msOf(l.end_date),   value:l.end_price}],
+        onPressedMoveEnd: e => saveLine(e.overlay, lid),
+        onRemoved: () => { if (!suppressRemove) fetch(`/api/lines?symbol=${symbol}&id=${lid}`, {method:"DELETE"}); } });
+      lineOverlays.push(l.id);
+    });
+  }
+  if ($("#ckTrades").checked){
+    const trades = await api(`/api/trades?symbol=${symbol}`);
+    trades.filter(t => t.signal_date <= lastDate && (!t.exit_date || t.exit_date <= lastDate))
+      .forEach(t => {
+        const id = "tr_"+t.id;
+        chart.createOverlay({ id, name:"simpleAnnotation",
+          points:[{timestamp:msOf(t.signal_date), value:t.buy_price}],
+          styles:{ point:{color:"#e8c35a"}, text:{color:"#ffd76e", content:"▲买 "+t.buy_price} } });
+        if (t.stop_price) chart.createOverlay({ id:id+"_s", name:"priceChannelLine",
+          points:[{timestamp:msOf(t.signal_date), value:t.stop_price},
+                  {timestamp:msOf(t.exit_date||lastDate), value:t.stop_price}],
+          styles:{ line:{color:"#14b143", style:"dashed"} } });
+        if (t.tp_price) chart.createOverlay({ id:id+"_t", name:"priceChannelLine",
+          points:[{timestamp:msOf(t.signal_date), value:t.tp_price},
+                  {timestamp:msOf(t.exit_date||lastDate), value:t.tp_price}],
+          styles:{ line:{color:"#ef232a", style:"dashed"} } });
+        if (t.exit_date && t.exit_price){
+          const c = {"止损":"#14b143","止盈":"#ef232a","吊灯":"#e8862e","手动":"#9aa3b2"}[t.exit_reason]||"#9aa3b2";
+          chart.createOverlay({ id:id+"_x", name:"simpleAnnotation",
+            points:[{timestamp:msOf(t.exit_date), value:t.exit_price}],
+            styles:{ point:{color:c}, text:{color:c, content:"▼"+t.exit_reason+" "+t.exit_price} } });
+        }
+        tradeOverlays.push(id, id+"_s", id+"_t", id+"_x");
+      });
+  }
+}
+$("#ckLines").onchange = renderOverlays;
+$("#ckTrades").onchange = renderOverlays;
+
+// ── 5.1 交易录入 ──
+$("#tSave").onclick = async () => {
+  const buy=+$("#tBuy").value, stop=+$("#tStop").value, tp=+$("#tTp").value;
+  if (!buy || !stop) return toast("买入价/止损价必填", false);
+  const trade = { signal_date: allBars[endIdx-1].date, buy_price: buy, stop_price: stop,
+                  tp_price: tp || null, exit_price: +$("#tExit").value || null,
+                  exit_date: null, exit_reason: null };
+  const r = await api("/api/trades", { method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({symbol, trade, auto: $("#tAuto").checked}) });
+  toast(r.exit_date ? `${r.exit_reason} @ ${r.exit_price}（${r.exit_date}）` : "已存，待判定");
+  $("#tBuy").value=$("#tStop").value=$("#tTp").value=$("#tExit").value="";
+  renderOverlays();
+};
+
+// ── 6.1 标的搜索 ──
+let symTimer;
+$("#sym").oninput = () => {
+  clearTimeout(symTimer);
+  symTimer = setTimeout(async () => {
+    const q = $("#sym").value.trim(); if (!q) return $("#symList").style.display="none";
+    const r = await api(`/api/symbols?q=${encodeURIComponent(q)}`);
+    const box = $("#symList");
+    box.innerHTML = r.map(s=>`<div data-s="${s.symbol}" data-n="${s.name}">${s.symbol} ${s.name} (${s.bars})</div>`).join("");
+    box.style.display = r.length ? "block" : "none";
+    box.querySelectorAll("div").forEach(d => d.onclick = () => {
+      symbol = d.dataset.s; symName = d.dataset.n;
+      $("#sym").value = `${symbol} ${symName}`; box.style.display="none"; loadAll();
+    });
+  }, 250);
+};
+$("#load").onclick = async () => {
+  // 解析输入框：支持 "601318.SH 中国平安" / "601318.SH" / "中国平安" 三种写法
+  const v = $("#sym").value.trim();
+  if (!v) return toast("请输入代码或名称", false);
+  const m = v.match(/^(\d{6}\.(SZ|SH|BJ))\s*(.*)$/);
+  if (m) {
+    symbol = m[1];
+    symName = m[3] || symName;
+  } else if (v !== `${symbol} ${symName}` && v !== symbol) {
+    const r = await api(`/api/symbols?q=${encodeURIComponent(v)}`);
+    if (!r.length) return toast(`本地仓库无「${v}」（覆盖：沪深300∪中证500 共 1578 只）`, false);
+    symbol = r[0].symbol; symName = r[0].name;
+    $("#sym").value = `${symbol} ${symName}`;
+  }
+  loadAll();
+};
+
+
+
+
+
+initChart(); loadAll();
+</script>
+</body>
+</html>
