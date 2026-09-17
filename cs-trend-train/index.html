@@ -19,18 +19,34 @@
   .grp { display: flex; gap: 6px; align-items: center; padding: 2px 10px 2px 0; }
   .grp b { color: #9aa3b2; font-weight: 600; }
   #chart { width: 100%; height: calc(100vh - 96px); position: relative; }
-  #panel { position: absolute; right: 12px; top: 52px; z-index: 50; width: 230px;
-      background: rgba(35,38,46,.95); border: 1px solid #3a3f4b; border-radius: 6px; padding: 10px; }
-  #panel h4 { font-size: 13px; color: #9aa3b2; margin-bottom: 6px; }
-  #panel input { width: 100%; background: #1b1e24; color: #d8dce3; border: 1px solid #3a3f4b;
-      border-radius: 4px; padding: 3px 6px; margin-bottom: 6px; }
-  #panel button { width: 100%; background: #2b5fad; color: #fff; border: 0; border-radius: 4px;
-      padding: 6px; cursor: pointer; margin-top: 2px; }
-  #panel button:hover { background: #3571c4; }
-  #panel .hint { font-size: 11px; color: #7a8494; margin-top: 6px; }
+  .drawer { position: absolute; right: 12px; z-index: 50; width: 250px; display: none;
+      background: rgba(35,38,46,.96); border: 1px solid #3a3f4b; border-radius: 6px; padding: 10px; }
+  #panel { top: 52px; }
+  #setPanel { top: 52px; }
+  .drawer h4 { font-size: 13px; color: #9aa3b2; margin-bottom: 8px; display: flex;
+      justify-content: space-between; align-items: center; }
+  .drawer h4 span { cursor: pointer; color: #7a8494; font-weight: 400; }
+  .drawer label.f { display: block; font-size: 11px; color: #9aa3b2; margin: 6px 0 2px; }
+  .drawer input { width: 100%; background: #1b1e24; color: #d8dce3; border: 1px solid #3a3f4b;
+      border-radius: 4px; padding: 4px 6px; }
+  .drawer button { width: 100%; background: #2b5fad; color: #fff; border: 0; border-radius: 4px;
+      padding: 6px; cursor: pointer; margin-top: 8px; }
+  .drawer button:hover { background: #3571c4; }
+  .drawer button.alt { background: #3a3f4b; margin-top: 4px; }
+  .drawer button.alt:hover { background: #4a5060; }
+  .drawer button.danger { background: #8c3a3a; margin-top: 10px; }
+  .drawer button.danger:hover { background: #a54444; }
+  .drawer button:disabled { opacity: .5; cursor: default; }
+  .hint { font-size: 11px; color: #7a8494; margin-top: 8px; line-height: 1.45; }
+  #tPrev { font-size: 11px; margin-top: 8px; padding: 6px; border-radius: 4px;
+      background: #1b1e24; color: #9aa3b2; min-height: 30px; line-height: 1.45; }
+  #tPrev.err { background: #3a2020; color: #e88; }
+  #tPrev.warn { background: #3a3320; color: #e8c35a; }
+  #tPrev b { color: #d8dce3; }
+  label.ck { display: flex; gap: 6px; align-items: center; cursor: pointer; margin: 6px 0; }
+  label.ck input { width: auto; }
   #msg { position: absolute; left: 50%; transform: translateX(-50%); top: 48px; z-index: 60;
       background: #2e5c2e; padding: 6px 16px; border-radius: 4px; display: none; }
-  label.ck { display: flex; gap: 4px; align-items: center; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -47,20 +63,41 @@
     <button class="pb" data-n="1">▶1</button><button class="pb" data-n="10">▶10</button>
   </div>
   <button id="draw">✏ 画趋势线</button>
-  <label class="ck"><input type="checkbox" id="ckLines" checked>线</label>
-  <label class="ck"><input type="checkbox" id="ckTrades" checked>交易</label>
+  <button id="openTrade">📥 提交交易</button>
+  <button id="openStats">📊 交易统计</button>
+  <button id="openSet">⚙ 设置</button>
   <span id="status" style="color:#7a8494"></span>
 </div>
 <div id="chart"></div>
-<div id="panel">
-  <h4>记一笔交易</h4>
-  <input id="tBuy"  type="number" step="0.01" placeholder="买入价">
-  <input id="tStop" type="number" step="0.01" placeholder="止损价">
-  <input id="tTp"   type="number" step="0.01" placeholder="止盈价">
-  <input id="tExit" type="number" step="0.01" placeholder="实际平仓价（留空=自动判定）">
-  <label class="ck" style="margin-bottom:6px"><input type="checkbox" id="tAuto" checked>自动判定平仓</label>
+
+<!-- 提交交易面板：按钮开合；保存成功后按钮变「修改」 -->
+<div id="panel" class="drawer">
+  <h4><span id="tTitle">提交交易</span><span id="tClose">✕</span></h4>
+  <label class="f">开仓时间 *</label>
+  <input id="tDate" type="date">
+  <label class="f">开仓价（留空 = 该日开盘价）</label>
+  <input id="tBuy" type="number" step="0.01" placeholder="留空 = 当日开盘价">
+  <label class="f">止损价 *</label>
+  <input id="tStop" type="number" step="0.01" placeholder="必填">
+  <label class="f">止盈价 *</label>
+  <input id="tTp" type="number" step="0.01" placeholder="必填">
+  <div id="tPrev">—</div>
   <button id="tSave">保存</button>
-  <div class="hint">自动判定：止损/止盈/吊灯(最高−3×ATR14)</div>
+  <button id="tNew" class="alt">＋ 新建一笔</button>
+  <div class="hint">出场只认你提交的止损/止盈价：从开仓日当根逐日判定，同日双触按止损计，
+    跳空越过触发价按当日开盘价成交。</div>
+</div>
+
+<!-- 设置面板：显示开关 + 全局止损额度 + 清除当前标的记录 -->
+<div id="setPanel" class="drawer">
+  <h4><span>设置</span><span id="sClose">✕</span></h4>
+  <label class="ck"><input type="checkbox" id="sLines">显示趋势线</label>
+  <label class="ck"><input type="checkbox" id="sTrades">显示交易标注</label>
+  <label class="f">止损额度（元 · 全局，与标的无关）</label>
+  <input id="sRisk" type="number" step="100" min="100">
+  <div class="hint">改额度只影响**以后**提交的交易；已提交的仓位是历史事实，不会重算。</div>
+  <button id="sClear" class="danger">清除当前标的交易记录</button>
+  <div class="hint">只清 <b id="sSymName">—</b> 一个标的，不可恢复（会先二次确认）。</div>
 </div>
 <div id="msg"></div>
 
@@ -68,6 +105,8 @@
 const $ = s => document.querySelector(s);
 let chart, allBars = [], endIdx = 0, symbol = "601318.SH", symName = "中国平安";
 let drawing = false, lineOverlays = [], tradeOverlays = [];
+let settings = { risk_amount: 5000, show_lines: true, show_trades: false };
+let editingId = null;                     // 非空 = 面板处于「修改」模式
 // ⚠ klinecharts 的 removeOverlay() 会**无条件触发 overlay 的 onRemoved 回调** ——
 //   而 renderOverlays() 是「先删光再重建」，若不抑制，每次重建都会把刚从服务器
 //   读出来的线 DELETE 回去（表现为：一按播放键线就消失，且库里也被清空）。
@@ -76,15 +115,59 @@ let suppressRemove = false;
 
 function toast(t, ok=true){ const m=$("#msg"); m.textContent=t;
   m.style.background = ok?"#2e5c2e":"#8c3a3a"; m.style.display="block";
-  setTimeout(()=>m.style.display="none", 1800); }
+  setTimeout(()=>m.style.display="none", 3000); }
 const status = t => $("#status").textContent = t;
 const msOf = d => new Date(d+"T00:00:00").getTime();
+const fmt = (n,d=2) => (n==null||isNaN(n)) ? "—" : Number(n).toFixed(d);
+const wan = n => (n==null||isNaN(n)) ? "—" : (n/10000).toFixed(1)+"万";
 // 本地日期格式化（toISOString 是 UTC，东八区会前移一天）
 const dOf = ts => { const d=new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
 // timestamp → 该 bar 的日期字符串（直接查表，避免任何时区换算）
 const tsBar = ts => allBars.find(b => b.timestamp === ts);
-async function api(p, o){ const r = await fetch(p, o); if(!r.ok) throw new Error(await r.text()); return r.json(); }
+// api：非 2xx 时抛出带 status/body 的错误，方便区分 409（同日撞车）做二次确认
+async function api(p, o){
+  const r = await fetch(p, o), txt = await r.text();
+  let j = null; try { j = JSON.parse(txt); } catch(_) {}
+  if (!r.ok) throw Object.assign(new Error((j && j.err) || txt || ("HTTP "+r.status)),
+                                { status: r.status, body: j });
+  return j !== null ? j : txt;
+}
+const post = (p, body) => api(p, { method:"POST", headers:{"Content-Type":"application/json"},
+                                   body: JSON.stringify(body) });
+
+// ── 自定义 overlay：价格处的三角标记（开仓红▲向上 / 平仓绿▼向下）──
+//   为什么不直接用内置 simpleAnnotation：它的三角**写死朝下**（是价格上方 50px 处的
+//   一个"标注钉"），颜色走全局默认 styles.polygon（蓝）—— 所以 `styles.point.color`
+//   与 `styles.text.content` 都没生效过（旧代码的文字标签其实一直没渲染）。
+//   ★ 样式优先级：全局默认 → overlay.styles[figure.type] → **figure.styles（最高）**。
+//     只写 overlay 级不够：`text` figure 会继承全局的 style:"fill" 把自己画成一个色块，
+//     反而把三角盖住（实测是蓝方块）。所以两个 figure 都显式带 figure 级 styles。
+klinecharts.registerOverlay({
+  name: "triMarker",
+  totalStep: 2,
+  styles: { polygon: { style:"fill", color:"#ef232a", borderColor:"#ef232a", borderSize:0 },
+            text:    { color:"#ef232a", size:11 } },
+  createPointFigures: ({ coordinates, overlay }) => {
+    const p = coordinates[0]; if (!p) return [];
+    const ed = overlay.extendData || {};
+    const up = ed.up !== false, S = 8, half = S * 0.72;
+    const c = (overlay.styles && overlay.styles.polygon && overlay.styles.polygon.color) || "#ef232a";
+    return [
+      { type:"polygon", ignoreEvent:true,
+        styles:{ style:"fill", color:c, borderColor:c, borderSize:0 },
+        attrs:{ coordinates: up
+          ? [{x:p.x, y:p.y - S}, {x:p.x - half, y:p.y}, {x:p.x + half, y:p.y}]      // 尖朝上
+          : [{x:p.x, y:p.y + S}, {x:p.x - half, y:p.y}, {x:p.x + half, y:p.y}] } }, // 尖朝下
+      { type:"text", ignoreEvent:true,
+        // 背景/边框全部透明，否则默认会画出一个色块标签
+        styles:{ color:c, size:11, style:"fill",
+                 backgroundColor:"rgba(0,0,0,0)", borderColor:"rgba(0,0,0,0)", borderSize:0 },
+        attrs:{ x:p.x, text: ed.label || "",
+                y: up ? p.y - S - 3 : p.y + S + 3, align:"center", baseline: up ? "bottom" : "top" } },
+    ];
+  }
+});
 
 // ── klinecharts v10 初始化 ──
 function initChart(){
@@ -125,6 +208,12 @@ function initChart(){
 }
 
 // ── 数据加载 / 播放（6.3：endIdx 相对结束时间移动）──
+async function loadSettings(){
+  try { settings = await api("/api/settings"); } catch(_) {}
+  $("#sLines").checked  = !!settings.show_lines;
+  $("#sTrades").checked = !!settings.show_trades;
+  $("#sRisk").value = settings.risk_amount;
+}
 async function loadAll(){
   const [d0, d1] = [$("#d0").value, $("#d1").value];
   // 4.1/4.4：从「开始日期」一直拉到库内最后一条；「止日期」只是初始窗口的右边界，
@@ -140,6 +229,7 @@ async function loadAll(){
   // 初始视图：显示到「止日期」当根（或其前最近一根）
   let i = allBars.findIndex(b => b.date > d1);
   endIdx = Math.max(1, i === -1 ? allBars.length : i);
+  newTrade();                              // 切标的 → 面板回到「新建」并刷新默认开仓日
   refresh(); renderOverlays();
   status(`${symName} · 视图截至 ${allBars[endIdx-1].date}（库内共 ${allBars.length} 根，至 ${allBars[allBars.length-1].date}）`);
 }
@@ -170,6 +260,7 @@ document.querySelectorAll(".pb").forEach(b => b.onclick = () => {
     const keepView = n > 0 && !atRightEdge();
     refresh(keepView ? Math.max(0, chart.getOffsetRightDistance() - n * barSpace()) : PIN_RIGHT);
     renderOverlays();
+    if (editingId === null) defaultEntryDate();     // 视图一动，「默认开仓日」跟着挪
   }
   status(`${symName} · 当前最后 bar：${allBars[endIdx-1].date}（第 ${endIdx}/${allBars.length} 根）`);
 });
@@ -205,9 +296,7 @@ async function saveLine(ov, fixedId){
     if (!a.date || !b.date) return toast("画线保存失败：点位无对应K线", false);
     const rec = { id, start_date: a.date, start_price: a.price,
                   end_date: b.date, end_price: b.price, adj: "hfq" };
-    const r = await api("/api/lines", { method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({symbol, line: rec}) });
+    const r = await post("/api/lines", {symbol, line: rec});
     if (r) status(`${r._action === "update" ? "✏ 已更新" : "✚ 已新建"}线 [${id}]：`
                   + `${r.start_date} ${r.start_price.toFixed(2)} → ${r.end_date} ${r.end_price.toFixed(2)}`);
   } catch (err) {
@@ -225,7 +314,7 @@ async function renderOverlays(){
   } finally { suppressRemove = false; }
   lineOverlays = []; tradeOverlays = [];
   const lastDate = allBars[endIdx-1].date;
-  if ($("#ckLines").checked){
+  if (settings.show_lines){
     const lines = await api(`/api/lines?symbol=${symbol}`);
     // 7.1 未来线不显示：4.2 **两端都判**（防御旧脏数据 start>end 的倒置记录——
     //     只看 end 会漏放一条"start 在未来"的线）
@@ -239,49 +328,163 @@ async function renderOverlays(){
       lineOverlays.push(l.id);
     });
   }
-  if ($("#ckTrades").checked){
+  if (settings.show_trades){
     const trades = await api(`/api/trades?symbol=${symbol}`);
-    trades.filter(t => t.signal_date <= lastDate && (!t.exit_date || t.exit_date <= lastDate))
-      .forEach(t => {
-        const id = "tr_"+t.id;
-        chart.createOverlay({ id, name:"simpleAnnotation",
-          points:[{timestamp:msOf(t.signal_date), value:t.buy_price}],
-          styles:{ point:{color:"#e8c35a"}, text:{color:"#ffd76e", content:"▲买 "+t.buy_price} } });
-        if (t.stop_price) chart.createOverlay({ id:id+"_s", name:"priceChannelLine",
-          points:[{timestamp:msOf(t.signal_date), value:t.stop_price},
-                  {timestamp:msOf(t.exit_date||lastDate), value:t.stop_price}],
-          styles:{ line:{color:"#14b143", style:"dashed"} } });
-        if (t.tp_price) chart.createOverlay({ id:id+"_t", name:"priceChannelLine",
-          points:[{timestamp:msOf(t.signal_date), value:t.tp_price},
-                  {timestamp:msOf(t.exit_date||lastDate), value:t.tp_price}],
-          styles:{ line:{color:"#ef232a", style:"dashed"} } });
-        if (t.exit_date && t.exit_price){
-          const c = {"止损":"#14b143","止盈":"#ef232a","吊灯":"#e8862e","手动":"#9aa3b2"}[t.exit_reason]||"#9aa3b2";
-          chart.createOverlay({ id:id+"_x", name:"simpleAnnotation",
-            points:[{timestamp:msOf(t.exit_date), value:t.exit_price}],
-            styles:{ point:{color:c}, text:{color:c, content:"▼"+t.exit_reason+" "+t.exit_price} } });
-        }
-        tradeOverlays.push(id, id+"_s", id+"_t", id+"_x");
-      });
+    // 未来遮蔽**两级**：记录级只看开仓日是否已揭示；每个元素再各判自己的日期。
+    // 一刀切 filter 表达不了「开仓日在未来 / 平仓日在未来」这种混合状态。
+    trades.filter(t => t.entry_date && t.entry_date <= lastDate).forEach(t => {
+      const id = "tr_"+t.id;
+      // ▲ 红三角向上 = 开仓（画在**开仓日**，价格就是真实成交价）
+      chart.createOverlay({ id: id+"_e", name:"triMarker",
+        points:[{timestamp:msOf(t.entry_date), value:t.buy_price}],
+        extendData:{ up:true, label:"开仓 "+fmt(t.buy_price) },
+        styles:{ polygon:{color:"#ef232a", borderColor:"#ef232a"}, text:{color:"#ef232a"} } });
+      tradeOverlays.push(id+"_e");
+      // 止损/止盈虚线：起点是**开仓日**（开仓前不存在这两条线）
+      if (t.stop_price) chart.createOverlay({ id:id+"_s", name:"priceChannelLine",
+        points:[{timestamp:msOf(t.entry_date), value:t.stop_price},
+                {timestamp:msOf(t.exit_date||lastDate), value:t.stop_price}],
+        styles:{ line:{color:"#14b143", style:"dashed"} } });
+      if (t.tp_price) chart.createOverlay({ id:id+"_t", name:"priceChannelLine",
+        points:[{timestamp:msOf(t.entry_date), value:t.tp_price},
+                {timestamp:msOf(t.exit_date||lastDate), value:t.tp_price}],
+        styles:{ line:{color:"#ef232a", style:"dashed"} } });
+      tradeOverlays.push(id+"_s", id+"_t");
+      // ▼ 绿三角向下 = 平仓（未平仓 / 平仓日尚未揭示 → 不画；也**不显示任何浮盈数字**，
+      //   那等于偷看未来）
+      if (t.exit_date && t.exit_date <= lastDate){
+        chart.createOverlay({ id:id+"_x", name:"triMarker",
+          points:[{timestamp:msOf(t.exit_date), value:t.exit_price}],
+          extendData:{ up:false, label:`${t.exit_reason} ${fmt(t.exit_price)}` },
+          styles:{ polygon:{color:"#14b143", borderColor:"#14b143"}, text:{color:"#14b143"} } });
+        tradeOverlays.push(id+"_x");
+      }
+    });
   }
 }
-$("#ckLines").onchange = renderOverlays;
-$("#ckTrades").onchange = renderOverlays;
 
-// ── 5.1 交易录入 ──
+// ── 交易录入面板 ──
+const fmtDate = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+// 默认开仓时间 = 当前最后 bar 的**次日**（决策日收盘后、次日开盘成交）
+// 已到库尾（没有下一根）时退回当前最后 bar 自身，免得输入框空着没得存
+function defaultEntryDate(){
+  const nb = allBars[endIdx];               // endIdx 指向第一根未揭示的 bar
+  $("#tDate").value = nb ? nb.date : (allBars[endIdx-1] || {}).date || "";
+}
+function newTrade(){
+  editingId = null;
+  $("#tTitle").textContent = "提交交易";
+  $("#tSave").textContent = "保存";
+  ["#tBuy","#tStop","#tTp"].forEach(s => $(s).value = "");
+  defaultEntryDate();
+  previewTrade();
+}
+function setEditing(rec){
+  editingId = rec.id;
+  $("#tTitle").textContent = "修改交易";
+  $("#tSave").textContent = "修改";
+  $("#tDate").value = rec.entry_date || "";
+  $("#tBuy").value  = rec.buy_price ?? "";
+  $("#tStop").value = rec.stop_price ?? "";
+  $("#tTp").value   = rec.tp_price ?? "";
+  previewTrade();
+}
+let prevTimer;
+function schedulePreview(){ clearTimeout(prevTimer); prevTimer = setTimeout(previewTrade, 250); }
+["#tDate","#tBuy","#tStop","#tTp"].forEach(s => $(s).addEventListener("input", schedulePreview));
+async function previewTrade(){
+  const box = $("#tPrev");
+  const ed = $("#tDate").value;
+  if (!ed){ box.className="prev err"; box.textContent="开仓时间必填"; return; }
+  if (!$("#tStop").value || !$("#tTp").value){
+    box.className="prev"; box.textContent="止损价、止盈价都必填 —— 出场只认你提交的这两个价。";
+    return;
+  }
+  // 未来遮蔽：开仓日还没揭示时，**不显示该日开盘价与股数** —— 预览会把明天的开盘
+  // 泄露出来（等于不按 ▶ 就偷看），而股数反算必然要用到它。揭示后自动出现。
+  const lastDate = allBars.length ? allBars[endIdx-1].date : "";
+  if (!$("#tBuy").value && ed > lastDate){
+    box.className = "prev";
+    box.innerHTML = `开仓日 <b>${ed}</b> 尚未揭示 → 开仓价 = 该日开盘价，`
+      + `股数要等揭示后才算得出（不提前偷看次日）。<br>想立刻知道股数就手填开仓价。`;
+    return;
+  }
+  try {
+    const r = await post("/api/trades?dry_run=1", { symbol,
+      trade:{ entry_date:ed, buy_price:$("#tBuy").value, stop_price:$("#tStop").value,
+              tp_price:$("#tTp").value, id: editingId || undefined },
+      risk_amount: settings.risk_amount });
+    box.className = r._duplicate ? "prev warn" : "prev";
+    box.innerHTML = `开仓 <b>${fmt(r.buy_price)}</b>（${r.entry_source==="bar_open"?"当日开盘":"手填"}）· `
+      + `每股风险 <b>${fmt(r.risk_per_share)}</b>（${fmt(r.risk_pct*100)}%）· `
+      + `可开 <b>${r.shares}</b> 股 · 开仓金额 ${wan(r.notional)} · 止损亏损 ${fmt(r.risk_amount,0)} 元`
+      + (r._duplicate ? `<br>⚠ ${r.entry_date} 已有开仓记录，保存时会问是否覆盖` : "");
+  } catch (e) {
+    box.className = "prev err";
+    box.textContent = (e.body && e.body.err) || e.message;
+  }
+}
 $("#tSave").onclick = async () => {
-  const buy=+$("#tBuy").value, stop=+$("#tStop").value, tp=+$("#tTp").value;
-  if (!buy || !stop) return toast("买入价/止损价必填", false);
-  const trade = { signal_date: allBars[endIdx-1].date, buy_price: buy, stop_price: stop,
-                  tp_price: tp || null, exit_price: +$("#tExit").value || null,
-                  exit_date: null, exit_reason: null };
-  const r = await api("/api/trades", { method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({symbol, trade, auto: $("#tAuto").checked}) });
-  toast(r.exit_date ? `${r.exit_reason} @ ${r.exit_price}（${r.exit_date}）` : "已存，待判定");
-  $("#tBuy").value=$("#tStop").value=$("#tTp").value=$("#tExit").value="";
-  renderOverlays();
+  const ed = $("#tDate").value;
+  if (!ed) return toast("开仓时间必填", false);
+  if (!$("#tStop").value) return toast("止损价必填", false);
+  if (!$("#tTp").value)   return toast("止盈价必填", false);
+  const mk = extra => ({ symbol, risk_amount: settings.risk_amount, ...extra,
+    trade:{ id: editingId || undefined, entry_date: ed, buy_price: $("#tBuy").value,
+            stop_price: $("#tStop").value, tp_price: $("#tTp").value } });
+  $("#tSave").disabled = true;
+  try {
+    let r;
+    try { r = await post("/api/trades", mk({})); }
+    catch (e) {
+      if (e.status !== 409) throw e;
+      // 同标的 + 同开仓时间撞车：问覆盖；选"否" → 载入库里那条改成「修改」
+      const ex = e.body.existing;
+      if (window.confirm(`${e.body.msg}（开仓 ${fmt(ex.buy_price)} / 止损 ${fmt(ex.stop_price)} / `
+                        + `止盈 ${fmt(ex.tp_price)}）\n\n确定 = 覆盖它\n取消 = 载入它来修改`)){
+        r = await post("/api/trades", mk({ overwrite:true }));
+      } else { setEditing(ex); return toast("已载入库中记录，改完点「修改」", true); }
+    }
+    editingId = r.id;
+    $("#tSave").textContent = "修改";
+    $("#tTitle").textContent = "修改交易";
+    toast(`已${r._action==="update"?"更新":"保存"}：开仓 ${fmt(r.buy_price)} × ${r.shares} 股 · `
+          + (r.exit_date ? `${r.exit_reason} ${fmt(r.exit_price)} @ ${r.exit_date}` : "持仓中"));
+    renderOverlays();
+  } catch (e) {
+    toast((e.body && e.body.err) || e.message, false);
+  } finally { $("#tSave").disabled = false; }
+};
+$("#tNew").onclick = newTrade;
+const toggle = (el, on) => { const d=$(el), v = on===undefined ? d.style.display!=="block" : on;
+  d.style.display = v ? "block" : "none"; return v; };
+$("#openTrade").onclick = () => { const on = toggle("#panel"); if (on){ toggle("#setPanel", false); previewTrade(); } };
+$("#tClose").onclick = () => toggle("#panel", false);
+$("#openSet").onclick = () => { const on = toggle("#setPanel"); if (on){ toggle("#panel", false);
+  $("#sSymName").textContent = `${symbol} ${symName}`; } };
+$("#sClose").onclick = () => toggle("#setPanel", false);
+$("#openStats").onclick = () => window.open(`trades.html?symbol=${encodeURIComponent(symbol)}`, "_blank");
+
+// ── 设置：显示开关 / 全局止损额度 / 清除当前标的 ──
+async function saveSettings(patch){
+  try { settings = await post("/api/settings", patch); renderOverlays();
+        $("#sRisk").value = settings.risk_amount; previewTrade(); }
+  catch (e) { toast("设置保存失败：" + e.message, false); }
+}
+$("#sLines").onchange  = e => saveSettings({ show_lines:  e.target.checked });
+$("#sTrades").onchange = e => saveSettings({ show_trades: e.target.checked });
+$("#sRisk").onchange   = e => saveSettings({ risk_amount: e.target.value });
+$("#sClear").onclick = async () => {
+  if (!window.confirm(`确定清除 ${symbol} ${symName} 的**全部**交易记录？\n不可恢复。`)) return;
+  if (!window.confirm(`再确认一次：删除 ${symbol} 的所有交易记录（其他标的保留）。`)) return;
+  try {
+    const r = await fetch(`/api/trades?symbol=${symbol}&all=1`, {method:"DELETE"}).then(x=>x.json());
+    toast(`已清除 ${symbol} 的 ${r.removed} 条交易记录`);
+    newTrade(); renderOverlays();
+  } catch (e) { toast("清除失败：" + e.message, false); }
 };
 
+// ── 5.1 交易录入（旧字段已并入上方面板）──
 // ── 6.1 标的搜索 ──
 let symTimer;
 $("#sym").oninput = () => {
@@ -318,8 +521,8 @@ $("#load").onclick = async () => {
 
 
 
+loadSettings().then(() => { initChart(); loadAll(); });
 
-initChart(); loadAll();
 </script>
 </body>
 </html>

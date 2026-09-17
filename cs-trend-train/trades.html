@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>cs-trend-train · 交易记录与统计</title>
+<script src="plotly.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font: 13px/1.5 system-ui, "Microsoft YaHei", sans-serif; background: #16181d; color: #d8dce3;
+      padding: 12px 16px 40px; }
+  h1 { font-size: 16px; font-weight: 600; margin-bottom: 2px; }
+  .sub { color: #7a8494; font-size: 12px; margin-bottom: 12px; }
+  #filters { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; padding: 10px 12px;
+      background: #1b1e24; border: 1px solid #2a2e38; border-radius: 6px; margin-bottom: 12px; }
+  #filters .f { display: flex; flex-direction: column; gap: 3px; }
+  #filters label { font-size: 11px; color: #9aa3b2; }
+  select, input, button { background: #23262e; color: #d8dce3; border: 1px solid #3a3f4b;
+      border-radius: 4px; padding: 4px 8px; font-size: 13px; font-family: inherit; }
+  button { cursor: pointer; }
+  button:hover { background: #2e323c; }
+  button.pri { background: #2b5fad; border-color: #2b5fad; color: #fff; }
+  button.pri:hover { background: #3571c4; }
+  #tabs { display: flex; gap: 4px; border-bottom: 1px solid #2a2e38; margin-bottom: 12px; }
+  #tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none;
+      padding: 7px 16px; color: #9aa3b2; }
+  #tabs button.on { color: #d8dce3; border-bottom-color: #2b5fad; }
+  .pane { display: none; } .pane.on { display: block; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { padding: 5px 7px; text-align: right; white-space: nowrap; border-bottom: 1px solid #23262e; }
+  th { color: #9aa3b2; font-weight: 500; cursor: pointer; user-select: none; position: sticky; top: 0;
+      background: #1b1e24; }
+  th:hover { color: #d8dce3; }
+  th.l, td.l { text-align: left; }
+  tbody tr:hover { background: #1e222a; }
+  .pos { color: #ef232a; }      /* A 股口径：红涨 */
+  .neg { color: #14b143; }      /* 绿跌 */
+  .dim { color: #7a8494; }
+  .tag { display: inline-block; padding: 0 6px; border-radius: 3px; font-size: 11px; }
+  .tag.win  { background: #3a2020; color: #ef7a7a; }
+  .tag.loss { background: #17301f; color: #4cc47a; }
+  .tag.tail { background: #3a3320; color: #e8c35a; margin-left: 4px; }
+  .tag.pend { background: #2a2e38; color: #9aa3b2; }
+  .del { cursor: pointer; color: #6b7280; }
+  .del:hover { color: #e86a6a; }
+  #cards { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .card { background: #1b1e24; border: 1px solid #2a2e38; border-radius: 6px; padding: 8px 14px; min-width: 104px; }
+  .card .k { font-size: 11px; color: #9aa3b2; }
+  .card .v { font-size: 18px; font-weight: 600; margin-top: 1px; }
+  .chart { height: 320px; margin-bottom: 14px; }
+  .note { background: #1b1e24; border: 1px solid #2a2e38; border-radius: 6px; padding: 10px 12px;
+      font-size: 12px; color: #9aa3b2; line-height: 1.7; }
+  .note b { color: #d8dce3; }
+  .note code { color: #e8c35a; font-family: ui-monospace, Consolas, monospace; }
+  #empty { color: #7a8494; padding: 30px; text-align: center; }
+  #msg { position: fixed; left: 50%; transform: translateX(-50%); top: 12px; z-index: 99;
+      background: #2e5c2e; padding: 6px 16px; border-radius: 4px; display: none; }
+</style>
+</head>
+<body>
+<h1>交易记录与统计</h1>
+<div class="sub" id="scope">—</div>
+
+<div id="filters">
+  <div class="f"><label>标的（不选 = 全部，Ctrl 可多选）</label>
+    <select id="fSym" multiple size="3" style="min-width:190px"></select></div>
+  <div class="f"><label>开仓日 ≥</label><input id="fD0" type="date"></div>
+  <div class="f"><label>开仓日 ≤</label><input id="fD1" type="date"></div>
+  <div class="f"><label>结果</label><select id="fRes">
+    <option value="">全部</option><option value="win">成功（盈利）</option>
+    <option value="loss">失败（亏损）</option><option value="tail">肥尾（≥ +30%）</option></select></div>
+  <div class="f"><label>状态</label><select id="fSt">
+    <option value="">全部</option><option value="closed">已平仓</option>
+    <option value="pending">持仓中</option></select></div>
+  <button id="fAll">全不选</button>
+  <button id="reload" class="pri">刷新</button>
+</div>
+
+<div id="tabs">
+  <button data-p="list" class="on">交易清单</button>
+  <button data-p="stat">统计指标</button>
+</div>
+
+<div id="pane-list" class="pane on">
+  <div id="empty" style="display:none">没有符合条件的交易记录</div>
+  <table id="tbl"><thead></thead><tbody></tbody></table>
+</div>
+
+<div id="pane-stat" class="pane">
+  <div id="cards"></div>
+  <div class="chart" id="cNav"></div>
+  <div class="chart" id="cDd"></div>
+  <div class="chart" id="cBar"></div>
+  <div class="note">
+    <b>统计口径</b>（全部基于上面的过滤结果，不是全库）：<br>
+    · <b>只算已平仓</b>的笔 —— 止损止盈都没触及的「持仓中」单列，不进胜率/盈亏比/净值/夏普<br>
+    · <code>R = (平仓价 − 开仓价) / (开仓价 − 止损价)</code>：每笔按自己的风险归一化，
+      止损那笔 = −1.0R。<b>R 不需要股数</b>，所以老记录（无股数）也能参与统计<br>
+    · <b>胜率</b> = 盈利笔数 / 已平仓笔数　·　<b>盈亏比</b> = 平均盈利R / |平均亏损R|　·　<b>期望R</b> = 平均R<br>
+    · <b>肥尾率</b> = 收益率 ≥ +30% 的占比（与 analysis_012/014 的 <code>is_tail = ret &gt;= 0.3</code> 同口径）<br>
+    · <b>夏普</b> = 平均R / R标准差，再乘 <code>√(252 / 平均持仓天数)</code> 年化；同时给出不年化的「逐笔夏普」<br>
+    · <b>净值曲线</b> = 累计 R（左轴），副轴是累计盈亏（元，虚线，只统计有股数的笔）<br>
+    · <b>不计交易成本</b>；跳空越过止损/止盈时按当日开盘价成交（已在后端处理）
+  </div>
+</div>
+<div id="msg"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const fmt = (n,d=2) => (n==null||isNaN(n)) ? "—" : Number(n).toFixed(d);
+const wan = n => (n==null||isNaN(n)) ? "—" : (n/10000).toFixed(1)+"万";
+const POS = "#ef232a", NEG = "#14b143";        // A 股口径：红涨绿跌
+let RAW = {}, NAMES = {}, rows0 = [], sortKey = "entry_date", sortDir = -1;
+
+async function api(p, o){ const r = await fetch(p,o), t = await r.text();
+  let j = null; try { j = JSON.parse(t); } catch(_) {}
+  if (!r.ok) throw new Error((j&&j.err)||t); return j!==null?j:t; }
+function toast(t, ok=true){ const m=$("#msg"); m.textContent=t;
+  m.style.background = ok?"#2e5c2e":"#8c3a3a"; m.style.display="block";
+  setTimeout(()=>m.style.display="none", 2600); }
+
+// ── 数据 ──
+async function reload(){
+  const d = await api("/api/trades?all=1");
+  RAW = d.trades || {}; NAMES = d.names || {};
+  rows0 = [];
+  for (const [sym, recs] of Object.entries(RAW))
+    recs.forEach(r => rows0.push({ ...r, symbol: sym, name: NAMES[sym] || "" }));
+  fillSymbols();
+  apply();
+}
+function fillSymbols(){
+  const sel = $("#fSym"), keep = new Set([...sel.selectedOptions].map(o=>o.value));
+  sel.innerHTML = Object.keys(RAW).sort().map(s =>
+    `<option value="${s}"${keep.has(s)?" selected":""}>${s} ${NAMES[s]||""}（${RAW[s].length}）</option>`).join("");
+}
+function selected(){ return [...$("#fSym").selectedOptions].map(o=>o.value); }
+
+// ── 过滤 ──
+function filtered(){
+  const syms = selected(), d0 = $("#fD0").value, d1 = $("#fD1").value;
+  const res = $("#fRes").value, st = $("#fSt").value;
+  return rows0.filter(r => {
+    if (syms.length && !syms.includes(r.symbol)) return false;
+    const ed = r.entry_date || "";
+    if (d0 && ed < d0) return false;
+    if (d1 && ed > d1) return false;
+    if (st === "closed"  && r.status === "pending") return false;
+    if (st === "pending" && r.status !== "pending") return false;
+    if (res === "win"  && r.status !== "win")  return false;   // 成功 = 盈利
+    if (res === "loss" && r.status !== "loss") return false;   // 失败 = 亏损
+    if (res === "tail" && !r.is_fat_tail) return false;
+    return true;
+  });
+}
+
+// ── 清单表 ──
+const COLS = [
+  ["symbol","标的","l"], ["name","名称","l"], ["entry_date","开仓日","l"], ["entry_source","开仓价来源","l"],
+  ["buy_price","开仓价"], ["stop_price","止损"], ["tp_price","止盈"], ["shares","股数"],
+  ["notional","开仓金额"], ["exit_date","平仓日","l"], ["exit_price","平仓价"], ["exit_reason","平仓原因","l"],
+  ["holding_days","持仓天数"], ["pnl","盈亏(元)"], ["ret_pct","收益率%"], ["R","R"],
+  ["_tag","结果","l"], ["_del","","l"]
+];
+function cell(r, k){
+  const num = v => v==null ? '<span class="dim">—</span>' : fmt(v);
+  switch(k){
+    case "name": return r.name || '<span class="dim">—</span>';
+    case "entry_source": return `<span class="dim">${r.entry_source==="bar_open"?"当日开盘":(r.legacy?"手填(旧)":"手填")}</span>`;
+    case "exit_reason": return r.exit_date ? (r.exit_reason||"—") : '<span class="dim">持仓中</span>';
+    case "pnl": return r.pnl==null ? '<span class="dim">—</span>'
+      : `<span class="${r.pnl>0?"pos":(r.pnl<0?"neg":"")}">${fmt(r.pnl,0)}</span>`;
+    case "ret_pct": return r.ret_pct==null ? '<span class="dim">—</span>'
+      : `<span class="${r.ret_pct>0?"pos":(r.ret_pct<0?"neg":"")}">${fmt(r.ret_pct)}</span>`;
+    case "R": return r.R==null ? '<span class="dim">—</span>'
+      : `<span class="${r.R>0?"pos":(r.R<0?"neg":"")}">${fmt(r.R)}</span>`;
+    case "notional": case "shares": case "holding_days": case "buy_price":
+    case "stop_price": case "tp_price": case "exit_price": return num(r[k]);
+    case "_tag":
+      if (r.status === "pending") return '<span class="tag pend">持仓中</span>';
+      return `<span class="tag ${r.status}">${r.status==="win"?"成功":(r.status==="loss"?"失败":"平")}</span>`
+        + (r.is_fat_tail ? '<span class="tag tail">肥尾</span>' : "");
+    case "_del": return `<span class="del" data-del="${r.id}" data-sym="${r.symbol}" title="删除这条">✕</span>`;
+    default: return r[k] ?? "";
+  }
+}
+function sortVal(r, k){
+  if (k === "_tag") return r.status === "pending" ? -9 : (r.is_fat_tail ? 2 : (r.status==="win"?1:0));
+  const v = r[k]; return v==null ? -Infinity : (typeof v === "number" ? v : String(v));
+}
+function renderTable(rows){
+  $("#tbl thead").innerHTML = "<tr>" + COLS.map(c =>
+    `<th class="${c[2]||""}" data-k="${c[0]}">${c[1]}${sortKey===c[0]?(sortDir>0?" ▲":" ▼"):""}</th>`).join("") + "</tr>";
+  const sorted = rows.slice().sort((a,b) => {
+    const x = sortVal(a,sortKey), y = sortVal(b,sortKey);
+    return (x>y?1:x<y?-1:0) * sortDir;
+  });
+  $("#tbl tbody").innerHTML = sorted.map(r =>
+    "<tr>" + COLS.map(c => `<td class="${c[2]||""}">${cell(r, c[0])}</td>`).join("") + "</tr>").join("");
+  $("#empty").style.display = rows.length ? "none" : "block";
+  $("#tbl").style.display = rows.length ? "" : "none";
+  $("#tbl tbody").querySelectorAll("[data-del]").forEach(el => el.onclick = async () => {
+    if (!window.confirm(`删除 ${el.dataset.sym} 的这条交易记录？`)) return;
+    await fetch(`/api/trades?symbol=${el.dataset.sym}&id=${el.dataset.del}`, {method:"DELETE"});
+    toast("已删除"); reload();
+  });
+}
+$("#tbl").addEventListener("click", e => {
+  const th = e.target.closest("th"); if (!th || !th.dataset.k) return;
+  const k = th.dataset.k;
+  sortDir = (sortKey === k) ? -sortDir : -1;
+  sortKey = k; apply();
+});
+
+// ── 统计（固定风险 R 口径）──
+function stats(rows){
+  const closed = rows.filter(r => r.status !== "pending" && r.R != null)
+                     .sort((a,b) => (a.exit_date||"") < (b.exit_date||"") ? -1 : 1);
+  const Rs = closed.map(r => r.R);
+  const wins = Rs.filter(x => x > 0), losses = Rs.filter(x => x < 0);
+  const mean = a => a.length ? a.reduce((s,x)=>s+x,0)/a.length : null;
+  const sd = a => { if (a.length < 2) return null; const m = mean(a);
+    return Math.sqrt(a.reduce((s,x)=>s+(x-m)**2, 0) / (a.length-1)); };
+  const held = closed.map(r => r.holding_days).filter(v => v > 0);
+  const avgHold = mean(held);
+  const cum = []; let acc = 0, accP = 0, peak = 0, mdd = 0;
+  closed.forEach(r => { acc += r.R; accP += (r.pnl || 0);
+    peak = Math.max(peak, acc); mdd = Math.min(mdd, acc - peak);
+    cum.push({ date: r.exit_date, R: acc, pnl: accP, dd: acc - peak }); });
+  const tails = closed.filter(r => r.ret_pct != null);
+  const sh = sd(Rs) ? mean(Rs)/sd(Rs) : null;
+  const ann = avgHold > 0 ? Math.sqrt(252/avgHold) : null;
+  return { closed, Rs, cum, n: closed.length, pend: rows.length - closed.length,
+    winRate: Rs.length ? wins.length/Rs.length*100 : null,
+    payoff: (wins.length && losses.length) ? mean(wins)/Math.abs(mean(losses)) : null,
+    expect: mean(Rs), sharpe: sh, sharpeAnn: (sh!=null&&ann) ? sh*ann : null,
+    mdd, sumR: Rs.reduce((s,x)=>s+x,0),
+    sumPnl: closed.some(r=>r.pnl!=null) ? closed.reduce((s,r)=>s+(r.pnl||0),0) : null,
+    tailRate: tails.length ? tails.filter(r=>r.is_fat_tail).length/tails.length*100 : null,
+    avgHold, wins: wins.length, losses: losses.length };
+}
+function renderStats(rows){
+  const s = stats(rows);
+  const card = (k,v,cls="") => `<div class="card"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`;
+  $("#cards").innerHTML = [
+    card("已平仓 / 总笔数", `${s.n} / ${rows.length}`),
+    card("持仓中（不计入）", s.pend),
+    card("胜率", s.winRate==null?"—":fmt(s.winRate,1)+"%"),
+    card("盈亏比", fmt(s.payoff)),
+    card("期望R", s.expect==null?"—":fmt(s.expect),
+         s.expect>0?"pos":(s.expect<0?"neg":"")),
+    card("累计R", fmt(s.sumR,1), s.sumR>0?"pos":(s.sumR<0?"neg":"")),
+    card("累计盈亏", s.sumPnl==null?"—":wan(s.sumPnl), s.sumPnl>0?"pos":(s.sumPnl<0?"neg":"")),
+    card("逐笔夏普", fmt(s.sharpe)),
+    card("年化夏普", fmt(s.sharpeAnn)),
+    card("最大回撤(R)", fmt(s.mdd,1), "neg"),
+    card("肥尾率(≥+30%)", s.tailRate==null?"—":fmt(s.tailRate,1)+"%"),
+    card("平均持仓(交易日)", fmt(s.avgHold,1)),
+  ].join("");
+  // ★ x 轴用「平仓笔序号 1..n」，日期只作为**刻度文案**（customdata 里放全量日期供 hover）：
+  //   直接把日期串当 x 会被 Plotly 解析成日期轴，只有 1 笔时量程退化到微秒级
+  //   （刻度变成 "23:59:59.999 Dec 6"）；序号轴在 1 笔和 200 笔下都稳，也不会把同一天平仓的两笔并成一格
+  const xi = s.cum.map((_, i) => i + 1), lbl = s.cum.map(c => c.date || "");
+  const step = Math.max(1, Math.ceil(xi.length / 18));
+  const xax = { type:"linear", gridcolor:"#26292f", zeroline:false,
+                tickmode:"array", tickvals:xi.filter((_, i) => i % step === 0),
+                ticktext:lbl.filter((_, i) => i % step === 0),
+                title:{text:"平仓笔序（刻度 = 平仓日）"} };
+  const L = { paper_bgcolor:"#16181d", plot_bgcolor:"#1b1e24", font:{color:"#d8dce3", size:11},
+    margin:{l:52,r:56,t:28,b:46}, hovermode:"x unified",
+    xaxis:xax, yaxis:{gridcolor:"#26292f", zeroline:false},
+    legend:{orientation:"h", y:1.12, x:0} };
+  const cfg = { displayModeBar:false, responsive:true };
+  Plotly.newPlot("cNav", [
+    { x:xi, y:s.cum.map(c=>c.R), name:"累计R", type:"scatter", mode:"lines+markers",
+      line:{color:"#4a90d9", width:2}, marker:{size:5},
+      customdata:lbl, hovertemplate:"%{customdata}<br>累计R %{y:.2f}<extra></extra>" },
+    { x:xi, y:s.cum.map(c=>c.pnl), name:"累计盈亏(元)", type:"scatter", mode:"lines",
+      line:{color:"#e8c35a", width:1.5, dash:"dot"}, yaxis:"y2",
+      customdata:lbl, hovertemplate:"%{customdata}<br>累计盈亏 %{y:.0f}<extra></extra>" },
+  ], { ...L, title:{text:"净值曲线", font:{size:13}},
+       yaxis:{...L.yaxis, title:{text:"累计 R"}},
+       yaxis2:{ overlaying:"y", side:"right", gridcolor:"transparent",
+                title:{text:"累计盈亏(元)"}, zeroline:false } }, cfg);
+  Plotly.newPlot("cDd", [
+    { x:xi, y:s.cum.map(c=>c.dd), name:"回撤", type:"scatter", mode:"lines", fill:"tozeroy",
+      line:{color:NEG, width:1}, fillcolor:"rgba(20,177,67,.18)",
+      customdata:lbl, hovertemplate:"%{customdata}<br>回撤 %{y:.2f}R<extra></extra>" },
+  ], { ...L, title:{text:"净值回撤（R）", font:{size:13}}, showlegend:false,
+       yaxis:{...L.yaxis, title:{text:"回撤(R)"}} }, cfg);
+  Plotly.newPlot("cBar", [
+    { x:xi, y:s.closed.map(r=>r.R), type:"bar", name:"逐笔R", width:.6,
+      marker:{ color: s.closed.map(r => r.R >= 0 ? POS : NEG) },
+      customdata: s.closed.map(r => [r.exit_date, r.symbol, r.exit_reason, r.ret_pct]),
+      hovertemplate:"%{customdata[0]} %{customdata[1]}<br>R = %{y:.2f}"
+        + "<br>%{customdata[2]} · 收益率 %{customdata[3]:.1f}%<extra></extra>" },
+  ], { ...L, title:{text:"逐笔盈亏（R · 红=盈利 绿=亏损，A 股口径）", font:{size:13}},
+       showlegend:false, yaxis:{...L.yaxis, title:{text:"单笔 R"}} }, cfg);
+}
+
+// ── 调度 ──
+let statDirty = true, lastRows = [];
+const statOn = () => $("#pane-stat").classList.contains("on");
+function apply(){
+  const rows = filtered();
+  lastRows = rows;
+  $("#scope").textContent = `${rows.length} 笔（全库 ${rows0.length} 笔 · ${Object.keys(RAW).length} 个标的）`;
+  renderTable(rows);
+  // ★ Plotly 在 display:none 的容器里量不到尺寸，会画成 0×0。所以统计页签不可见时
+  //   只标脏、不画，切过去再画（比事后 dispatch resize 稳）
+  if (statOn()) { renderStats(rows); statDirty = false; } else statDirty = true;
+}
+$("#tabs").addEventListener("click", e => {
+  const b = e.target.closest("button[data-p]"); if (!b) return;
+  $("#tabs").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll(".pane").forEach(p => p.classList.toggle("on", p.id === "pane-"+b.dataset.p));
+  if (b.dataset.p === "stat" && statDirty){ renderStats(lastRows); statDirty = false; }
+});
+["#fSym","#fD0","#fD1","#fRes","#fSt"].forEach(s => $(s).addEventListener("change", apply));
+$("#fAll").onclick = () => { $("#fSym").selectedIndex = -1; apply(); };
+$("#reload").onclick = reload;
+const qs = new URLSearchParams(location.search);      // 支持 ?symbol=&tab=stat 深链
+reload().then(() => {
+  if (qs.get("symbol")){ const o = [...$("#fSym").options].find(o => o.value === qs.get("symbol"));
+    if (o){ o.selected = true; apply(); } }
+  if (qs.get("tab") === "stat") document.querySelector('#tabs button[data-p="stat"]').click();
+}).catch(e => toast("加载失败：" + e.message, false));
+</script>
+</body>
+</html>
