@@ -143,9 +143,16 @@ async function loadAll(){
   refresh(); renderOverlays();
   status(`${symName} · 视图截至 ${allBars[endIdx-1].date}（库内共 ${allBars.length} 根，至 ${allBars[allBars.length-1].date}）`);
 }
-function refresh(){                       // 重新喂裁剪数据（v10：换 loader 引用触发重载）
+// ── 视图右边缘：40px 是「贴边」基准，也是旧行为里新 bar 停的位置 ──
+const PIN_RIGHT = 40;
+// ★ getOffsetRightDistance() = 最后一根 bar 右侧的**空白像素数**，是视图横向位置的唯一真相
+//   （klinecharts 拖动/缩放改的都是它；getVisibleRange 给的是索引，末端恒等于最后一根，判断不出位置）
+const barSpace = () => (chart.getBarSpace() || {}).bar || 10;   // 单根 bar 的横向步进(px)
+// 4.2 判据：还有空档（offset 明显大于贴边值）就认为「当前 bar 不在屏幕最右边」
+const atRightEdge = () => chart.getOffsetRightDistance() <= PIN_RIGHT + barSpace()/2;
+function refresh(offset = PIN_RIGHT){     // 重新喂裁剪数据（v10：换 loader 引用触发重载）
   chart.setDataLoader({ getBars: ({callback}) => callback(allBars.slice(0, endIdx)) });
-  chart.setOffsetRightDistance(40);
+  chart.setOffsetRightDistance(offset);
 }
 document.querySelectorAll(".pb").forEach(b => b.onclick = () => {
   const n = +b.dataset.n;
@@ -153,9 +160,17 @@ document.querySelectorAll(".pb").forEach(b => b.onclick = () => {
   // 4.2 ▶：多显示一天（库里的下一个交易日），最多到数据库最后一根
   // 4.3 ◀：少显示一天，最多退到开始时间（开始那根不能消失）
   endIdx = Math.max(1, Math.min(allBars.length, endIdx + n));
-  if (endIdx === prev)
+  if (endIdx === prev){
+    // 一根没动 → 不重载、不碰视图，否则单纯的「点一下到顶了」也会把视图拽到右边缘
     toast(n > 0 ? `已到数据库最后一条（${allBars[allBars.length-1].date}）` : "已到开始时间", false);
-  refresh(); renderOverlays();
+  } else {
+    // 4.1 ▶ 且右侧本来就有空档 → 新 bar 落进空档，已有 K 线一根都不动：
+    //     offset 就是「末端右侧空白」，新揭示 n 根会吃掉 n×barSpace，减掉即等价于原地不动
+    // （4.2 已贴右边缘 / ◀ 回退 → 仍走旧逻辑：整幅贴到右边缘）
+    const keepView = n > 0 && !atRightEdge();
+    refresh(keepView ? Math.max(0, chart.getOffsetRightDistance() - n * barSpace()) : PIN_RIGHT);
+    renderOverlays();
+  }
   status(`${symName} · 当前最后 bar：${allBars[endIdx-1].date}（第 ${endIdx}/${allBars.length} 根）`);
 });
 
