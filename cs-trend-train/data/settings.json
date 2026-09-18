@@ -1,5 +1,5 @@
 {
  "risk_amount": 5000.0,
  "show_lines": true,
- "show_trades": false
+ "show_trades": true
 }
