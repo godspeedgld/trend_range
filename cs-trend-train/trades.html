@@ -52,6 +52,25 @@
   .note b { color: #d8dce3; }
   .note code { color: #e8c35a; font-family: ui-monospace, Consolas, monospace; }
   #empty { color: #7a8494; padding: 30px; text-align: center; }
+  /* 标的输入式筛选（同 K 线页的交互）：输入框 + 已选 chip + 结果浮层 */
+  #symBox { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 300px;
+      background: #23262e; border: 1px solid #3a3f4b; border-radius: 4px; padding: 2px 6px; }
+  #symBox input { border: 0; background: none; padding: 3px 0; flex: 1; min-width: 150px; outline: none; }
+  #chips { display: contents; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; background: #2b5fad; color: #fff;
+      border-radius: 3px; padding: 1px 4px 1px 7px; font-size: 12px; white-space: nowrap; }
+  .chip b { cursor: pointer; font-weight: 400; color: #cfe0f7; padding: 0 2px; }
+  .chip b:hover { color: #fff; }
+  #symPop { position: absolute; z-index: 40; display: none; margin-top: 2px; max-height: 260px;
+      overflow-y: auto; min-width: 300px; background: #23262e; border: 1px solid #3a3f4b;
+      border-radius: 4px; box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+  #symPop div { padding: 5px 10px; cursor: pointer; font-size: 12px; }
+  #symPop div:hover { background: #2e323c; }
+  #symPop .n { color: #7a8494; }
+  #symPop .dim { color: #6b7280; }
+  #symPop .none { color: #7a8494; cursor: default; }
+  #symPop .none:hover { background: none; }
+  .wrapsym { position: relative; display: flex; flex-direction: column; }
   #msg { position: fixed; left: 50%; transform: translateX(-50%); top: 12px; z-index: 99;
       background: #2e5c2e; padding: 6px 16px; border-radius: 4px; display: none; }
 </style>
@@ -61,8 +80,13 @@
 <div class="sub" id="scope">—</div>
 
 <div id="filters">
-  <div class="f"><label>标的（不选 = 全部，Ctrl 可多选）</label>
-    <select id="fSym" multiple size="3" style="min-width:190px"></select></div>
+  <div class="f wrapsym"><label>标的（输入代码 / 名称 / 拼音首字母，可多选）</label>
+    <div id="symBox">
+      <span id="chips"></span>
+      <input id="fSymQ" placeholder="如 601318 / 平安 / zgpa" autocomplete="off">
+    </div>
+    <div id="symPop"></div>
+  </div>
   <div class="f"><label>开仓日 ≥</label><input id="fD0" type="date"></div>
   <div class="f"><label>开仓日 ≤</label><input id="fD1" type="date"></div>
   <div class="f"><label>结果</label><select id="fRes">
@@ -71,7 +95,7 @@
   <div class="f"><label>状态</label><select id="fSt">
     <option value="">全部</option><option value="closed">已平仓</option>
     <option value="pending">持仓中</option></select></div>
-  <button id="fAll">全不选</button>
+  <button id="fAll" class="pri">全部</button>
   <button id="reload" class="pri">刷新</button>
 </div>
 
@@ -125,15 +149,52 @@ async function reload(){
   rows0 = [];
   for (const [sym, recs] of Object.entries(RAW))
     recs.forEach(r => rows0.push({ ...r, symbol: sym, name: NAMES[sym] || "" }));
-  fillSymbols();
+  renderChips();
   apply();
 }
-function fillSymbols(){
-  const sel = $("#fSym"), keep = new Set([...sel.selectedOptions].map(o=>o.value));
-  sel.innerHTML = Object.keys(RAW).sort().map(s =>
-    `<option value="${s}"${keep.has(s)?" selected":""}>${s} ${NAMES[s]||""}（${RAW[s].length}）</option>`).join("");
+// ── 标的筛选：输入式（代码 / 名称 / 拼音首字母），已选显示成 chip，留空 = 全部 ──
+let picked = [];
+function renderChips(){
+  $("#chips").innerHTML = picked.map(s =>
+    `<span class="chip">${s} ${NAMES[s]||""}<b data-x="${s}" title="移除">✕</b></span>`).join("");
+  $("#chips").querySelectorAll("[data-x]").forEach(b => b.onclick = () => {
+    picked = picked.filter(x => x !== b.dataset.x); renderChips(); apply(); });
+  $("#fAll").classList.toggle("pri", !picked.length);        // 无筛选 = 全部，按钮高亮
+  $("#fAll").textContent = picked.length ? `全部（清掉 ${picked.length} 个筛选）` : "全部";
 }
-function selected(){ return [...$("#fSym").selectedOptions].map(o=>o.value); }
+function selected(){ return picked; }
+let symTimer, symItems = [];
+async function symSearch(){
+  const q = $("#fSymQ").value.trim();
+  const r = await api(`/api/trade_symbols?q=${encodeURIComponent(q)}`);
+  symItems = r;
+  const box = $("#symPop");
+  box.innerHTML = r.length
+    ? r.map(x => `<div data-s="${x.symbol}">${x.symbol} ${x.name||""} <span class="n">${x.n} 笔</span>`
+        + (picked.includes(x.symbol) ? ' <span class="n">已选</span>' : "") + "</div>").join("")
+    : `<div class="none">无匹配标的（只有有交易记录的标的才可筛选）</div>`;
+  box.style.display = r.length ? "block" : "none";
+}
+$("#fSymQ").addEventListener("input", () => { clearTimeout(symTimer); symTimer = setTimeout(symSearch, 200); });
+$("#fSymQ").addEventListener("focus", symSearch);
+$("#fSymQ").addEventListener("keydown", e => {
+  if (e.key === "Enter" && symItems.length){                  // 回车选第一个
+    addSym(symItems[0].symbol); e.preventDefault();
+  } else if (e.key === "Backspace" && !$("#fSymQ").value && picked.length){
+    picked.pop(); renderChips(); apply();                     // 空输入退格 = 删最后一个 chip
+  } else if (e.key === "Escape"){ $("#symPop").style.display = "none"; }
+});
+function addSym(s){
+  if (!picked.includes(s)) picked.push(s);
+  $("#fSymQ").value = ""; $("#symPop").style.display = "none";
+  renderChips(); apply(); $("#fSymQ").focus();
+}
+$("#symPop").addEventListener("click", e => {
+  const d = e.target.closest("div[data-s]"); if (d) addSym(d.dataset.s);
+});
+document.addEventListener("click", e => {                    // 点别处收浮层
+  if (!e.target.closest("#symBox") && !e.target.closest("#symPop")) $("#symPop").style.display = "none";
+});
 
 // ── 过滤 ──
 function filtered(){
@@ -315,13 +376,12 @@ $("#tabs").addEventListener("click", e => {
   document.querySelectorAll(".pane").forEach(p => p.classList.toggle("on", p.id === "pane-"+b.dataset.p));
   if (b.dataset.p === "stat" && statDirty){ renderStats(lastRows); statDirty = false; }
 });
-["#fSym","#fD0","#fD1","#fRes","#fSt"].forEach(s => $(s).addEventListener("change", apply));
-$("#fAll").onclick = () => { $("#fSym").selectedIndex = -1; apply(); };
+["#fD0","#fD1","#fRes","#fSt"].forEach(s => $(s).addEventListener("change", apply));
+$("#fAll").onclick = () => { picked = []; $("#fSymQ").value = ""; renderChips(); apply(); };
 $("#reload").onclick = reload;
 const qs = new URLSearchParams(location.search);      // 支持 ?symbol=&tab=stat 深链
 reload().then(() => {
-  if (qs.get("symbol")){ const o = [...$("#fSym").options].find(o => o.value === qs.get("symbol"));
-    if (o){ o.selected = true; apply(); } }
+  if (qs.get("symbol")){ picked = [qs.get("symbol")]; renderChips(); apply(); }
   if (qs.get("tab") === "stat") document.querySelector('#tabs button[data-p="stat"]').click();
 }).catch(e => toast("加载失败：" + e.message, false));
 </script>

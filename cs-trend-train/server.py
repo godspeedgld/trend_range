@@ -112,26 +112,109 @@ def load_klines(symbol: str, start: str, end: str) -> list[dict]:
             for r, t in zip(df.itertuples(), df["date"])]
 
 
-def search_symbols(q: str) -> list[dict]:
-    con = duckdb.connect(str(WAREHOUSE), read_only=True)
-    rows = con.execute(
-        "SELECT instrument, any_value(name) nm, count(*) n FROM stock_bar1d "
-        "WHERE instrument LIKE ? OR name LIKE ? GROUP BY instrument "
-        "ORDER BY n DESC LIMIT 20", [f"%{q}%", f"%{q}%"]).fetchall()
-    con.close()
-    return [{"symbol": r[0], "name": r[1], "bars": r[2]} for r in rows]
+# ── 标的检索：代码 / 名称 / **拼音首字母**（零依赖）──
+# GB2312 一级汉字按拼音排序，故可用"码位落在哪个区间"直接推声母首字母。
+# 只覆盖 0xB0A1~0xD7F9 的 6763 个常用字，之外的（生僻字/字母/数字）原样保留。
+_PY_BOUNDS = [(0xB0A1, "A"), (0xB0C5, "B"), (0xB2C1, "C"), (0xB4EE, "D"), (0xB6EA, "E"),
+              (0xB7A2, "F"), (0xB8C1, "G"), (0xB9FE, "H"), (0xBBF7, "J"), (0xBFA6, "K"),
+              (0xC0AC, "L"), (0xC2E8, "M"), (0xC4C3, "N"), (0xC5B6, "O"), (0xC5BE, "P"),
+              (0xC6DA, "Q"), (0xC8BB, "R"), (0xC8F6, "S"), (0xCBFA, "T"), (0xCDDA, "W"),
+              (0xCEF4, "X"), (0xD1B9, "Y"), (0xD4D1, "Z")]
+# 多音字：码位表只能给最常见的那个音，这里补上"在股票名里另一个音更常见"的少数情况。
+# 不赌哪个对 —— 每个字都生成**全部变体**，查询命中任一变体即算匹配
+# （招商银行 → 同时接受 zsyh 与 zsyx；中国重工/重庆钢铁 同理）。
+_PY_AMBIG = {"行": "XH", "重": "CZ", "长": "CZ", "参": "CS", "藏": "CZ", "厦": "SX",
+             "曾": "CZ", "单": "DS", "区": "QO", "解": "XJ", "乐": "LY", "查": "ZC"}
+
+
+def _initial(ch: str) -> str:
+    """单个字符 → 首字母候选串（多音字返回多个字母，其余返回单字母或原字符）"""
+    if ch in _PY_AMBIG:
+        return _PY_AMBIG[ch]
+    try:
+        b = ch.encode("gbk")
+    except UnicodeEncodeError:
+        return ch
+    if len(b) != 2:
+        return ch                                   # 字母/数字原样
+    code = (b[0] << 8) | b[1]
+    if not (_PY_BOUNDS[0][0] <= code <= 0xD7F9):
+        return ch                                   # 生僻字 → 原字符
+    for c, a in reversed(_PY_BOUNDS):
+        if code >= c:
+            return a
+    return ch
+
+
+def initials_variants(name: str, cap: int = 16) -> list[str]:
+    """名称 → 拼音首字母变体列表（多音字组合，最多 cap 个；全是小写）"""
+    outs = [""]
+    for ch in (name or ""):
+        cand = _initial(ch).lower()
+        nxt = []
+        for pre in outs:
+            for c in cand:
+                nxt.append(pre + c)
+        # 组合爆炸保护：超上限就只留前 cap 个（首字母表里靠前的音更常见）
+        outs = nxt[:cap] if len(nxt) > cap else nxt
+    return [o for o in outs if o]
+
+
+_SYM_CACHE = None
+
+
+def symbol_index() -> list[tuple]:
+    """[(代码, 名称, 根数, 首字母变体)] —— 惰性缓存（仓库在一次会话里不变）"""
+    global _SYM_CACHE
+    if _SYM_CACHE is None:
+        con = duckdb.connect(str(WAREHOUSE), read_only=True)
+        # ★ 名称取**众数**而不是 any_value：除权日会出现 "XD中国平" 这类脏名，
+        #   any_value 可能正好挑中它（那样按 "zgpa" 就搜不到中国平安）
+        rows = con.execute(
+            "SELECT instrument, name, count(*) c FROM stock_bar1d GROUP BY instrument, name"
+        ).fetchall()
+        con.close()
+        best: dict[str, tuple] = {}
+        for sym, nm, c in rows:
+            if sym not in best or c > best[sym][1]:
+                best[sym] = (nm or "", int(c))
+        _SYM_CACHE = [(s, nm, c, initials_variants(nm)) for s, (nm, c) in best.items()]
+    return _SYM_CACHE
+
+
+def _hit(q: str, sym: str, name: str, ivs: list[str]) -> bool:
+    return q in sym.lower() or q in (name or "").lower() or any(q in v for v in ivs)
+
+
+def search_symbols(q: str, limit: int = 20) -> list[dict]:
+    """按 代码/名称/拼音首字母 搜（全部标的）"""
+    q = (q or "").strip().lower()
+    hits = [(s, nm, n) for s, nm, n, ivs in symbol_index() if not q or _hit(q, s, nm, ivs)]
+    hits.sort(key=lambda r: -r[2])
+    return [{"symbol": s, "name": nm, "bars": n} for s, nm, n in hits[:limit]]
+
+
+def trade_symbols(q: str, trades: dict) -> list[dict]:
+    """有交易记录的标的（统计页标的筛选用），同样支持拼音首字母"""
+    q = (q or "").strip().lower()
+    idx = {s: (nm, ivs) for s, nm, _n, ivs in symbol_index()}
+    out = []
+    for sym, recs in trades.items():
+        if not recs:
+            continue
+        nm, ivs = idx.get(sym, ("", []))
+        if q and not _hit(q, sym, nm, ivs):
+            continue
+        out.append({"symbol": sym, "name": nm, "n": len(recs)})
+    out.sort(key=lambda r: -r["n"])
+    return out
 
 
 def symbol_names(syms: list[str]) -> dict:
     if not syms:
         return {}
-    con = duckdb.connect(str(WAREHOUSE), read_only=True)
-    ph = ",".join("?" * len(syms))
-    rows = con.execute(
-        f"SELECT instrument, any_value(name) FROM stock_bar1d WHERE instrument IN ({ph}) "
-        "GROUP BY instrument", syms).fetchall()
-    con.close()
-    return {r[0]: r[1] for r in rows}
+    want = set(syms)
+    return {s: nm for s, nm, _n, _ivs in symbol_index() if s in want}
 
 
 # ── 出场判定（只认用户提交的止损/止盈价）──
@@ -286,6 +369,9 @@ class H(BaseHTTPRequestHandler):
                                         q.get("end", "2099-01-01")))
         elif u.path == "/api/lines":
             self._send(200, _load(LINES_F).get(q.get("symbol", ""), []))
+        elif u.path == "/api/trade_symbols":
+            # 统计页标的筛选：只列**有交易记录**的标的（带条数），支持拼音首字母
+            self._send(200, trade_symbols(q.get("q", ""), _load(TRADES_F)))
         elif u.path == "/api/trades":
             db = _load(TRADES_F)
             if q.get("all"):                    # 统计页：一次拿全部标的
