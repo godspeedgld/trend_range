@@ -379,6 +379,12 @@ $("#tabs").addEventListener("click", e => {
 ["#fD0","#fD1","#fRes","#fSt"].forEach(s => $(s).addEventListener("change", apply));
 $("#fAll").onclick = () => { picked = []; $("#fSymQ").value = ""; renderChips(); apply(); };
 $("#reload").onclick = reload;
+// 日期默认：开仓日 ≥ 2015-01-01（库起点）、≤ 今天。等价于「不过滤」，
+// 但输入框里有值，想收窄范围时直接改，不用先点开日历从空白开始选
+$("#fD0").value = "2015-01-01";
+const _now = new Date();
+$("#fD1").value = `${_now.getFullYear()}-${String(_now.getMonth()+1).padStart(2,"0")}-${String(_now.getDate()).padStart(2,"0")}`;
+
 const qs = new URLSearchParams(location.search);      // 支持 ?symbol=&tab=stat 深链
 reload().then(() => {
   if (qs.get("symbol")){ picked = [qs.get("symbol")]; renderChips(); apply(); }
