@@ -31,6 +31,70 @@
    "end_date": "2025-06-12",
    "end_price": 179.05335050994344,
    "adj": "hfq"
+  },
+  {
+   "id": "lnmu6etx7w",
+   "start_date": "2020-02-03",
+   "start_price": 186.94151597976682,
+   "end_date": "2020-07-02",
+   "end_price": 187.83035073857135,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmu6eu9m8",
+   "start_date": "2020-03-23",
+   "start_price": 162.38003253936768,
+   "end_date": "2020-07-01",
+   "end_price": 174.3522066116333,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmu6eungs",
+   "start_date": "2020-07-03",
+   "start_price": 188.22925611580496,
+   "end_date": "2020-07-03",
+   "end_price": 206.57890346855058,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmu6ev8hn",
+   "start_date": "2020-07-14",
+   "start_price": 204.88491505702592,
+   "end_date": "2020-11-17",
+   "end_price": 205.3029944896698,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmu6eviq4",
+   "start_date": "2020-11-16",
+   "start_price": 206.1266776401183,
+   "end_date": "2020-11-16",
+   "end_price": 228.30967973095537,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmu6ew2c8",
+   "start_date": "2021-07-23",
+   "start_price": 142.90156625655456,
+   "end_date": "2022-02-22",
+   "end_price": 135.90621504306793,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmu6ewvlo",
+   "start_date": "2022-03-04",
+   "start_price": 127.81731159605933,
+   "end_date": "2022-11-29",
+   "end_price": 118.5416687242935,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmu6fg9zw",
+   "start_date": "2022-03-11",
+   "start_price": 109.96518644401785,
+   "end_date": "2022-11-15",
+   "end_price": 109.76868437212923,
+   "adj": "hfq"
   }
  ],
  "688981.SH": []
