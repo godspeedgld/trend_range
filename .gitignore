@@ -17,7 +17,16 @@ venv/
 env/
 
 # ===== 数据缓存与产物（ssquant 运行时生成，勿提交）=====
-data_cache/
+#
+# 例外：data_cache 下的**脚本**入库 —— 异地（换电脑/重建仓库）要能直接跑。
+# 这些脚本不含任何凭证：PandaData 读 ~/.pandadata/pandadata.env、
+# BigQuant 读 ~/.bigquant，都在仓库外；路径也全部改成相对脚本位置了。
+# 数据本体（parquet/duckdb 视图）、_meta.json、_progress.json 仍不入库：
+#   前者太大且可由脚本重建，后两者是运行时状态（提交了会让新机器误以为分区已落盘）。
+data_cache/**
+!data_cache/**/
+!data_cache/**/*.py
+!data_cache/_hs300_members.json
 live_data/
 sample_data/
 data_export/
