@@ -19,8 +19,29 @@
   .grp { display: flex; gap: 6px; align-items: center; padding: 2px 10px 2px 0; }
   .grp b { color: #9aa3b2; font-weight: 600; }
   #chart { width: 100%; height: calc(100vh - 96px); position: relative; }
-  .drawer { position: absolute; right: 12px; z-index: 50; width: 250px; display: none;
+  .drawer { position: absolute; right: 84px; z-index: 50; width: 250px; display: none;
       background: rgba(35,38,46,.96); border: 1px solid #3a3f4b; border-radius: 6px; padding: 10px; }
+  /* ★ right 从 12px 挪到 84px：原来的位置会压住右侧价格标尺，输入止损/止盈时看不见价格。
+     现在默认让开标尺，而且所有浮窗都能拖（拖标题栏） */
+  .drawer h4, #macroWin .mhead { cursor: move; }
+  #macroWin { position: absolute; left: 40px; top: 88px; z-index: 55; width: 580px; display: none;
+      background: rgba(28,31,38,.97); border: 1px solid #3a3f4b; border-radius: 6px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+  #macroWin .mhead { display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+      border-bottom: 1px solid #2a2e38; }
+  #macroWin .mhead b { font-size: 13px; color: #9aa3b2; }
+  #macroWin .mhead .x { margin-left: auto; cursor: pointer; color: #7a8494; }
+  #mIdx { width: 190px; background: #23262e; color: #d8dce3; border: 1px solid #3a3f4b;
+      border-radius: 4px; padding: 3px 8px; font-size: 13px; }
+  #mIdxPop { position: absolute; z-index: 70; display: none; left: 0; top: 100%; min-width: 190px;
+      max-height: 200px; overflow-y: auto; background: #23262e; border: 1px solid #3a3f4b;
+      border-radius: 4px; }
+  #mIdxPop div { padding: 5px 10px; cursor: pointer; font-size: 12px; white-space: nowrap; }
+  #mIdxPop div:hover { background: #2e323c; }
+  #macroChart { height: 300px; }
+  #mHint { padding: 6px 10px 9px; font-size: 11px; color: #9aa3b2; line-height: 1.6; }
+  #mHint b { color: #d8dce3; }
+  #mHint .bull { color: #ef232a; } #mHint .bear { color: #14b143; }
   #panel { top: 52px; }
   #setPanel { top: 52px; }
   #notePanel { top: 52px; }
@@ -77,10 +98,25 @@
   <button id="openTrade">📥 提交交易</button>
   <button id="openNote">📝 交易心得</button>
   <button id="openStats">📊 交易统计</button>
+  <button id="openMacro">📈 宏观行情</button>
   <button id="openSet">⚙ 设置</button>
   <span id="status" style="color:#7a8494"></span>
 </div>
 <div id="chart"></div>
+
+<!-- 宏观行情：指数 close 曲线 + MA200，判牛熊 -->
+<div id="macroWin">
+  <div class="mhead" id="macroHead">
+    <b>宏观行情</b>
+    <div style="position:relative">
+      <input id="mIdx" autocomplete="off" placeholder="选指数">
+      <div id="mIdxPop"></div>
+    </div>
+    <span class="x" id="mClose">✕</span>
+  </div>
+  <div id="macroChart"></div>
+  <div id="mHint">—</div>
+</div>
 
 <!-- 提交交易面板：按钮开合；保存成功后按钮变「修改」 -->
 <div id="panel" class="drawer">
@@ -489,6 +525,106 @@ $("#openSet").onclick = () => { const on = toggle("#setPanel");
   if (on){ toggle("#panel", false); toggle("#notePanel", false);
     $("#sSymName").textContent = `${symbol} ${symName}`; } };
 $("#sClose").onclick = () => toggle("#setPanel", false);
+
+// ── 浮窗拖动（标题栏按下拖动）──
+function makeDraggable(el, handleSel = "h4, .mhead"){
+  const h = el.querySelector(handleSel);
+  if (!h) return;
+  h.addEventListener("mousedown", e => {
+    // 别抢输入框/下拉/关闭按钮的交互
+    if (e.target.closest("input") || e.target.closest("[id$=Pop]") || (e.target.id || "").endsWith("Close")) return;
+    const r = el.getBoundingClientRect();
+    const dx = e.clientX - r.left, dy = e.clientY - r.top;
+    const move = ev => {
+      el.style.left = Math.max(0, Math.min(innerWidth - 60, ev.clientX - dx)) + "px";
+      el.style.top  = Math.max(0, Math.min(innerHeight - 40, ev.clientY - dy)) + "px";
+      el.style.right = "auto";                       // 一旦拖过就交给 left 定位
+    };
+    const up = () => { document.removeEventListener("mousemove", move);
+                       document.removeEventListener("mouseup", up); };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+    e.preventDefault();
+  });
+}
+["#panel", "#setPanel", "#notePanel", "#macroWin"].forEach(s => makeDraggable($(s)));
+
+// ── 宏观行情：指数 close 曲线 + MA200（判牛熊）──
+let macroChart = null, macroBars = [], macroSym = "000300.SH", macroList = [];
+async function ensureMacro(){
+  if (macroChart) return;
+  // ★ 必须在窗口可见后再 init —— 容器 display:none 时 klinecharts 量到 0×0
+  macroChart = klinecharts.init("macroChart", { styles: {
+    candle: {
+      type: "area",                                  // 只要 close 曲线，不画 K 线
+      area: { lineSize: 2, lineColor: "#4a90d9", smooth: true,
+              backgroundColor: [{ offset: 0, color: "rgba(74,144,217,.02)" },
+                                { offset: 1, color: "rgba(74,144,217,.20)" }] },
+      priceMark: { high: { show: false }, low: { show: false },
+                   last: { show: true, upColor: "#ef232a", downColor: "#14b143", noChangeColor: "#7a8494" } },
+      tooltip: { legend: { template: [
+        { title: "日期", value: "{time}" }, { title: "收盘", value: "{close}" }] } }
+    },
+    grid: { horizontal: { show: true, color: "#26292f", style: "dashed", dashedValue: [2, 3] },
+            vertical:   { show: true, color: "#26292f", style: "dashed", dashedValue: [2, 3] } },
+    indicator: { lines: [{ color: "#e8c35a", size: 1.5 }] },   // MA200 的颜色
+    crosshair: { horizontal: { text: { backgroundColor: "#3a3f4b" } },
+                 vertical:   { text: { backgroundColor: "#3a3f4b" } } }
+  }});
+  macroChart.setSymbol({ ticker: macroSym, pricePrecision: 2 });
+  macroChart.setPeriod({ span: 1, type: "day" });
+  macroChart.setDataLoader({ getBars: ({ callback }) => callback(macroBars) });
+  // 只要 200 日线：内置 MA 的 regenerateFigures 会按 calcParams 重生成标题 → 显示 "MA200: "
+  // ★ 必须显式给 paneId:"candle_pane"（主图），否则 createIndicator 会**另开一个附图**
+  //   （paneId 不传就生成新 id）→ MA200 会画在下面单独一块，看不到它跟 close 的关系。
+  //   第二个参数 isStack=true 是防止 addIndicator 顺手清掉该 pane 已有的指标。
+  macroChart.createIndicator({ name: "MA", calcParams: [200], paneId: "candle_pane" }, true);
+}
+async function loadMacro(sym){
+  if (sym) macroSym = sym;
+  if (!macroList.length) macroList = await api("/api/indices");    // 直接点按钮进来时清单还没拉过
+  macroBars = await api(`/api/index_klines?symbol=${macroSym}&start=2015-01-01`);
+  await ensureMacro();
+  macroChart.setDataLoader({ getBars: ({ callback }) => callback(macroBars) });   // 换引用触发重载
+  macroChart.setOffsetRightDistance(24);
+  const nm = (macroList.find(x => x.symbol === macroSym) || {}).name || macroSym;
+  $("#mIdx").value = `${macroSym} ${nm}`;
+  // 提示行：收盘 vs MA200 —— 这就是判牛熊的那个数
+  const cs = macroBars.map(b => b.close), n = cs.length;
+  if (n < 200){ $("#mHint").textContent = "历史不足 200 根，算不出 MA200"; return; }
+  const ma = cs.slice(-200).reduce((a, b) => a + b, 0) / 200;
+  const last = macroBars[n - 1], dev = (last.close / ma - 1) * 100;
+  const bear = last.close < ma;
+  $("#mHint").innerHTML = `最新 <b>${last.date}</b> 收 <b>${fmt(last.close)}</b> · `
+    + `MA200 <b>${fmt(ma)}</b> · 偏离 <b class="${bear ? "bear" : "bull"}">`
+    + `${dev > 0 ? "+" : ""}${dev.toFixed(2)}%</b>　→　`
+    + (bear ? `<b class="bear">在 MA200 下方（熊市区）</b>` : `<b class="bull">在 MA200 上方（多头区）</b>`)
+    + `<br>共 ${n} 根日线（起点 ${macroBars[0].date}）`;
+}
+$("#mIdx").onfocus = async () => {
+  if (!macroList.length) macroList = await api("/api/indices");
+  mIdxFilter("");
+};
+$("#mIdx").oninput = () => mIdxFilter($("#mIdx").value.trim().toLowerCase());
+function mIdxFilter(q){
+  const box = $("#mIdxPop");
+  const hit = macroList.filter(x => !q || x.symbol.toLowerCase().includes(q)
+                                 || x.name.toLowerCase().includes(q));
+  box.innerHTML = hit.map(x => `<div data-s="${x.symbol}">${x.symbol} ${x.name}</div>`).join("");
+  box.style.display = hit.length ? "block" : "none";
+  box.querySelectorAll("div").forEach(d => d.onclick = () => {
+    box.style.display = "none";
+    loadMacro(d.dataset.s).catch(e => toast("指数加载失败：" + e.message, false));
+  });
+}
+$("#mClose").onclick = () => $("#macroWin").style.display = "none";
+$("#openMacro").onclick = async () => {
+  const w = $("#macroWin");
+  const show = w.style.display !== "block";
+  w.style.display = show ? "block" : "none";
+  if (show){ toggle("#panel", false); toggle("#setPanel", false); toggle("#notePanel", false);
+    try { await loadMacro(); } catch(e){ toast("宏观行情加载失败：" + e.message, false); } }
+};
 
 // ── 交易心得面板（必填：佐证标的 + 开仓日期 + 内容）──
 let noteId = null, noteSym = symbol, nSymTimer;

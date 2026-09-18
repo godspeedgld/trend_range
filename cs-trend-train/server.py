@@ -187,6 +187,28 @@ def _hit(q: str, sym: str, name: str, ivs: list[str]) -> bool:
     return q in sym.lower() or q in (name or "").lower() or any(q in v for v in ivs)
 
 
+# ── 宏观行情：指数日线（读同一个大仓库的 index_bar1d）──
+# 仓库里只有这 4 个用户要的指数（另有 中证500/1000/2000，需要时往这里加一行即可）；
+# **上证指数（000001.SH）仓库里没有**，用户拍板不要了
+INDICES = [("000300.SH", "沪深300"), ("399001.SZ", "深证成指"),
+           ("399006.SZ", "创业板指"), ("000688.SH", "科创50")]
+
+
+def load_index_klines(symbol: str, start: str = "2015-01-01", end: str = "2099-01-01") -> list[dict]:
+    con = duckdb.connect(str(WAREHOUSE), read_only=True)
+    df = con.execute(
+        "SELECT date, open, high, low, close, volume FROM index_bar1d "
+        "WHERE instrument=? AND date>=? AND date<=? ORDER BY date", [symbol, start, end]).df()
+    con.close()
+    if df.empty:
+        return []
+    df["date"] = pd.to_datetime(df["date"])          # 这里 date 是 TIMESTAMP（不是股票的 YYYYMMDD 串）
+    return [{"timestamp": int(t.value // 10**6), "open": r.open, "high": r.high,
+             "low": r.low, "close": r.close, "volume": float(r.volume or 0),
+             "date": r.date.strftime("%Y-%m-%d")}
+            for r, t in zip(df.itertuples(), df["date"])]
+
+
 def search_symbols(q: str, limit: int = 20) -> list[dict]:
     """按 代码/名称/拼音首字母 搜（全部标的）"""
     q = (q or "").strip().lower()
@@ -398,6 +420,11 @@ class H(BaseHTTPRequestHandler):
                                         q.get("end", "2099-01-01")))
         elif u.path == "/api/lines":
             self._send(200, _load(LINES_F).get(q.get("symbol", ""), []))
+        elif u.path == "/api/indices":
+            self._send(200, [{"symbol": s, "name": n} for s, n in INDICES])
+        elif u.path == "/api/index_klines":
+            self._send(200, load_index_klines(q.get("symbol", ""),
+                                              q.get("start", "2015-01-01")))
         elif u.path == "/api/notes":
             lst = load_notes()
             names = symbol_names(sorted({n.get("symbol", "") for n in lst}))
