@@ -30,7 +30,7 @@ import pandas as pd
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[3]                      # trend_range
-PROJ = HERE.parents[1]                      # Industry _regime_stock_timing
+PROJ = HERE.parents[1]                      # industry _regime_stock_picking
 SHARED_HS = ROOT / "research-projects/hs300-enh-2017-2021/shared"
 sys.path.insert(0, str(SHARED_HS))
 from plateau_algo_v4 import run_band_breakout_v4        # noqa: E402

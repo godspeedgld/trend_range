@@ -1,7 +1,7 @@
 # 分析记录 — analysis_001
 
 > **W2 规则 + 银河证券「变盘指数」研报的第一次结合尝试。**
-> 工程：`Industry _regime_stock_timing`（行业 regime 选股择时）
+> 工程：`industry _regime_stock_picking`（行业 regime 选股择时）
 > 研报来源：`research_report/rotation_regime_index_yinhe_20260701_main.md`
 > 日期：2026-09-16
 
