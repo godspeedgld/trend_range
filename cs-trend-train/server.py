@@ -423,8 +423,10 @@ class H(BaseHTTPRequestHandler):
         elif u.path == "/api/indices":
             self._send(200, [{"symbol": s, "name": n} for s, n in INDICES])
         elif u.path == "/api/index_klines":
+            # start/end 由前端按**主图当前区间**传（含揭示进度）—— 宏观窗口不能看到主图还没揭示的日子
             self._send(200, load_index_klines(q.get("symbol", ""),
-                                              q.get("start", "2015-01-01")))
+                                              q.get("start", "2015-01-01"),
+                                              q.get("end", "2099-01-01")))
         elif u.path == "/api/notes":
             lst = load_notes()
             names = symbol_names(sorted({n.get("symbol", "") for n in lst}))

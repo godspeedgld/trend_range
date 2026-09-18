@@ -300,6 +300,7 @@ async function loadAll(){
   newTrade();                              // 切标的 → 面板回到「新建」并刷新默认开仓日
   refresh(); renderOverlays();
   status(`${symName} · 视图截至 ${allBars[endIdx-1].date}（库内共 ${allBars.length} 根，至 ${allBars[allBars.length-1].date}）`);
+  refreshMacroIfOpen();
 }
 // ── 视图右边缘：40px 是「贴边」基准，也是旧行为里新 bar 停的位置 ──
 const PIN_RIGHT = 40;
@@ -331,6 +332,7 @@ document.querySelectorAll(".pb").forEach(b => b.onclick = () => {
     if (editingId === null) defaultEntryDate();     // 视图一动，「默认开仓日」跟着挪
   }
   status(`${symName} · 当前最后 bar：${allBars[endIdx-1].date}（第 ${endIdx}/${allBars.length} 根）`);
+  refreshMacroIfOpen();
 });
 
 // ── 4.2 画线：绘制 / 拖动 / 右键删除 全用 overlay 内置交互 ──
@@ -580,18 +582,35 @@ async function ensureMacro(){
   //   第二个参数 isStack=true 是防止 addIndicator 顺手清掉该 pane 已有的指标。
   macroChart.createIndicator({ name: "MA", calcParams: [200], paneId: "candle_pane" }, true);
 }
+// 宏观窗口的区间 = **主图当前区间**：起点取「起」日期，终点取**当前已揭示的最后一根**
+// （跟着 ▶/◀ 走）—— 否则宏观窗口会显示主图还没揭示的日子，等于偷看未来
+const macroRange = () => ({
+  start: $("#d0").value || "2015-01-01",
+  end: allBars.length ? allBars[endIdx - 1].date : ($("#d1").value || "2099-01-01"),
+});
 async function loadMacro(sym){
   if (sym) macroSym = sym;
   if (!macroList.length) macroList = await api("/api/indices");    // 直接点按钮进来时清单还没拉过
-  macroBars = await api(`/api/index_klines?symbol=${macroSym}&start=2015-01-01`);
+  const { start, end } = macroRange();
+  macroBars = await api(`/api/index_klines?symbol=${macroSym}&start=${start}&end=${end}`);
   await ensureMacro();
   macroChart.setDataLoader({ getBars: ({ callback }) => callback(macroBars) });   // 换引用触发重载
   macroChart.setOffsetRightDistance(24);
   const nm = (macroList.find(x => x.symbol === macroSym) || {}).name || macroSym;
   $("#mIdx").value = `${macroSym} ${nm}`;
   // 提示行：收盘 vs MA200 —— 这就是判牛熊的那个数
-  const cs = macroBars.map(b => b.close), n = cs.length;
-  if (n < 200){ $("#mHint").textContent = "历史不足 200 根，算不出 MA200"; return; }
+  const n = macroBars.length;
+  if (!n){
+    $("#mHint").innerHTML = `该区间无数据（${start} ~ ${end}）—— 指数与主图同区间，`
+      + `把「起」日期往前调，或按 ◀ 回到更早的日期`;
+    return;
+  }
+  const range = `区间 <b>${macroBars[0].date} ~ ${macroBars[n-1].date}</b>（${n} 根，与主图一致）`;
+  const cs = macroBars.map(b => b.close);
+  if (n < 200){
+    $("#mHint").innerHTML = `${range}<br>不足 200 根，算不出 MA200`;
+    return;
+  }
   const ma = cs.slice(-200).reduce((a, b) => a + b, 0) / 200;
   const last = macroBars[n - 1], dev = (last.close / ma - 1) * 100;
   const bear = last.close < ma;
@@ -599,7 +618,7 @@ async function loadMacro(sym){
     + `MA200 <b>${fmt(ma)}</b> · 偏离 <b class="${bear ? "bear" : "bull"}">`
     + `${dev > 0 ? "+" : ""}${dev.toFixed(2)}%</b>　→　`
     + (bear ? `<b class="bear">在 MA200 下方（熊市区）</b>` : `<b class="bull">在 MA200 上方（多头区）</b>`)
-    + `<br>共 ${n} 根日线（起点 ${macroBars[0].date}）`;
+    + `<br>${range}` + (n < 400 ? `　·　MA200 前 199 根是空的（预热不足）` : "");
 }
 $("#mIdx").onfocus = async () => {
   if (!macroList.length) macroList = await api("/api/indices");
@@ -618,6 +637,9 @@ function mIdxFilter(q){
   });
 }
 $("#mClose").onclick = () => $("#macroWin").style.display = "none";
+// 主图区间一变（▶/◀ 揭示、换标的）就让宏观窗口跟上，否则两者区间会不一致
+const macroOpen = () => $("#macroWin").style.display === "block";
+const refreshMacroIfOpen = () => { if (macroOpen()) loadMacro().catch(() => {}); };
 $("#openMacro").onclick = async () => {
   const w = $("#macroWin");
   const show = w.style.display !== "block";
