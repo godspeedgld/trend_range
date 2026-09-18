@@ -34,7 +34,10 @@ python cs-trend-train/server.py
 | 播放 | `◀10 ◀1 ▶1 ▶10`；**▶ 智能贴边**：视图右侧尚有空档时新 bar 落进空档、已有 K 线不动，已贴右边缘才整幅滚到右边缘 |
 | 未来遮蔽 | 开仓日/平仓日晚于当前最后 bar 的元素不画；**开仓日未揭示时面板也不显示该日开盘价与股数**（不提前偷看次日） |
 | 设置 | `⚙ 设置`：趋势线/交易标注可见性（**默认 线开、交易关**）、全局止损额度、清除当前标的交易 |
-| 交易统计 | `📊 交易统计` 新开 `trades.html`：交易清单（标的/时间/成功/失败/肥尾 过滤 + 表头排序 + 单条删除）与统计指标两个页签 |
+| 交易统计 | `📊 交易统计` 新开 `trades.html`：**三个页签** —— 交易清单（标的/时间/成功/失败/肥尾 过滤 + 表头排序 + 单条删除）/ 统计指标 / 交易心得 |
+| 交易心得 | `📝 交易心得` 面板：**必填 佐证标的 + 开仓日期 + 内容**（标题可留空）。佐证标的可搜（拼音），开仓日期旁列出该标的**已有交易的开仓日**可点选，默认取最近一笔 |
+| 心得管理 | `trades.html → 交易心得` 页签：列表显示 标题 / 佐证标的 / 开仓日，点开看内容，可就地**修改 / 删除** |
+| 交易备注 | 交易清单每行 `📝`（有备注时变黄）→ 弹窗添加 / 修改 / 删除备注；留空保存 = 删除。默认无备注 |
 | 标的筛选（统计页） | 输入式多选：输入**代码 / 名称 / 拼音首字母**搜索 → 选中进 chip，`✕` 或退格移除，`全部` 一键清空（留空 = 全部） |
 
 ## 统计口径
@@ -76,12 +79,20 @@ GB2312 的一级汉字是按拼音排序的，所以把汉字编码成 GBK、看
 | `DELETE /api/trades?symbol=&id=` | 删单条 |
 | `DELETE /api/trades?symbol=&all=1` | 清空该标的（设置页用，独立分支，不复用上面的 id 逻辑） |
 | `GET/POST /api/settings` | 全局设置 `{risk_amount, show_lines, show_trades}` |
+| `GET /api/notes` | 全部交易心得（扁平列表，带 symbol→名称） |
+| `POST /api/notes` | 新建/修改心得（带 id = 修改）；必填 标的 / 开仓日期 / 内容 |
+| `DELETE /api/notes?id=` | 删一条心得 |
+| `POST /api/trade_note` | 只改某笔交易的备注 `{symbol, id, note}`（空串 = 删除备注），不动其它字段 |
 
 ## 数据
 
 - 行情：warehouse `stock_bar1d`（后复权；`raw` 字段 = 后复权 ÷ adjust_factor）
 - ATR14：Wilder ewm(α=1/14)（与 hs300 工程 `shared/atr14_precompute.py` 同式）——当前**出场判定不用它**，仅随 K 线下发备用
 - 记录：`data/lines.json` / `data/trades.json` / `data/settings.json`（按标的分组，肉眼可查可手改）
+  + `data/notes.json`（交易心得，**扁平列表**不按标的分组 —— 统计页要跨标的看）
+- 交易备注：存在交易记录自己的 `note` 字段里。⚠ **改交易记录时必须把 note 带过去**：
+  `build_trade()` 只产出事实字段、不产出 note，upsert 时若不从旧记录搬一次，
+  用户写的备注会被「修改交易」静默清掉（后端已处理）
 - 交易字段：`entry_date / entry_source / buy_price / stop_price / tp_price / risk_amount / shares`
   （**写时的事实**）+ `exit_date / exit_price / exit_reason / holding_days`（判定结果），
   其余（R / 收益率 / 盈亏 / 状态）都是**读时算**的，改口径不必迁移历史

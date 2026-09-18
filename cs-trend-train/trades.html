@@ -73,6 +73,38 @@
   .wrapsym { position: relative; display: flex; flex-direction: column; }
   #msg { position: fixed; left: 50%; transform: translateX(-50%); top: 12px; z-index: 99;
       background: #2e5c2e; padding: 6px 16px; border-radius: 4px; display: none; }
+  /* 交易心得列表 */
+  .notehint { color: #7a8494; font-size: 12px; margin-bottom: 10px; }
+  .jnote { background: #1b1e24; border: 1px solid #2a2e38; border-radius: 6px; margin-bottom: 8px; }
+  .nhead { display: flex; gap: 10px; align-items: center; padding: 9px 12px; cursor: pointer; }
+  .nhead:hover { background: #1e222a; }
+  .nhead b { font-size: 13px; }
+  .nhead .nmeta { color: #7a8494; font-size: 11px; margin-left: auto; }
+  .nbody { display: none; padding: 10px 12px 12px; border-top: 1px solid #23262e;
+      color: #b8c0cc; white-space: pre-wrap; line-height: 1.65; font-size: 12px; }
+  .jnote.open .nbody { display: block; }
+  .nact { margin-top: 10px; display: flex; gap: 8px; }
+  .nbody textarea, .mbox textarea { width: 100%; background: #16181d; color: #d8dce3;
+      border: 1px solid #3a3f4b; border-radius: 4px; padding: 6px 8px; font: inherit;
+      resize: vertical; margin-bottom: 6px; }
+  .nbody input { width: 100%; background: #16181d; color: #d8dce3; border: 1px solid #3a3f4b;
+      border-radius: 4px; padding: 5px 8px; font: inherit; margin-bottom: 6px; }
+  .jnote .nt { color: #6b7280; }
+  /* 备注弹窗 */
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; z-index: 100; }
+  .modal.on { display: flex; align-items: center; justify-content: center; }
+  .mbox { background: #1b1e24; border: 1px solid #3a3f4b; border-radius: 8px; padding: 14px;
+      width: 480px; box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+  .mbox h4 { font-size: 13px; color: #9aa3b2; display: flex; justify-content: space-between;
+      margin-bottom: 8px; }
+  .mbox h4 span { cursor: pointer; }
+  .mbox .dim { font-size: 12px; margin-bottom: 8px; }
+  .mbtns { display: flex; gap: 8px; }
+  .mbtns button { flex: 1; }
+  button.danger { background: #8c3a3a; border-color: #8c3a3a; color: #fff; }
+  button.danger:hover { background: #a54444; }
+  .noteicon { cursor: pointer; }
+  .noteicon.has { color: #e8c35a; }
 </style>
 </head>
 <body>
@@ -102,6 +134,7 @@
 <div id="tabs">
   <button data-p="list" class="on">交易清单</button>
   <button data-p="stat">统计指标</button>
+  <button data-p="note">交易心得</button>
 </div>
 
 <div id="pane-list" class="pane on">
@@ -126,18 +159,41 @@
     · <b>不计交易成本</b>；跳空越过止损/止盈时按当日开盘价成交（已在后端处理）
   </div>
 </div>
+<div id="pane-note" class="pane">
+  <div class="notehint">心得在主图页写（📝 交易心得）。这里可以查看 / 修改 / 删除。</div>
+  <div id="noteList"></div>
+</div>
+
+<!-- 交易备注弹窗 -->
+<div id="noteModal" class="modal">
+  <div class="mbox">
+    <h4>交易备注<span id="nmClose">✕</span></h4>
+    <div id="nmInfo" class="dim"></div>
+    <textarea id="nmText" rows="5" placeholder="这笔为什么进、为什么出、哪里做错了…（留空保存 = 删除备注）"></textarea>
+    <div class="mbtns">
+      <button id="nmSave" class="pri">保存</button>
+      <button id="nmDel">删除备注</button>
+    </div>
+  </div>
+</div>
 <div id="msg"></div>
 
 <script>
 const $ = s => document.querySelector(s);
 const fmt = (n,d=2) => (n==null||isNaN(n)) ? "—" : Number(n).toFixed(d);
 const wan = n => (n==null||isNaN(n)) ? "—" : (n/10000).toFixed(1)+"万";
+// 心得/备注是自由文本，插进 innerHTML 前必须转义
+const esc = s => String(s==null?"":s).replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const POS = "#ef232a", NEG = "#14b143";        // A 股口径：红涨绿跌
 let RAW = {}, NAMES = {}, rows0 = [], sortKey = "entry_date", sortDir = -1;
 
 async function api(p, o){ const r = await fetch(p,o), t = await r.text();
   let j = null; try { j = JSON.parse(t); } catch(_) {}
-  if (!r.ok) throw new Error((j&&j.err)||t); return j!==null?j:t; }
+  if (!r.ok) throw Object.assign(new Error((j&&j.err)||t), { status:r.status, body:j });
+  return j!==null?j:t; }
+const post = (p, body) => api(p, { method:"POST", headers:{"Content-Type":"application/json"},
+                                   body: JSON.stringify(body) });
 function toast(t, ok=true){ const m=$("#msg"); m.textContent=t;
   m.style.background = ok?"#2e5c2e":"#8c3a3a"; m.style.display="block";
   setTimeout(()=>m.style.display="none", 2600); }
@@ -151,6 +207,7 @@ async function reload(){
     recs.forEach(r => rows0.push({ ...r, symbol: sym, name: NAMES[sym] || "" }));
   renderChips();
   apply();
+  loadNotes();
 }
 // ── 标的筛选：输入式（代码 / 名称 / 拼音首字母），已选显示成 chip，留空 = 全部 ──
 let picked = [];
@@ -220,7 +277,7 @@ const COLS = [
   ["buy_price","开仓价"], ["stop_price","止损"], ["tp_price","止盈"], ["shares","股数"],
   ["notional","开仓金额"], ["exit_date","平仓日","l"], ["exit_price","平仓价"], ["exit_reason","平仓原因","l"],
   ["holding_days","持仓天数"], ["pnl","盈亏(元)"], ["ret_pct","收益率%"], ["R","R"],
-  ["_tag","结果","l"], ["_del","","l"]
+  ["_tag","结果","l"], ["_note","备注","l"], ["_del","","l"]
 ];
 function cell(r, k){
   const num = v => v==null ? '<span class="dim">—</span>' : fmt(v);
@@ -240,6 +297,8 @@ function cell(r, k){
       if (r.status === "pending") return '<span class="tag pend">持仓中</span>';
       return `<span class="tag ${r.status}">${r.status==="win"?"成功":(r.status==="loss"?"失败":"平")}</span>`
         + (r.is_fat_tail ? '<span class="tag tail">肥尾</span>' : "");
+    case "_note": return `<span class="noteicon${r.note ? " has" : ""}" data-note
+      title="${r.note ? esc(r.note).slice(0, 120) : "添加备注"}">📝${r.note ? "" : ""}</span>`;
     case "_del": return `<span class="del" data-del="${r.id}" data-sym="${r.symbol}" title="删除这条">✕</span>`;
     default: return r[k] ?? "";
   }
@@ -255,14 +314,22 @@ function renderTable(rows){
     const x = sortVal(a,sortKey), y = sortVal(b,sortKey);
     return (x>y?1:x<y?-1:0) * sortDir;
   });
-  $("#tbl tbody").innerHTML = sorted.map(r =>
+  const tbody = $("#tbl tbody");
+  tbody.innerHTML = sorted.map(r =>
     "<tr>" + COLS.map(c => `<td class="${c[2]||""}">${cell(r, c[0])}</td>`).join("") + "</tr>").join("");
   $("#empty").style.display = rows.length ? "none" : "block";
   $("#tbl").style.display = rows.length ? "" : "none";
-  $("#tbl tbody").querySelectorAll("[data-del]").forEach(el => el.onclick = async () => {
-    if (!window.confirm(`删除 ${el.dataset.sym} 的这条交易记录？`)) return;
-    await fetch(`/api/trades?symbol=${el.dataset.sym}&id=${el.dataset.del}`, {method:"DELETE"});
-    toast("已删除"); reload();
+  // 行内交互按**行号**回绑：innerHTML 重建后元素全换了一遍，下标比 data-* 更不容易错位
+  tbody.querySelectorAll("tr").forEach((tr, i) => {
+    const r = sorted[i];
+    const nt = tr.querySelector("[data-note]");
+    if (nt) nt.onclick = () => openNoteModal(r);
+    const dl = tr.querySelector("[data-del]");
+    if (dl) dl.onclick = async () => {
+      if (!window.confirm(`删除 ${r.symbol} 的这条交易记录？`)) return;
+      await fetch(`/api/trades?symbol=${r.symbol}&id=${r.id}`, {method:"DELETE"});
+      toast("已删除"); reload();
+    };
   });
 }
 $("#tbl").addEventListener("click", e => {
@@ -358,6 +425,83 @@ function renderStats(rows){
        showlegend:false, yaxis:{...L.yaxis, title:{text:"单笔 R"}} }, cfg);
 }
 
+// ── 交易心得（页签三）──
+let NOTES = [];
+async function loadNotes(){
+  try { NOTES = await api("/api/notes"); } catch(e){ NOTES = []; }
+  renderNotes();
+}
+function renderNotes(){
+  const box = $("#noteList");
+  if (!NOTES.length){
+    box.innerHTML = `<div id="empty">还没有心得 —— 在主图页点「📝 交易心得」写第一条</div>`;
+    return;
+  }
+  const rows = NOTES.slice().sort((a, b) => (a.entry_date < b.entry_date ? 1 : -1));
+  box.innerHTML = rows.map(n => `
+    <div class="jnote" data-id="${n.id}">
+      <div class="nhead">
+        <b>${n.title ? esc(n.title) : '<span class="nt">（无标题）</span>'}</b>
+        <span class="nmeta">${esc(n.symbol)} ${esc(n.name || "")} · 开仓 ${n.entry_date}
+          · 改于 ${esc((n.updated_at || "").slice(0, 16))}</span>
+      </div>
+      <div class="nbody"></div>
+    </div>`).join("");
+  box.querySelectorAll(".jnote").forEach((el, i) => {
+    const n = rows[i];
+    el.querySelector(".nhead").onclick = () => el.classList.toggle("open");
+    paintNoteBody(el, n);
+  });
+}
+function paintNoteBody(el, n){
+  const body = el.querySelector(".nbody");
+  body.innerHTML = `<div class="ntxt">${esc(n.content)}</div>
+    <div class="nact"><button data-edit>修改</button><button data-del class="danger">删除</button></div>`;
+  body.querySelector("[data-edit]").onclick = e => {
+    e.stopPropagation(); el.classList.add("open");
+    body.innerHTML = `<input data-t placeholder="心得标题（可留空）" value="${esc(n.title || "")}">
+      <textarea data-c rows="5">${esc(n.content)}</textarea>
+      <div class="nact"><button data-save class="pri">保存</button><button data-cancel>取消</button></div>`;
+    body.querySelector("[data-save]").onclick = async () => {
+      try {
+        await post("/api/notes", { note: { id: n.id, symbol: n.symbol, entry_date: n.entry_date,
+          title: body.querySelector("[data-t]").value,
+          content: body.querySelector("[data-c]").value } });
+        toast("心得已更新"); loadNotes();
+      } catch(err){ toast((err.body && err.body.err) || err.message, false); }
+    };
+    body.querySelector("[data-cancel]").onclick = () => paintNoteBody(el, n);
+  };
+  body.querySelector("[data-del]").onclick = async e => {
+    e.stopPropagation();
+    if (!window.confirm(`删除这条心得？\n${n.title || n.content.slice(0, 20)}`)) return;
+    await fetch(`/api/notes?id=${n.id}`, { method: "DELETE" });
+    toast("心得已删除"); loadNotes();
+  };
+}
+
+// ── 交易备注弹窗 ──
+let nmRow = null;
+function openNoteModal(r){
+  nmRow = r;
+  $("#nmInfo").textContent = `${r.symbol} ${r.name || ""} · 开仓 ${r.entry_date} @${fmt(r.buy_price)}`
+    + ` · ${r.exit_date ? r.exit_reason + " " + r.exit_date : "持仓中"}`;
+  $("#nmText").value = r.note || "";
+  $("#noteModal").classList.add("on");
+  $("#nmText").focus();
+}
+const closeNoteModal = () => $("#noteModal").classList.remove("on");
+async function saveTradeNote(note){
+  const r = await post("/api/trade_note", { symbol: nmRow.symbol, id: nmRow.id, note });
+  nmRow.note = r.note;                      // nmRow 就是 rows0 里的那个对象，就地更新
+  closeNoteModal(); renderTable(filtered());
+  toast(r.note ? "备注已保存" : "备注已删除");
+}
+$("#nmSave").onclick = () => saveTradeNote($("#nmText").value).catch(e => toast(e.message, false));
+$("#nmDel").onclick = () => { $("#nmText").value = ""; saveTradeNote(""); };
+$("#nmClose").onclick = closeNoteModal;
+$("#noteModal").onclick = e => { if (e.target.id === "noteModal") closeNoteModal(); };
+
 // ── 调度 ──
 let statDirty = true, lastRows = [];
 const statOn = () => $("#pane-stat").classList.contains("on");
@@ -388,7 +532,8 @@ $("#fD1").value = `${_now.getFullYear()}-${String(_now.getMonth()+1).padStart(2,
 const qs = new URLSearchParams(location.search);      // 支持 ?symbol=&tab=stat 深链
 reload().then(() => {
   if (qs.get("symbol")){ picked = [qs.get("symbol")]; renderChips(); apply(); }
-  if (qs.get("tab") === "stat") document.querySelector('#tabs button[data-p="stat"]').click();
+  const tb = qs.get("tab");          // tab=list | stat | note 深链
+  if (tb) document.querySelector(`#tabs button[data-p="${tb}"]`)?.click();
 }).catch(e => toast("加载失败：" + e.message, false));
 </script>
 </body>

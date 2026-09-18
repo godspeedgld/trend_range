@@ -23,6 +23,17 @@
       background: rgba(35,38,46,.96); border: 1px solid #3a3f4b; border-radius: 6px; padding: 10px; }
   #panel { top: 52px; }
   #setPanel { top: 52px; }
+  #notePanel { top: 52px; }
+  .drawer textarea { width: 100%; background: #1b1e24; color: #d8dce3; border: 1px solid #3a3f4b;
+      border-radius: 4px; padding: 4px 6px; font: inherit; resize: vertical; }
+  #nSymPop { position: absolute; z-index: 60; display: none; left: 0; right: 0; max-height: 200px;
+      overflow-y: auto; background: #23262e; border: 1px solid #3a3f4b; border-radius: 4px; }
+  #nSymPop div { padding: 5px 10px; cursor: pointer; font-size: 12px; }
+  #nSymPop div:hover { background: #2e323c; }
+  #nDates { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  #nDates span { background: #2a2e38; border: 1px solid #3a3f4b; border-radius: 3px;
+      padding: 1px 6px; font-size: 11px; color: #9aa3b2; cursor: pointer; }
+  #nDates span:hover { color: #d8dce3; border-color: #4a5060; }
   .drawer h4 { font-size: 13px; color: #9aa3b2; margin-bottom: 8px; display: flex;
       justify-content: space-between; align-items: center; }
   .drawer h4 span { cursor: pointer; color: #7a8494; font-weight: 400; }
@@ -64,6 +75,7 @@
   </div>
   <button id="draw">✏ 画趋势线</button>
   <button id="openTrade">📥 提交交易</button>
+  <button id="openNote">📝 交易心得</button>
   <button id="openStats">📊 交易统计</button>
   <button id="openSet">⚙ 设置</button>
   <span id="status" style="color:#7a8494"></span>
@@ -86,6 +98,26 @@
   <button id="tNew" class="alt">＋ 新建一笔</button>
   <div class="hint">出场只认你提交的止损/止盈价：从开仓日当根逐日判定，同日双触按止损计，
     跳空越过触发价按当日开盘价成交。</div>
+</div>
+
+<!-- 交易心得面板：佐证标的 + 开仓日期 + 标题 + 内容 -->
+<div id="notePanel" class="drawer">
+  <h4><span id="nTitle">写交易心得</span><span id="nClose">✕</span></h4>
+  <label class="f">佐证标的 *</label>
+  <div style="position:relative">
+    <input id="nSym" placeholder="代码 / 名称 / 拼音首字母" autocomplete="off">
+    <div id="nSymPop"></div>
+  </div>
+  <label class="f">开仓日期 *</label>
+  <input id="nDate" type="date">
+  <div id="nDates"></div>
+  <label class="f">心得标题（可留空）</label>
+  <input id="nTitleIn" placeholder="一句话概括">
+  <label class="f">心得内容 *</label>
+  <textarea id="nContent" rows="6" placeholder="当时怎么想的？错在哪？下次怎么做？"></textarea>
+  <button id="nSave">保存</button>
+  <button id="nNew" class="alt">＋ 新建一条</button>
+  <div class="hint">必填：佐证标的 + 开仓日期 + 内容。已写的心得在「📊 交易统计 → 交易心得」里查看 / 修改 / 删除。</div>
 </div>
 
 <!-- 设置面板：显示开关 + 全局止损额度 + 清除当前标的记录 -->
@@ -458,11 +490,92 @@ $("#tSave").onclick = async () => {
 $("#tNew").onclick = newTrade;
 const toggle = (el, on) => { const d=$(el), v = on===undefined ? d.style.display!=="block" : on;
   d.style.display = v ? "block" : "none"; return v; };
-$("#openTrade").onclick = () => { const on = toggle("#panel"); if (on){ toggle("#setPanel", false); previewTrade(); } };
+$("#openTrade").onclick = () => { const on = toggle("#panel");
+  if (on){ toggle("#setPanel", false); toggle("#notePanel", false); previewTrade(); } };
 $("#tClose").onclick = () => toggle("#panel", false);
-$("#openSet").onclick = () => { const on = toggle("#setPanel"); if (on){ toggle("#panel", false);
-  $("#sSymName").textContent = `${symbol} ${symName}`; } };
+$("#openSet").onclick = () => { const on = toggle("#setPanel");
+  if (on){ toggle("#panel", false); toggle("#notePanel", false);
+    $("#sSymName").textContent = `${symbol} ${symName}`; } };
 $("#sClose").onclick = () => toggle("#setPanel", false);
+
+// ── 交易心得面板（必填：佐证标的 + 开仓日期 + 内容）──
+let noteId = null, noteSym = symbol, nSymTimer;
+async function refreshNoteDates(){
+  const box = $("#nDates");
+  try {
+    const ts = await api(`/api/trades?symbol=${noteSym}`);
+    if (!ts.length){
+      box.innerHTML = `<span style="cursor:default">该标的还没有交易记录 —— 日期可直接填，或先提交那笔交易</span>`;
+      return;
+    }
+    // 最近的开仓日排前面（常见用法就是"刚记完这笔，顺手写心得"）
+    ts.sort((a, b) => (a.entry_date < b.entry_date ? 1 : -1));
+    box.innerHTML = ts.map(t => `<span data-d="${t.entry_date}">${t.entry_date} @${fmt(t.buy_price)}</span>`).join("");
+    box.querySelectorAll("[data-d]").forEach(s => s.onclick = () => $("#nDate").value = s.dataset.d);
+  } catch(_) { box.innerHTML = ""; }
+}
+function newNote(){
+  noteId = null;
+  $("#nTitle").textContent = "写交易心得";
+  $("#nSave").textContent = "保存";
+  noteSym = symbol;
+  $("#nSym").value = `${symbol} ${symName}`;
+  $("#nTitleIn").value = ""; $("#nContent").value = ""; $("#nDate").value = "";
+  refreshNoteDates().then(() => {
+    if (!$("#nDate").value){
+      const f = $("#nDates").querySelector("[data-d]");
+      if (f) $("#nDate").value = f.dataset.d;      // 默认选最近一笔开仓日
+    }
+  });
+}
+function editNote(n){
+  noteId = n.id;
+  $("#nTitle").textContent = "修改心得";
+  $("#nSave").textContent = "修改";
+  noteSym = n.symbol;
+  $("#nSym").value = `${n.symbol} ${n.name || ""}`.trim();
+  $("#nDate").value = n.entry_date;
+  $("#nTitleIn").value = n.title || "";
+  $("#nContent").value = n.content || "";
+  refreshNoteDates();
+}
+$("#nSave").onclick = async () => {
+  const d = $("#nDate").value, c = $("#nContent").value.trim();
+  if (!noteSym) return toast("佐证标的必填", false);
+  if (!d) return toast("开仓日期必填", false);
+  if (!c) return toast("心得内容必填", false);
+  try {
+    const r = await post("/api/notes", { note: { id: noteId || undefined, symbol: noteSym,
+      entry_date: d, title: $("#nTitleIn").value, content: c } });
+    noteId = r.id;
+    $("#nTitle").textContent = "修改心得";
+    $("#nSave").textContent = "修改";
+    toast(`已${r._action === "update" ? "更新" : "保存"}心得：${r.title || c.slice(0, 12) + "…"}`);
+  } catch (e) { toast((e.body && e.body.err) || e.message, false); }
+};
+$("#nNew").onclick = newNote;
+$("#openNote").onclick = () => { const on = toggle("#notePanel");
+  if (on){ toggle("#panel", false); toggle("#setPanel", false); newNote(); } };
+$("#nClose").onclick = () => toggle("#notePanel", false);
+$("#nSym").oninput = () => {
+  clearTimeout(nSymTimer);
+  nSymTimer = setTimeout(async () => {
+    const q = $("#nSym").value.trim();
+    const box = $("#nSymPop");
+    if (!q) return box.style.display = "none";
+    const r = await api(`/api/symbols?q=${encodeURIComponent(q)}`);
+    box.innerHTML = r.map(x => `<div data-s="${x.symbol}" data-n="${x.name}">${x.symbol} ${x.name}</div>`).join("");
+    box.style.display = r.length ? "block" : "none";
+    box.querySelectorAll("div").forEach(el => el.onclick = () => {
+      noteSym = el.dataset.s;
+      $("#nSym").value = `${el.dataset.s} ${el.dataset.n}`;
+      box.style.display = "none";
+      $("#nDate").value = "";
+      refreshNoteDates();
+    });
+  }, 250);
+};
+$("#nSym").onblur = () => setTimeout(() => $("#nSymPop").style.display = "none", 180);
 $("#openStats").onclick = () => window.open(`trades.html?symbol=${encodeURIComponent(symbol)}`, "_blank");
 
 // ── 设置：显示开关 / 全局止损额度 / 清除当前标的 ──

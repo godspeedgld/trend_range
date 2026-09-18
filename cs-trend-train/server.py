@@ -31,6 +31,7 @@ WAREHOUSE = ROOT / "data_cache/bigquant_warehouse/bigquant_warehouse.duckdb"
 DATA = HERE / "data"
 LINES_F = DATA / "lines.json"
 TRADES_F = DATA / "trades.json"
+NOTES_F = DATA / "notes.json"          # 交易心得（扁平列表，不按标的分组：统计页要跨标的看）
 SETTINGS_F = DATA / "settings.json"
 LOT = 100                                     # A 股 1 手 = 100 股
 DEFAULT_SETTINGS = {"risk_amount": 5000, "show_lines": True, "show_trades": False}
@@ -286,6 +287,34 @@ def build_trade(symbol: str, body: dict, settings: dict):
     return auto_exit(symbol, rec), None
 
 
+# ── 交易心得（笔记）──
+def load_notes() -> list[dict]:
+    return _load(NOTES_F).get("notes", [])
+
+
+def save_notes(lst: list[dict]):
+    _save(NOTES_F, {"notes": lst})
+
+
+def build_note(body: dict):
+    """校验并构造一条心得 → (note, None) 或 (None, 错误)。必填：标的 / 开仓日期 / 内容"""
+    n = body.get("note") or {}
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    symbol = str(n.get("symbol") or "").strip()
+    entry_date = str(n.get("entry_date") or "").strip()
+    content = str(n.get("content") or "").strip()
+    if not symbol:
+        return None, {"err": "佐证标的必填"}
+    if not entry_date:
+        return None, {"err": "开仓日期必填"}
+    if not content:
+        return None, {"err": "心得内容必填"}
+    return {"id": n.get("id") or uuid.uuid4().hex[:8], "symbol": symbol,
+            "entry_date": entry_date, "title": str(n.get("title") or "").strip(),
+            "content": content,
+            "created_at": n.get("created_at") or now, "updated_at": now}, None
+
+
 def decorate(rec: dict) -> dict:
     """读时补齐派生量（**不改库**）。全部容忍 None：老记录（上一版 schema，无 entry_date /
     shares / risk_amount）也能算—— 因为 R 是价格层量，不需要股数：
@@ -369,6 +398,10 @@ class H(BaseHTTPRequestHandler):
                                         q.get("end", "2099-01-01")))
         elif u.path == "/api/lines":
             self._send(200, _load(LINES_F).get(q.get("symbol", ""), []))
+        elif u.path == "/api/notes":
+            lst = load_notes()
+            names = symbol_names(sorted({n.get("symbol", "") for n in lst}))
+            self._send(200, [{**n, "name": names.get(n.get("symbol", ""), "")} for n in lst])
         elif u.path == "/api/trade_symbols":
             # 统计页标的筛选：只列**有交易记录**的标的（带条数），支持拼音首字母
             self._send(200, trade_symbols(q.get("q", ""), _load(TRADES_F)))
@@ -402,6 +435,34 @@ class H(BaseHTTPRequestHandler):
                 s["risk_amount"] = DEFAULT_SETTINGS["risk_amount"]
             _save(SETTINGS_F, s)
             return self._send(200, s)
+        if path == "/api/notes":
+            note, err = build_note(body)
+            if err:
+                return self._send(400, err)
+            lst = load_notes()
+            hit = next((i for i, n in enumerate(lst) if n.get("id") == note["id"]), None)
+            if hit is None:
+                lst.append(note)
+                action = "create"
+            else:
+                lst[hit] = note
+                action = "update"
+            save_notes(lst)
+            names = symbol_names([note["symbol"]])
+            return self._send(200, {**note, "name": names.get(note["symbol"], ""),
+                                    "_action": action})
+        if path == "/api/trade_note":
+            # 只改备注，不动其它字段（备注是独立编辑入口，不该触发交易重校验）
+            symbol, rid = body.get("symbol", ""), body.get("id", "")
+            db = _load(TRADES_F)
+            lst = db.get(symbol, [])
+            hit = next((r for r in lst if r.get("id") == rid), None)
+            if hit is None:
+                return self._send(404, {"err": "未找到该交易记录"})
+            note = str(body.get("note") or "").strip()
+            hit["note"] = note or None            # 清空 = 删除备注
+            _save(TRADES_F, db)
+            return self._send(200, decorate(hit))
         symbol = body.get("symbol", "")
         if not symbol:
             return self._send(400, {"err": "symbol required"})
@@ -448,6 +509,11 @@ class H(BaseHTTPRequestHandler):
                 return self._send(409, {"err": "duplicate",
                                         "msg": f"{rec['entry_date']} 已有开仓记录",
                                         "existing": dup})
+            # ★ 备注是独立编辑的，build_trade 不产出这个字段 —— 改交易记录时必须把它带过去，
+            #   否则「修改交易」会把用户写的备注悄悄清掉
+            _old = lst[i_same] if i_same is not None else (lst[i_day] if i_day is not None else None)
+            if _old and _old.get("note"):
+                rec["note"] = _old["note"]
             if i_same is not None and i_day is not None and i_same != i_day:
                 # 修改时把开仓日改到了**另一条**记录的日子：吞掉两条，只留一条（沿用被覆盖那条的 id）
                 rec["id"] = lst[i_day]["id"]
@@ -474,6 +540,12 @@ class H(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         symbol, rid = q.get("symbol", ""), q.get("id", "")
+        if u.path == "/api/notes":
+            lst = load_notes()
+            n0 = len(lst)
+            lst = [n for n in lst if n.get("id") != q.get("id", "")]
+            save_notes(lst)
+            return self._send(200, {"ok": True, "removed": n0 - len(lst)})
         if u.path == "/api/trades" and q.get("all"):
             # 清除整个标的 —— **独立分支**，不复用下面 `id != rid` 的逻辑：
             # 那条在 rid 为空时是 no-op（安全），一旦改成"空 id 即清空"，
