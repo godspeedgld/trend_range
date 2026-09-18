@@ -372,16 +372,8 @@ async function renderOverlays(){
         extendData:{ up:true, label:"开仓 "+fmt(t.buy_price) },
         styles:{ polygon:{color:"#ef232a", borderColor:"#ef232a"}, text:{color:"#ef232a"} } });
       tradeOverlays.push(id+"_e");
-      // 止损/止盈虚线：起点是**开仓日**（开仓前不存在这两条线）
-      if (t.stop_price) chart.createOverlay({ id:id+"_s", name:"priceChannelLine",
-        points:[{timestamp:msOf(t.entry_date), value:t.stop_price},
-                {timestamp:msOf(t.exit_date||lastDate), value:t.stop_price}],
-        styles:{ line:{color:"#14b143", style:"dashed"} } });
-      if (t.tp_price) chart.createOverlay({ id:id+"_t", name:"priceChannelLine",
-        points:[{timestamp:msOf(t.entry_date), value:t.tp_price},
-                {timestamp:msOf(t.exit_date||lastDate), value:t.tp_price}],
-        styles:{ line:{color:"#ef232a", style:"dashed"} } });
-      tradeOverlays.push(id+"_s", id+"_t");
+      // 止损/止盈虚线**不画**（用户 2026-09-18：标注太多看不清，只留三角）
+      // 需要时把 priceChannelLine 那两段加回来即可（起点用 t.entry_date）
       // ▼ 绿三角向下 = 平仓（未平仓 / 平仓日尚未揭示 → 不画；也**不显示任何浮盈数字**，
       //   那等于偷看未来）
       if (t.exit_date && t.exit_date <= lastDate){
