@@ -30,14 +30,29 @@ PARQUET_RE = re.compile(r"read_parquet\(\s*'([^']+)'", re.I)
 SYS_PREFIX = ("duckdb_", "sqlite_", "pragma_", "information_schema")
 
 
-def new_root_from_sql(sql: str) -> str | None:
-    """从视图 SQL 里反推旧仓库根路径（read_parquet 路径里 '/*.parquet' 之前那段）"""
-    m = PARQUET_RE.search(sql)
-    if not m:
-        return None
-    p = m.group(1).replace("\\", "/")
-    # 'C:/.../warehouse/stock_bar1d/**/*.parquet' → 去掉表名与通配
-    return p.split("/**")[0].rsplit("/", 1)[0] if "/**" in p else None
+def rewrite_sql(sql: str, now: str, wh: str) -> tuple[str, int]:
+    """把 SQL 里每个 read_parquet 路径重定位到当前仓库根。
+
+    不去猜"旧根路径"长什么样（绝对/相对、正反斜杠、`/**`、`/*.parquet`、`part.parquet`
+    结尾……形状太多，猜必漏），而是按路径里的**仓库名段**（如 bigquant_warehouse）定位：
+    'C:/旧盘/…/pandadata_warehouse/stock_min_1m/year=*/…' → 'now/stock_min_1m/year=*/…'。
+    返回 (新SQL, 重写过的路径个数)；路径里找不到仓库名段的不动。
+    """
+    n = 0
+
+    def fix(m: re.Match) -> str:
+        nonlocal n
+        p = m.group(1).replace("\\", "/")
+        parts = [s for s in p.split("/") if s]
+        if wh not in parts:
+            return m.group(0)
+        tail = "/".join(parts[parts.index(wh) + 1:])
+        n += 1
+        # 注意：正则匹配不含结尾的 ')'，替换串也不能带
+        return f"read_parquet('{now}/{tail}'" if tail else f"read_parquet('{now}/**/*.parquet'"
+
+    out = re.sub(r"read_parquet\(\s*'([^']+)'", fix, sql, flags=re.I)
+    return out, n
 
 
 def collect_views(db: Path) -> list[tuple[str, str]]:
@@ -70,10 +85,10 @@ def rebuild(root: Path, old_prefix: str | None, dry: bool) -> int:
     con = duckdb.connect(str(db))
     ok, no_data, failed = 0, [], []
     for n, sql in base + derived:
-        old = old_prefix or new_root_from_sql(sql)
-        if old:
-            for variant in {old, old.replace("/", "\\"), str(Path(old))}:
+        if old_prefix:  # 显式指定旧路径时先做一次朴素替换，剩余的再按仓库名段重写
+            for variant in {old_prefix, old_prefix.replace("/", "\\"), str(Path(old_prefix))}:
                 sql = sql.replace(variant, now)
+        sql, _ = rewrite_sql(sql, now, root.name)
         sql = re.sub(r"^CREATE\s+(OR\s+REPLACE\s+)?VIEW", "CREATE OR REPLACE VIEW", sql,
                      count=1, flags=re.I)
         try:
