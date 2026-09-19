@@ -12,6 +12,7 @@
 | 能力 | 输出目录 | 产出 |
 |---|---|---|
 | **研报提取** | `research_report/` | `<slug>_main.md` —— 思想·指标·回测方法/结果 |
+| └ **行业研报提取**（子能力） | `research_report/industry_research/` | `<slug>_main.md` —— 背景·核心观点·投资建议（多要点六要素） |
 | **数据分析** | `01_data_analysis/analysis_XXX/` | records.md / analysis.py / result_view.html |
 | **策略迭代** | `02_strategy_iteration/strategy_XXX/` | main_idea.md / backtest_strategy/ / final_report.md |
 
@@ -82,6 +83,22 @@ python scripts/pdf_extract.py <pdf> [--pages 3-22] [--dpi 150]
 
 **登记引用**：被后续分析/策略引用时，在 `04_delivery/final_report.md` 的「引用研报」节**追加**一行。
 
+#### 2.1 行业研报提取（子能力，research_report/industry_research/）
+
+面向**行业/宏观类研报**（重观点与逻辑链，而非量化算法）。与研报提取的关系：
+**输入 / 读 PDF / 取简称（slug）/ 落盘 / 铁律 / 引用登记、与其他能力衔接完全一致**，
+仅三处不同——
+
+- **输出目录**：`research_report/industry_research/<slug>_main.md`（不存在则创建）
+- **提取内容**（模板 `templates/industry_research_template.md`）：
+  1. **研报背景**（含可选的观察现象）
+  2. **核心观点**——常为多要点，每个要点按六要素提取：观点内容 / 逻辑依据 / 事实依据 /
+     数据依据（均**忠实提取**）+ 观察指标及说明（可选）+ 观点解释（**分析者解读**，
+     从经济学/产业规律角度，须与原文内容严格区分）
+  3. **投资建议**——同多要点、同六要素模式，建议解释须结合对应观点
+- **多要点拆分**：并列因素各算一个要点。例「地产行业三个关键因素：公积金利率、
+  核心城市房价、人民币汇率」→ 拆 3 个要点分别提取与解释
+
 ### 3. 数据分析（01_data_analysis/analysis_XXX/）
 每个分析一个 id（analysis_001, 002...），含 records.md / analysis.py / result_view.html：
 
@@ -121,6 +138,7 @@ python scripts/pdf_extract.py <pdf> [--pages 3-22] [--dpi 150]
 ## Templates
 
 - `templates/research_report_template.md`：**研报提取**思想卡（8 节，含 slug 命名规则）
+- `templates/industry_research_template.md`：**行业研报提取**观点卡（背景/核心观点/投资建议，多要点六要素）
 - `templates/records_template.md`：数据分析记录（生成/更新/回滚）
 - `templates/main_idea_template.md`：策略思路（时序/因子两模板）
 - `templates/final_report_template.md`：综合报告（含「引用研报」节）
