@@ -35,6 +35,9 @@ data_export/
 *.db-wal
 *.db-shm
 
+# ===== 财务分析技能产物（报告/面板，可随时重新生成） =====
+financial-statement-analysis/
+
 # ===== 回测报告 / 日志 / 可视化产物 =====
 results/
 backtest_results/
