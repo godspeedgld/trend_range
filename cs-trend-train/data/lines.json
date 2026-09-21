@@ -127,6 +127,22 @@
    "end_date": "2024-09-18",
    "end_price": 127.47995331683416,
    "adj": "hfq"
+  },
+  {
+   "id": "lnmuau4jx6",
+   "start_date": "2024-10-08",
+   "start_price": 185.09345077454722,
+   "end_date": "2025-01-05",
+   "end_price": 177.15295184339845,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmuau4rv9",
+   "start_date": "2024-09-30",
+   "start_price": 160.2910579900234,
+   "end_date": "2025-01-11",
+   "end_price": 160.2750852603544,
+   "adj": "hfq"
   }
  ],
  "688981.SH": []
