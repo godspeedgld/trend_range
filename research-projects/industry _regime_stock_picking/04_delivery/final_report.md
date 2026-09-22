@@ -11,6 +11,8 @@
 | `research_report/industry_research/property_reversal_targets_caitong_20260531_main.md` | **analysis_002（PB 回归法验证）** |
 | `research_report/industry_research/property_hk_mapping_timing_caitong_20260625_main.md` | **analysis_002（0625 预测回验节）** |
 | `research_report/industry_research/property_tier2_stabilization_caitong_20260915_main.md` | （背景，暂无 analysis 引用） |
+| `research_report/earnings_prosperity_rotation_bohai_20210930_main.md` | （研报提取，暂无 analysis 引用 —— 业绩景气度行业轮动） |
+| `research_report/qrf_distribution_etf_rotation_yinhe_20251222_main.md` | （研报提取，暂无 analysis 引用 —— QRF 分布预测 + 科技类 ETF 轮动） |
 
 ## 分析与策略索引
 
