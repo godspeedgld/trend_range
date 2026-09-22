@@ -1,0 +1,52 @@
+{
+  "project_id": "industry _regime_stock_picking",
+  "title": "Industry Regime Stock Picking",
+  "created_at": "2026-09-16",
+  "data_analyses": [
+    {
+      "id": "analysis_001",
+      "idea": "银河「变盘指数」六轮：当入场闸门/硬过滤/风格开关/行业池 —— 全部负结果（W2 基准 +186.7% → 最好 +127.2%，最差 +62.6%）；核心洞察=行业信息在「买超跌」框架是方向、在「买突破」框架只是硬过滤",
+      "created_at": "2026-09-16"
+    },
+    {
+      "id": "analysis_002",
+      "idea": "财通 PB 回归法验证：六家 A 股房企 PB 分位/十分位/修复目标价（方法可复现，保利 177% vs 原文 170%）；0625「温和上行」预测回验兑现 +7.4%；BigQuant stock_valuation.pb 口径=全权益非归母（含少数股东）已修正",
+      "created_at": "2026-09-20"
+    }
+  ],
+  "strategy_iterations": [
+    {
+      "id": "strategy_001",
+      "idea": "变盘指数行业轮动·第一次迭代 —— 选股层四因子（turn_ratio/px_ma20/mom_20/liq_amount）方向跟随 regime 切换：T'<0 动量期全部取正（镜像版），T'>0 反转期维持取负。基准 = 恒反转（云端原版）。**假设被否**：迭代一 +72.1% vs 基准 +100.5%（trades 口径）。核心洞察：**regime 该管「买哪个行业」，不该管「买什么样的股」** —— 云端策略的行业层切动量/选股层永远反转是正确分工，不是框架矛盾。",
+      "annual_return": 0.0608,
+      "sharpe": 0.286,
+      "max_drawdown": -0.4224,
+      "n_trades": 689,
+      "metrics_source": "trades 口径（shared/from_trades.py），技能指标铁律主口径",
+      "baseline": {
+        "id": "baseline_cloud_original",
+        "idea": "恒反转 = 云端原版（选股层与 regime 无关）",
+        "annual_return": 0.0786,
+        "sharpe": 0.4962,
+        "max_drawdown": -0.2415,
+        "n_trades": 703
+      },
+      "verdict": "假设被否",
+      "pending_rebuild": "逐因子归因 / 随机化对照（20 次随机选股，基准落 50 分位 → 选股层≈随机） / liq_amount 机制诊断（控制三方向性因子后动量期 Q5−Q1 仅 +0.009%，推算年化 +0.44% vs 实测 +6.27pp/年，差 14 倍 → 判伪信号）—— 这三项实验原用一版自写引擎实现，该引擎及产物已按技能合规要求移除，实验设计与结论留档于 strategy_001/final_report.md，**待用技能引擎重建**"
+    }
+  ],
+  "data_check": {
+    "date": "2026-09-22",
+    "universe": "当期 HS300∪CSI500∪CSI1000 成分（index_component 逐日快照，2015-01-05 起）",
+    "industry_index": "stock_industry_sw_bar1d（31 个 SW2021 一级官方指数，剔除已废弃 801020）",
+    "stock_bars": "stock_bar1d 3,474 只 / 828 万行 / 16 列",
+    "backtest_window": "2016-12-23 ~ 2026-08-21"
+  },
+  "status": "strategy_001 完成（迭代一假设被否）",
+  "backtest_engine": ".claude/skills/skill-research-assistant/scripts/local_portfolio_backtest.py（开仓池/平仓池框架，5 接口）",
+  "backtest_command": "python .claude/skills/skill-research-assistant/scripts/local_portfolio_backtest.py 'research-projects/industry _regime_stock_picking' --market-data 'research-projects/industry _regime_stock_picking/shared/_cache/engine_market.parquet' --strategy 'research-projects/industry _regime_stock_picking/02_strategy_iteration/strategy_001/backtest_strategy/strategy.py' --max-positions 6 --cost-bps 8 --warmup 1 --benchmark 000300.SH",
+  "known_caliber_gaps": [
+    "成本：策略真实为不对称（买 0.03% / 卖 0.13%），技能引擎只支持对称双边 cost_bps → 以 8bps 近似",
+    "引擎漏算平仓日隔夜收益：平仓在 d+1 开盘执行，引擎把持仓收益记到 close[d] 为止，未计入 close[d]→open[d+1] 段；trades 口径已计入（故 trades 口径总收益高约 17pp）"
+  ]
+}
