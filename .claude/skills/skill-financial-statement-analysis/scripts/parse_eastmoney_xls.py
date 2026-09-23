@@ -38,6 +38,9 @@ TABLE_TYPES = [
     ("资产负债表", "balance"),
     ("现金流量报表", "cashflow"), ("现金流量表", "cashflow"),
     ("公司综合能力报表", "ability"), ("综合能力", "ability"),
+    # 港股版东财导出把同一张表叫「财务指标表」（首批非 A 股数据实测：
+    # 五一视界 06651.HK，内容与 A 股「公司综合能力表」一致：每股指标/ROE/周转/负债率）
+    ("财务指标表", "ability"),
 ]
 PERIOD_RE = re.compile(r"^(\d{4})年(\d{1,2})月?$")
 
@@ -91,8 +94,23 @@ def parse_one(path: Path) -> dict:
         rows.append(vals); names.append(name)
     df = pd.DataFrame(rows, index=names, columns=periods)
     df = df[~df.index.duplicated(keep="first")]
+
+    # ★ 单位 / 币种：源表末尾两行是「单位=百万」「币种=人民币」这类**文本**值，
+    #   会被 clean_value 洗成 None（它只保留数字）→ 单独抓原始值。
+    #   宁缺毋错：报告若写死"亿元"，对五一小公司会差 100 倍（实测五一视界单位=百万）。
+    unit = currency = None
+    for r in range(2, ws.nrows):
+        nm = str(ws.cell_value(r, 0)).replace("\xa0", "").strip()
+        if nm in ("单位", "币种"):
+            vs = [str(ws.cell_value(r, c)).strip() for c in cols]
+            v = next((x for x in vs if x and x not in {"--", "—", "-"}), None)
+            if nm == "单位":
+                unit = v
+            else:
+                currency = v
     return {"type": ttype, "company": company, "code": code,
-            "title": title, "df": df, "periods": periods}
+            "title": title, "df": df, "periods": periods,
+            "unit": unit, "currency": currency}
 
 
 def main():
@@ -118,8 +136,12 @@ def main():
                                      "periods": len(d["periods"]),
                                      "first": d["periods"][0], "last": d["periods"][-1],
                                      "fields": list(d["df"].index)}
+        meta["tables"][d["type"]]["unit"] = d.get("unit")
+        meta["tables"][d["type"]]["currency"] = d.get("currency")
         meta["company"] = meta["company"] or d["company"]
         meta["code"] = meta["code"] or d["code"]
+        meta["unit"] = meta.get("unit") or d.get("unit")
+        meta["currency"] = meta.get("currency") or d.get("currency")
         print(f"  {d['type']:<9} {len(d['df']):>3} 指标 x {len(d['periods'])} 期  "
               f"{d['periods'][0]} ~ {d['periods'][-1]}  <- {f.name}")
     meta["n_periods"] = max(t["periods"] for t in meta["tables"].values())

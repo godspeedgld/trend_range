@@ -160,6 +160,14 @@ def build(panel_dir: Path, out_html: Path, profile: str):
     code = meta.get("code", "?")
     last_p = periods[-1]
 
+    # ★ 单位与报告频次按**源表实际口径**显示，不写死。东财 A 股大盘股常见「亿元/季报」，
+    #   但港股与中小公司不同——五一视界(06651.HK) 实测「百万/半年报」，
+    #   若写死"亿元"会把 1.7 亿营收写成 169.98 亿（差 100 倍），属宁缺毋错铁律的反面。
+    UNIT = meta.get("unit") or "—"
+    months = sorted({p.split("-")[1] for p in periods})
+    FREQ_NOTE = {"06,12": "半年报", "03,06,09,12": "季报"}.get(",".join(months), "报告期")
+    PNAME = {"bank": "银行", "software": "软件", "general": "通用"}.get(profile, "通用")
+
     # ── 维度1 成长性 ──
     rev = pick(panels, "income", "一、营业收入", "营业总收入", "营业收入")
     np_ = pick(panels, "income", "五、净利润", "净利润")
@@ -177,6 +185,10 @@ def build(panel_dir: Path, out_html: Path, profile: str):
     if npm is None:
         npm = pick(panels, "income", "净利润率")
     gm = pick(panels, "ability", "毛利率(GM)", "销售毛利率", "毛利率")
+    if gm is None:
+        # 港股「财务指标表」不含毛利率（只有 ROE/每股/周转/负债率），它在**利润表**里，
+        # 且值已是百分数（如 64.95 = 64.95%），下游不得再 ×100。
+        gm = pick(panels, "income", "毛利率(GM)", "销售毛利率", "毛利率")
     ocf = pick(panels, "cashflow", "经营活动产生的现金流量净额")
     np_series = np_parent if np_parent is not None else np_
     ocf_np = ocf / np_series.replace(0, np.nan)          # 同为 YTD 口径
@@ -200,8 +212,27 @@ def build(panel_dir: Path, out_html: Path, profile: str):
     cov = pick(panels, "ability", "不良贷款拨备覆盖率")              # bank
     inv_turn = pick(panels, "ability", "存货周转率")                 # general
     ast_turn = pick(panels, "ability", "资产周转率")                 # general
+    # ★ 东财「资产周转率」是**百分数形式**：营收 ÷ 平均资产 × 100。
+    #   实测五一视界 2023-12 = 256.302/((504.342+374.688)/2)×100 = 58.31 ✓
+    #                 2026-06 = 123.672/((1321.714+1303.45)/2)×100 = 9.42 ✓
+    #   → 与常规"倍数"口径差 100 倍（9.42 实为 0.094 次），统一 ÷100 还原，避免误读。
+    if ast_turn is not None:
+        ast_turn = ast_turn / 100
     roic = pick(panels, "ability", "资本回报率(ROIC)", "资本回报率")  # general
     contract_liab = pick(panels, "balance", "合同负债", "预收款项")   # 地产：销售前瞻
+    # ── software：费用结构与现金（软件/科技公司重点，非银通用）──
+    rd_exp = pick(panels, "income", "研发费用")
+    sf_exp = pick(panels, "income", "销售费用")
+    mf_exp = pick(panels, "income", "管理费用")
+    cash_ = pick(panels, "balance", "货币资金")
+    cl_ = pick(panels, "balance", "流动负债合计")
+    rd_ratio = (rd_exp / rev.replace(0, np.nan)
+                if rd_exp is not None and rev is not None else None)
+    exp_ratio = (((rd_exp + sf_exp + mf_exp) / rev.replace(0, np.nan))
+                 if all(x is not None for x in (rd_exp, sf_exp, mf_exp)) and rev is not None
+                 else None)
+    cash_cl = (cash_ / cl_.replace(0, np.nan)
+               if cash_ is not None and cl_ is not None else None)
 
     # ── 维度5 勾稽与信号 ──
     inc_q = inc.select_dtypes("float").apply(to_single_quarter, axis=1)
@@ -235,16 +266,16 @@ def build(panel_dir: Path, out_html: Path, profile: str):
          "<script src='plotly.min.js'></script>",
          f"<style>{CSS}</style></head><body>",
          f"<h1>{company}（{code}）财务分析报告</h1>",
-         f"<div class='sub'>数据：东方财富四表导出 · {periods[0]} ~ {last_p} 共 {len(periods)} 期（季度）· "
-         f"profile = {profile} · 单位：亿元（比率除外） · 生成于 build_report.py</div>"]
+         f"<div class='sub'>数据：东方财富四表导出 · {periods[0]} ~ {last_p} 共 {len(periods)} 期（{FREQ_NOTE}）· "
+         f"profile = {profile} · 单位：{UNIT}（比率/每股除外，按源表口径原样显示） · 生成于 build_report.py</div>"]
 
     # ─ 1 成长性 ─
     H.append("<h2>一、成长性</h2>")
     H.append(para(
-        f"<b>{ryp}</b> 营业收入 <b>{fmt(rev[ryp])}</b> 亿元（YTD），同比 "
+        f"<b>{ryp}</b> 营业收入 <b>{fmt(rev[ryp])}</b> {UNIT}（YTD），同比 "
         f"<b class='{'pos' if (ry or 0)>0 else 'neg'}'>{fmt(ry, pct=True)}</b>；"
         f"归母净利润同比 <b class='{'pos' if (ny or 0)>0 else 'neg'}'>{fmt(ny, pct=True)}</b>。"
-        + (f"最近单季营收 <b>{fmt(rev_q_now)}</b> 亿元。" if rev_q_now is not None else "")
+        + (f"最近单季营收 <b>{fmt(rev_q_now)}</b> {UNIT}。" if rev_q_now is not None else "")
         + "收入与利润增速的裂口反映费用/减值端的弹性。"))
     x = rev_yoy.dropna().index.tolist()
     H.append("<div class='grid2'>")
@@ -254,7 +285,7 @@ def build(panel_dir: Path, out_html: Path, profile: str):
     rq = rev_q.dropna()
     H.append(fig_bars("g2", rq.index.tolist(), rq.tolist(),
                       [C_POS if v >= 0 else C_NEG for v in rq.tolist()],
-                      "营业收入 单季值（YTD 差分）", y_title="亿元", height=300))
+                      f"营业收入 单季值（YTD 差分，{UNIT}）", y_title=UNIT, height=300))
     H.append("</div>")
 
     # ─ 2 盈利质量 ─
@@ -275,6 +306,9 @@ def build(panel_dir: Path, out_html: Path, profile: str):
         + f"经营现金流净额 / 净利润 最新为 <b class='{'warn' if on is not None and abs(on) > 2 else ''}'>{fmt(on)}</b>"
         + (f"（{onp}）——银行该比值天然剧烈（经营现金流由存贷款变动主导），仅作跟踪不作警示。"
            if profile == "bank" else
+           f"（{onp}）——亏损期净利为负，该比值符号易误导，重点看经营现金流净额的**绝对规模与趋势**"
+           "（现金消耗速度），而非比值本身。"
+           if profile == "software" else
            f"（{onp}）——房企经营现金流受拿地/销售节奏主导波动大，与净利持续背离需查拿地支出。")))
     H.append("<div class='grid2'>")
     if roe is not None:
@@ -285,19 +319,33 @@ def build(panel_dir: Path, out_html: Path, profile: str):
         oc, nps = ocf.dropna(), np_series.dropna()
         H.append(fig_lines("g4", [(oc.index.tolist(), oc.tolist(), "经营现金流净额", C_MAIN, None, 2),
                                   (nps.index.tolist(), nps.tolist(), "净利润", C_ACC, None, 2)],
-                           "经营现金流 vs 净利润（亿元，YTD）", height=300))
+                           f"经营现金流 vs 净利润（{UNIT}，YTD）", height=300))
     H.append("</div>")
 
     # ─ 3 偿债与资本 ─
-    H.append(f"<h2>三、偿债与资本（{'银行' if profile=='bank' else '通用'}口径）</h2>")
+    H.append(f"<h2>三、偿债与资本（{PNAME}口径）</h2>")
     if profile == "bank":
         c1n, c1p = latest_valid(cap1) if cap1 is not None else (None, None)
         H.append(para(
             f"核心一级资本充足率 <b>{fmt(c1n)}%</b>（{c1p}，监管参考线 7.5% 含储备）；"
             f"资本充足率 <b>{fmt(latest_valid(capa)[0] if capa is not None else None)}%</b>（参考线 10.5%）；"
             f"杠杆倍数 <b>{fmt(latest_valid(lev)[0] if lev is not None else None, 1)}</b>；"
-            f"总资产 <b>{fmt(ta[last_p] if ta is not None else None, 0)}</b> 亿元。"
+            f"总资产 <b>{fmt(ta[last_p] if ta is not None else None, 0)}</b> {UNIT}。"
             "充足率趋势下行 = 资产扩张快于资本补充（内生或外源融资压力）。"))
+    elif profile == "software":
+        dn, dp = latest_valid(dar) if dar is not None else (None, None)
+        disp = (dn * 100) if (dn is not None and abs(dn) < 1) else dn
+        cs, csp = latest_valid(cash_) if cash_ is not None else (None, None)
+        ccr, ccrp = latest_valid(cash_cl) if cash_cl is not None else (None, None)
+        H.append(para(
+            f"资产负债率 <b>{fmt(disp)}%</b>（{dp}）——软件公司轻资产、有息负债通常低，"
+            "该比率主要反映预收/应付与历史融资结构；<b>&gt;100% 即资不抵债</b>，"
+            "通常出现在上市前可转债/优先股累积期，靠 IPO 或大额融资解除。"
+            f"货币资金 <b>{fmt(cs)}</b>（{csp}）"
+            + (f"，货币资金 / 流动负债 <b>{fmt(ccr)}</b>（{ccrp}）"
+               "——低于 1 意味着账面现金覆盖不了短期负债，需靠融资或经营现金流补" if ccr is not None else "")
+            + "。亏损公司的真正命门是「钱能烧多久」：把经营现金流净额的**绝对规模**"
+            "与货币资金余额对照，而不是看比率。"))
     else:
         dn, dp = latest_valid(dar) if dar is not None else (None, None)
         cl_now, cl_p = (latest_valid(contract_liab) if contract_liab is not None else (None, None))
@@ -305,8 +353,8 @@ def build(panel_dir: Path, out_html: Path, profile: str):
         H.append(para(
             f"资产负债率 <b>{fmt(disp)}%</b>（{dp}）——房企 75~80% 属常态（预收/合同负债计入负债），"
             "趋势骤升且伴随合同负债收缩才是真风险信号；"
-            f"总资产 <b>{fmt(ta[last_p] if ta is not None else None, 0)}</b> 亿元"
-            + (f"，合同负债 <b>{fmt(cl_now, 0)}</b> 亿元（{cl_p}，已售未结 = 未来收入蓄水池）" if cl_now is not None else "")
+            f"总资产 <b>{fmt(ta[last_p] if ta is not None else None, 0)}</b> {UNIT}"
+            + (f"，合同负债 <b>{fmt(cl_now, 0)}</b> {UNIT}（{cl_p}，已售未结 = 未来收入蓄水池）" if cl_now is not None else "")
             + "。"))
     H.append("<div class='grid2'>")
     if profile == "bank":
@@ -323,12 +371,12 @@ def build(panel_dir: Path, out_html: Path, profile: str):
                                "资产负债率（%，虚线=80 参考）", height=300, shapes=[hline(80)]))
         if contract_liab is not None:
             cc = contract_liab.dropna()
-            H.append(fig_lines("g6", [(cc.index.tolist(), cc.tolist(), "合同负债(亿)", C_ACC, None, 2)],
-                               "合同负债（已售未结，亿元）", height=300))
+            H.append(fig_lines("g6", [(cc.index.tolist(), cc.tolist(), f"合同负债({UNIT})", C_ACC, None, 2)],
+                               f"合同负债（已售未结，{UNIT}）", height=300))
     H.append("</div>")
 
     # ─ 4 效率与资产质量 ─
-    H.append(f"<h2>四、效率与资产质量（{'银行' if profile=='bank' else '通用'}口径）</h2>")
+    H.append(f"<h2>四、效率与资产质量（{PNAME}口径）</h2>")
     if profile == "bank":
         nimn, nimp = latest_valid(nim) if nim is not None else (None, None)
         cirn, _ = latest_valid(cir) if cir is not None else (None, None)
@@ -339,6 +387,28 @@ def build(panel_dir: Path, out_html: Path, profile: str):
             f"收入成本比 <b>{fmt(cirn)}%</b>；不良率 <b>{fmt(npln)}%</b>，"
             f"拨备覆盖率 <b>{fmt(covn, 0)}%</b>（150% 为监管参考）。"
             "NIM 下行 + 不良上行同时出现 = 典型周期底部组合；拨备覆盖率高 = 利润调节缓冲厚。"))
+    elif profile == "software":
+        gmn, gmp = latest_valid(gm) if gm is not None else (None, None)
+        rdn, rdp = latest_valid(rd_ratio) if rd_ratio is not None else (None, None)
+        exn, exq = latest_valid(exp_ratio) if exp_ratio is not None else (None, None)
+        atn, _ = latest_valid(ast_turn) if ast_turn is not None else (None, None)
+
+        def _pct(v):
+            # rd_ratio / exp_ratio 都是本报告自算的「费用 ÷ 收入」，恒为**小数比率** → 直接 ×100。
+            # 不能用“<1 才 ×100”的启发式：三费率 1.094（=109.4%）会被误判成 1.09%。
+            return None if v is None else v * 100
+
+        H.append(para(
+            f"毛利率 <b>{fmt(gmn)}%</b>（{gmp}）——软件/科技公司的核心盈利结构指标，"
+            "反映产品化程度与人力成本占比。<b>趋势比单点重要</b>：骤降通常意味着业务结构变化"
+            "（高毛利软件/订阅占比下降，硬件、集成或人力外包占比上升），"
+            "而非单纯的成本波动。"
+            + (f"研发费用率 <b>{fmt(_pct(rdn))}%</b>（{rdp}）——亏损期该比率高不必然是坏事"
+               "（投入换产品壁垒），但必须与收入增速对照：**收入不涨而费用刚性 = 烧钱无产出**。"
+               if rdn is not None else "")
+            + (f"三费（研发+销售+管理）合计占收入 <b>{fmt(_pct(exn))}%</b>（{exq}）。"
+               if exn is not None else "")
+            + f"资产周转率 <b>{fmt(atn)}</b>（轻资产公司该值偏低属正常）。"))
     else:
         gmn, gmp = latest_valid(gm) if gm is not None else (None, None)
         itn, _ = latest_valid(inv_turn) if inv_turn is not None else (None, None)
@@ -398,16 +468,30 @@ def build(panel_dir: Path, out_html: Path, profile: str):
         if opp.iloc[-4:].all() and len(opp) >= 4:
             weak.append(f"经营现金流与净利润连续 {int(opp.iloc[-4:].sum())} 期反号（银行口径：或由贷款投放节奏主导，需结合资产负债表核对）")
     weak += [f"科目单季突增：{s}" for s in signals_weak]
-    for nm, tbl in [("净息差", "ability"), ("不良率", "ability"), ("加权ROE", "ability")]:
-        if pick(panels, tbl, nm) is None:
-            missing.append(f"{nm}（{tbl} 表中未找到）")
-    missing.append("公募持仓/同行横截面（本数据源不含，需外部数据）") if profile == "bank" else None
+    # 缺失清单按 profile 取该口径**真正需要**的指标：银行专属项（净息差/不良率/拨备）
+    # 对非银不构成"缺口"。候选名用 | 分隔多写法——A 股叫「加权ROE」，港股叫「…的ROE」。
+    _NEED = {
+        "bank": [("净息差", "ability", "净息差"), ("不良率", "ability", "不良率"),
+                 ("拨备覆盖率", "ability", "不良贷款拨备覆盖率|拨备覆盖率")],
+        "general": [("加权ROE", "ability", "净资产收益率(ROE)|加权ROE"),
+                    ("毛利率", "ability|income", "毛利率(GM)|销售毛利率")],
+        "software": [("加权ROE", "ability", "净资产收益率(ROE)|加权ROE"),
+                     ("毛利率", "ability|income", "毛利率(GM)|销售毛利率"),
+                     ("研发费用", "income", "研发费用"),
+                     ("货币资金", "balance", "货币资金")],
+    }
+    for nm, tbls, keys in _NEED.get(profile, _NEED["general"]):
+        if all(pick(panels, t, *keys.split("|")) is None for t in tbls.split("|")):
+            missing.append(f"{nm}（{tbls} 表中未找到）")
+    if profile == "bank":
+        missing.append("公募持仓/同行横截面（本数据源不含，需外部数据）")
     H.append("<div class='bucket'><span class='tag t-red'>明确异常</span>结论需报告证据支撑"
              + ("<ul>" + "".join(f"<li>{x}</li>" for x in confirmed) + "</ul>" if confirmed else "：<ul><li>未发现</li></ul>") + "</div>")
     H.append("<div class='bucket'><span class='tag t-yel'>弱信号</span>疑似但不构成结论"
              + ("<ul>" + "".join(f"<li>{x}</li>" for x in weak) + "</ul>" if weak else "：<ul><li>未发现</li></ul>") + "</div>")
-    H.append("<div class='bucket'><span class='tag t-gray'>缺失数据</span>影响置信度的缺口<ul>"
-             + "".join(f"<li>{x}</li>" for x in [m for m in missing if m]) + "</ul></div>")
+    H.append("<div class='bucket'><span class='tag t-gray'>缺失数据</span>影响置信度的缺口"
+             + ("<ul>" + "".join(f"<li>{x}</li>" for x in missing if x) + "</ul>"
+                if any(missing) else "：<ul><li>未发现</li></ul>") + "</div>")
 
     # ─ 6 指标全景 ─
     H.append("<h2>六、指标全景（综合能力表核心项）</h2>")
@@ -449,7 +533,7 @@ if __name__ == "__main__":
     ap.add_argument("--panel", required=True, help="parse_eastmoney_xls.py 的输出目录")
     ap.add_argument("--out", default=None,
                     help="报告路径；缺省 = <当前工程>/financial-statement-analysis/<公司>_财务分析报告.html")
-    ap.add_argument("--profile", default="bank", choices=["bank", "general"])
+    ap.add_argument("--profile", default="bank", choices=["bank", "general", "software"])
     a = ap.parse_args()
     # ★ 输出默认落在"当前工程"下的 financial-statement-analysis/（按仓库惯例：产物目录集中、gitignore）
     out = Path(a.out) if a.out else None
