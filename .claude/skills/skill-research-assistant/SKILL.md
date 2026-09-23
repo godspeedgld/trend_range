@@ -11,10 +11,18 @@
 
 | 能力 | 输出目录 | 产出 |
 |---|---|---|
-| **研报提取** | `research_report/` | `<slug>_main.md` —— 思想·指标·回测方法/结果 |
-| └ **行业研报提取**（子能力） | `research_report/industry_research/` | `<slug>_main.md` —— 背景·核心观点·投资建议（多要点六要素） |
-| **数据分析** | `01_data_analysis/analysis_XXX/` | records.md / analysis.py / result_view.html |
-| **策略迭代** | `02_strategy_iteration/strategy_XXX/` | main_idea.md / backtest_strategy/ / final_report.md |
+| **研报提取**（**仓库根**） | `<仓库根>/research_report/` | `<slug>_main.md` —— 思想·指标·回测方法/结果 |
+| └ **行业研报提取**（子能力） | `<仓库根>/research_report/industry_research/` | `<slug>_main.md` —— 背景·核心观点·投资建议（多要点六要素） |
+| **数据分析** | `<工程>/01_data_analysis/analysis_XXX/` | records.md / analysis.py / result_view.html |
+| **策略迭代** | `<工程>/02_strategy_iteration/strategy_XXX/` | main_idea.md / backtest_strategy/ / final_report.md |
+
+> ★ **研报提取是跨项目的公共能力，输出不在工程内，而在仓库根 `research_report/`。**
+> 理由：一篇研报会被多个工程、多次引用（如银河「变盘指数」同时被 analysis_001 与
+> strategy_001 引用），按工程各存一份会重复且无法统一检索；把它当"文献库"而不是
+> "工程产物"更符合实际用法。
+> 工程内**不再创建** `research_report/`（`create_project.py` 的 SUBDIRS 已移除）。
+> 路径解析：优先 `.env` 的 `RESEARCH_REPORT_ROOT`；未设则取"最近的含 `.git` 的上级目录"
+> 下的 `research_report/`。
 
 ## 数据输入（本技能不下载任何数据）
 
@@ -49,7 +57,7 @@ python scripts/check_data.py {project_dir} --needs 沪深300,中证500  # 或 �
 - 不满足 → 反馈缺失清单 + 终止，提示用 skill-bigquant-sdk 拉取
 - （研报提取不消费本地数据，也不需要数据检查，可直接建目录开工）
 
-### 2. 研报提取（research_report/）
+### 2. 研报提取（`<仓库根>/research_report/`，**与工程无关**）
 
 把一份研报/论文/链接/文本转成**结构化的量化思想卡**。**只提取，不复现**。
 
@@ -76,20 +84,21 @@ python scripts/pdf_extract.py <pdf> [--pages 3-22] [--dpi 150]
 > 核心是**量化思路 · 量化指标 · 回测方法 · 回测结果**四节；其余为上下文。
 > **不需要复现回测**——原文数字如实记为「原文口径，未复现验证」。
 
-**落盘**：`research_report/<slug>_main.md`（目录不存在则创建）。
+**落盘**：`<仓库根>/research_report/<slug>_main.md`（目录不存在则创建）。
+**不要**写进任何工程的 `01_data_analysis/` 或工程根——研报是公共文献库。
 
 **铁律**：① 只提取不复现 ② 严禁脑补（原文未明确写「原文未明确」）③ 现象与思路分开记
 ④ 公式照抄 + 变量逐个解释（给到"照着能写代码"的精度）。
 
 **登记引用**：被后续分析/策略引用时，在 `04_delivery/final_report.md` 的「引用研报」节**追加**一行。
 
-#### 2.1 行业研报提取（子能力，research_report/industry_research/）
+#### 2.1 行业研报提取（子能力，`<仓库根>/research_report/industry_research/`）
 
 面向**行业/宏观类研报**（重观点与逻辑链，而非量化算法）。与研报提取的关系：
 **输入 / 读 PDF / 取简称（slug）/ 落盘 / 铁律 / 引用登记、与其他能力衔接完全一致**，
 仅三处不同——
 
-- **输出目录**：`research_report/industry_research/<slug>_main.md`（不存在则创建）
+- **输出目录**：`<仓库根>/research_report/industry_research/<slug>_main.md`（不存在则创建）
 - **提取内容**（模板 `templates/industry_research_template.md`）：
   1. **研报背景**（含可选的观察现象）
   2. **核心观点**——常为多要点，每个要点按六要素提取：观点内容 / 逻辑依据 / 事实依据 /
@@ -131,7 +140,7 @@ python scripts/pdf_extract.py <pdf> [--pages 3-22] [--dpi 150]
 ## Scripts
 
 - `scripts/pdf_extract.py`：**PDF 提取**——auto 判定文本层/图片型；图片型逐页渲染 PNG 供 Read 看图
-- `scripts/create_project.py`：建工程目录（`01_data_analysis` / `02_strategy_iteration` / `04_delivery` / `research_report`）
+- `scripts/create_project.py`：建工程目录（`01_data_analysis` / `02_strategy_iteration` / `04_delivery`；**不含 `research_report`**——那是仓库根的公共库）
 - `scripts/check_data.py`：数据检查
 - `scripts/local_backtest.py` / `local_portfolio_backtest.py`：回测引擎（单标的 CTA / 组合）
 

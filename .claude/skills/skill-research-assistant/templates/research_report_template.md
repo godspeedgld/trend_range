@@ -98,6 +98,6 @@
 
 ---
 
-> 规范：一个研报一个文件，落在 `research_report/<report_slug>_main.md`。
+> 规范：一个研报一个文件，落在 `<仓库根>/research_report/<report_slug>_main.md`。
 > 只提取、不复现；后续若要复现，作为 `01_data_analysis/analysis_XXX/` 或
 > `02_strategy_iteration/strategy_XXX/` 单独立项，并在其 records/main_idea 中引用本文件名。

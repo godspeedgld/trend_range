@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""PDF 提取 —— 研报提取（research_report/）的前置工具。
+"""PDF 提取 —— 研报提取（仓库根 research_report/，公共文献库）的前置工具。
 
 券商研报 PDF 分两类，处理方式完全不同，**先自动判定再走对应路径**：
 

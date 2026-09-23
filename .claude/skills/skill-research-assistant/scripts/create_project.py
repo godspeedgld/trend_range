@@ -42,7 +42,9 @@ def _default_root() -> Path:
 
 
 DEFAULT_ROOT = _default_root()
-SUBDIRS = ["01_data_analysis", "02_strategy_iteration", "04_delivery", "research_report"]
+# ★ research_report/ 已**移出工程**：研报提取是跨项目公共能力，产出统一落仓库根
+#   `research_report/`（见 SKILL.md §2），不再每个工程各建一份。
+SUBDIRS = ["01_data_analysis", "02_strategy_iteration", "04_delivery"]
 
 
 def slugify(value: str) -> str:

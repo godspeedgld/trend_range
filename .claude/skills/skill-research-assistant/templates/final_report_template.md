@@ -23,7 +23,7 @@
 
 | 简称 | 研报标题 | 机构 | 日期 | 提取文件 | 被谁引用 |
 |------|---------|------|------|---------|---------|
-| llt_low_lag_trendline_dongbei_20240115 | 低延迟趋势线与交易性择时 | 东北证券 | 2024-01-15 | `research_report/llt_low_lag_trendline_dongbei_20240115_main.md` | analysis_009 |
+| llt_low_lag_trendline_dongbei_20240115 | 低延迟趋势线与交易性择时 | 东北证券 | 2024-01-15 | `<仓库根>/research_report/llt_low_lag_trendline_dongbei_20240115_main.md` | analysis_009 |
 
 > 简称命名：`<关键思想英文>_<机构拼音>_<YYYYMMDD>`，纯小写英文+数字+下划线。
 
@@ -35,7 +35,7 @@
 
 | 产物 | 路径 |
 |------|------|
-| 研报提取 | `research_report/<slug>_main.md` |
+| 研报提取 | `<仓库根>/research_report/<slug>_main.md` |
 | 数据分析 | `01_data_analysis/analysis_XXX/` |
 | 策略迭代 | `02_strategy_iteration/strategy_XXX/` |
 | 本报告 | `04_delivery/final_report.md` |

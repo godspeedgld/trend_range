@@ -6,15 +6,20 @@
 
 | 能力 | 输出目录 | 产出 |
 |---|---|---|
-| 研报提取 | `research_report/` | `<slug>_main.md`（思想+指标+回测方法/结果，**不复现**） |
-| └ 行业研报提取（子能力） | `research_report/industry_research/` | `<slug>_main.md`（背景+核心观点+投资建议，多要点六要素） |
+| 研报提取（**仓库根**） | `<仓库根>/research_report/` | `<slug>_main.md`（思想+指标+回测方法/结果，**不复现**） |
+| └ 行业研报提取（子能力） | `<仓库根>/research_report/industry_research/` | `<slug>_main.md`（背景+核心观点+投资建议，多要点六要素） |
 | 数据分析 | `01_data_analysis/analysis_XXX/` | records.md / analysis.py / result_view.html |
 | 策略迭代 | `02_strategy_iteration/strategy_XXX/` | main_idea.md / backtest_strategy/ / final_report.md |
 
 三者**互不依赖**：研报提取是"读文献"，数据分析是"探数据"，策略迭代是"做回测"。
 下游引用关系单向：研报提取 → （可选）数据分析 / 策略迭代。
 
-## 研报提取（research_report/）
+## 研报提取（`<仓库根>/research_report/`，**不在工程内**）
+
+> ★ 研报提取是**跨项目公共能力**：一篇研报会被多个工程引用（如银河「变盘指数」同时被
+> analysis_001 与 strategy_001 引用），按工程各存一份会重复且无法统一检索。
+> 故产出统一落**仓库根** `research_report/`，工程内不再创建该目录。
+> 路径解析：`.env` 的 `RESEARCH_REPORT_ROOT` → 否则"最近含 `.git` 的上级目录"下的 `research_report/`。
 
 **把一个研报/论文/链接/文本，转成结构化的量化思想卡。**
 
@@ -35,11 +40,11 @@
    元信息 / 研报背景 / 现象观察 / 量化思路 / 量化算法·指标 / 回测方法 / 回测结果 /
    可复现性评估 / 与本工程关联。
    （核心是 **量化思路 · 量化指标 · 回测方法 · 回测结果** 四节，其余为上下文）
-3. **落盘**：`research_report/<slug>_main.md`（**目录不存在则创建**）。
+3. **落盘**：`<仓库根>/research_report/<slug>_main.md`（**目录不存在则创建**）。
 4. **登记引用**：若该研报被后续分析/策略引用，在 `04_delivery/final_report.md` 的
    「引用研报」节追加一行（**只能追加，不得改写历史条目**）。
 
-### 行业研报提取（子能力，research_report/industry_research/）
+### 行业研报提取（子能力，`<仓库根>/research_report/industry_research/`）
 
 面向**行业/宏观类研报**——重观点与逻辑链，而非量化算法。研报属于哪类由内容判断：
 以观点/建议为主线 → 行业研报提取；以量化思路/回测为主线 → 母能力研报提取。
@@ -51,7 +56,7 @@
 
 **仅两处不同**：
 
-1. **输出目录**：`research_report/industry_research/<slug>_main.md`（独立目录，与母能力产出不混放）。
+1. **输出目录**：`<仓库根>/research_report/industry_research/<slug>_main.md`（独立目录，与母能力产出不混放）。
 2. **提取内容**（模板 `templates/industry_research_template.md`，多要点结构）：
    - **研报背景**：作者为何写、行业与政策环境；含可选的**观察现象**（原文有则忠实记录）
    - **核心观点**（常为多要点）：每个要点一张六要素表——
@@ -78,10 +83,10 @@
 ### 与其他能力的衔接
 
 - 研报提取完成后，若用户要**验证**其中某个指标 → 立 `01_data_analysis/analysis_XXX/`，
-  在 records.md 的 main_idea 注明「承接 research_report/<slug>_main.md」。
+  在 records.md 的 main_idea 注明「承接 `<仓库根>/research_report/<slug>_main.md`」。
 - 若要**实盘化**某个思路 → 立 `02_strategy_iteration/strategy_XXX/`，
   在 main_idea.md 注明引用来源。
-- **不复现的回测**：研报里的回测结果只做记录，不在 research_report/ 下写任何回测代码。
+- **不复现的回测**：研报里的回测结果只做记录，不在 `<仓库根>/research_report/` 下写任何回测代码。
 
 ## 数据分析（01_data_analysis/analysis_XXX/）
 
@@ -147,7 +152,7 @@
 
 | 简称 | 研报标题 | 机构 | 日期 | 提取文件 | 被谁引用 |
 |---|---|---|---|---|---|
-| llt_low_lag_trendline_dongbei_20240115 | 低延迟趋势线与交易性择时 | 东北证券 | 2024-01-15 | `research_report/…_main.md` | analysis_009 |
+| llt_low_lag_trendline_dongbei_20240115 | 低延迟趋势线与交易性择时 | 东北证券 | 2024-01-15 | `<仓库根>/research_report/…_main.md` | analysis_009 |
 ```
 
 **只能追加，不得改写历史条目。**

@@ -104,7 +104,7 @@
 
 ---
 
-> 规范：一个研报一个文件，落在 `research_report/industry_research/<report_slug>_main.md`。
+> 规范：一个研报一个文件，落在 `<仓库根>/research_report/industry_research/<report_slug>_main.md`。
 > 输入 / 读 PDF / 取简称 / 落盘 / 铁律 / 引用登记，与「研报提取」完全一致；仅提取内容与模板不同。
 > 后续若要验证某个观察指标 → 立 `01_data_analysis/analysis_XXX/`；
 > 若要实盘化某条建议 → 立 `02_strategy_iteration/strategy_XXX/`，均在其记录中引用本文件。
