@@ -52,6 +52,10 @@ research-projects/**/*.html
 # 例外：分析可视化与回测报告是成品（人看的最终产物），保留（28+35 个，约 58M）
 !research-projects/**/result_view.html
 !research-projects/**/backtest_report.html
+# 例外：data_from_cloud/ 是**云端平台导出的原始证据**（策略源码/成交明细/云端回调数据），
+#       本地无法再生（重取需再跑云端 + 消耗 BigQuery 配额）→ 入库。
+#       与上面"回测明细可从脚本重生成"的假设不同，故单独开例外。
+!research-projects/**/data_from_cloud/*.csv
 # parquet 全是可从 warehouse + 脚本重生成的中间产物（面板/事件/特征），752M，不入库
 research-projects/**/*.parquet
 
