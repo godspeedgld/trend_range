@@ -26,10 +26,17 @@ COLS = ["date", "instrument", "total_market_cap", "float_market_cap", "dividend_
 
 
 def load_todo() -> list[str]:
+    """待拉清单 = **中证1000 并集** − 已有估值（用户 2026-09-28 指定范围）。
+
+    ★ 勿改回"全部 bar1d 缺口"——那是 3528 只 / 97.6M 单元格，超周配额；
+      本版 1197 只 / 255 万行 / 16 列 ≈ 40.8M，卡线装入本周剩余。
+    """
     con = duckdb.connect(str(ROOT / "bigquant_warehouse.duckdb"), read_only=True)
     rows = con.execute("""
         SELECT DISTINCT instrument FROM stock_bar1d s
-        WHERE NOT EXISTS (SELECT 1 FROM stock_valuation v WHERE v.instrument = s.instrument)
+        WHERE s.instrument IN (SELECT DISTINCT member_code FROM index_component
+                               WHERE instrument = '000852.SH')
+          AND NOT EXISTS (SELECT 1 FROM stock_valuation v WHERE v.instrument = s.instrument)
         ORDER BY 1""").fetchall()
     con.close()
     return [r[0] for r in rows]
