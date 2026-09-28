@@ -59,6 +59,25 @@
 
 主键：`(instrument, date)`
 
+### cn_stock_status（证券状态标记）
+
+每日证券状态标记：ST / 停牌 / 涨跌停 / 除权除息 / 风险警示。用于非 ST 过滤、
+停牌剔除、涨跌停可成交判定、除权除息日识别（云端策略 `st_status = 0 AND suspended = 0`
+即出自此表）。
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| instrument | string | 证券代码 |
+| st_status | int8 | ST 标记(0-正常, 1-ST, 2-*ST) |
+| suspended | int8 | 停牌标记(0-正常, 1-停牌) |
+| price_limit_status | int8 | 涨跌停状态(1-跌停, 2-非涨跌停, 3-涨停) |
+| exdr | int8 | 除权除息标记(0-非除权除息日, 1-除权除息日) |
+| date | timestamp[ns] | 日期 |
+| is_risk_warning | int8 | 风险警示标志(0-正常, 1-风险警示) |
+
+主键：`(instrument, date)`。注意：`bar1d` 里 close/amount 为 NULL 也可判停牌（本地实测口径一致），
+本表是**显式标记**来源，更可靠。
+
 ### cn_stock_valuation（估值指标）
 
 每日估值指标，数据源按 TTM/动态/静态口径现成算好，作为原始事实入库（勿自行用财报重算——报告期对齐逻辑复杂）。
