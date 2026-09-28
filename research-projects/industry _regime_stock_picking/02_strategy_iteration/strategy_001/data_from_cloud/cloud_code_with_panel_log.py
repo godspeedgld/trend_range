@@ -1,3 +1,4 @@
+#%%
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -40,7 +41,7 @@ trading_date = os.environ.get("TRADING_DATE")
 if trading_date:     
     BT_END = trading_date 
 else:    
-    BT_END = "2026-09-21"
+    BT_END = "2026-09-28"
 
 DATA_START       = "2009-01-01"    # 变盘指数预热需约 480 根 bar
 CAPITAL_BASE     = 500_000
@@ -244,12 +245,48 @@ print(f"行业指数: {close_ind.shape[1]} 个行业, "
 print(f"周频信号日: {len(weekly)}  {weekly[0].date()} ~ {weekly[-1].date()}")
 
 exposure = compute_stability_exposure(ind_sig, weekly)
+
+# ==================== ★ 调仓行业日志（2026-09-28 加，供本地逐周对比）====================
+# 直接**写文件**（不靠 print 手动复制，避免抄错）：云端工作目录下生成 industry_log.csv，
+# 下载后放到 data_from_cloud/ 再跑 compare_industry_log.py 即可逐周比对。
+# 输出字段：signal_date / regime / exposure(1=满仓 0=空仓) / top3(三个行业中文名，| 分隔)
+_rows = []
+for _d in weekly:
+    _sub = ind_sig.loc[ind_sig["date"] == _d]
+    _rows.append({
+        "signal_date": str(_d.date()),
+        "regime": (_sub["regime"].unique()[0] if len(_sub) else "none"),
+        "exposure": float(exposure.loc[_d]),
+        "top3": "|".join(sorted(NAME.get(c, c) for c in _sub["ind_code"].tolist())),
+    })
+_log = pd.DataFrame(_rows)
+_log.to_csv("industry_log.csv", index=False, encoding="utf-8-sig")
+print(f"★ 调仓行业日志已写出: industry_log.csv（{len(_log)} 周）")
+print(f"  绝对路径: {os.path.abspath('industry_log.csv')}")
+
 cash_weeks = int((exposure < 1.0).sum())
 print(f"信号稳定性过滤: 空仓周数 {cash_weeks}/{len(exposure)} "
       f"({cash_weeks / len(exposure):.1%})")
 
 panel = load_stock_panel(weekly, ind_sig)
 holdings = build_holdings(panel, exposure)
+
+# ==================== ★ 候选池 + 因子日志（2026-09-28 加，供本地逐值对比）====================
+# `panel` 就是云端的【候选池 + 四因子值】（load_stock_panel 已按云端过滤规则筛过：
+# st_status=0 / suspended=0 / list_days>252 / amount>2e7 / 有行业归属，且只留信号日）。
+# 导出它即可同时回答两件事：
+#   ① 候选池差异——哪些股云端有而本地没有（或反之）
+#   ② 因子值差异——同一只股同一信号日，两边的 turn_ratio/px_ma20/mom_20/liq_amount 差多少
+# 优先 parquet（小得多）；若云端无 pyarrow 则自动退回 gzip CSV。
+try:
+    panel.to_parquet("panel_log.parquet", index=False)
+    print(f"★ 候选池+因子已写出: panel_log.parquet（{len(panel):,} 行 × {panel.shape[1]} 列）")
+except Exception as _e:
+    panel.to_csv("panel_log.csv.gz", index=False, compression="gzip", encoding="utf-8")
+    print(f"★ 候选池+因子已写出: panel_log.csv.gz（parquet 不可用: {type(_e).__name__}）")
+print(f"  列: {list(panel.columns)}")
+print(f"  绝对路径: {os.path.abspath('panel_log.parquet' if os.path.exists('panel_log.parquet') else 'panel_log.csv.gz')}")
+
 
 CAL = close_ind.index[(close_ind.index >= pd.Timestamp(BT_START)) &
                       (close_ind.index <= pd.Timestamp(BT_END))]

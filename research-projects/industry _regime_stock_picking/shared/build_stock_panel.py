@@ -21,6 +21,7 @@
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -35,6 +36,16 @@ OUT = HERE / "_cache"
 
 START, END = "2015-01-01", "2026-08-21"     # END 对齐 component_daily / index_component
 INDEXES = ["000300.SH", "000905.SH", "000852.SH"]   # HS300 ∪ CSI500 ∪ CSI1000
+
+# ★ 2026-09-28 扩展（向后兼容，默认行为不变）：
+#   UNIVERSE=index（默认）→ 当期三指数成分池（strategy_001 原口径）
+#   UNIVERSE=full          → **全市场池**（stock_bar1d 全部标的）
+#   加这个是因为 2026-09-28 数据补全后（bar1d 3475→5806 只 = 沪深全市场），
+#   原 baseline 的"+100.5% vs 云端 +801%"差异主因被定位为**股票池**
+#   （云端用 cn_stock_prefactors 全市场；本地当时只有三指数成分）
+#   → 需要用同策略、全市场池重跑，验证该结论。
+UNIVERSE = os.environ.get("UNIVERSE", "index")      # index | full
+SUFFIX = "" if UNIVERSE == "index" else f"_{UNIVERSE}"
 
 MIN_LISTED_BARS = 252       # 上市 > 252 个交易日
 MIN_LIQ_AMOUNT = 2e7        # 20 日均成交额 > 2000 万
@@ -59,18 +70,26 @@ def load_calendar() -> pd.DatetimeIndex:
 
 
 def load_stock_bars() -> tuple[pd.DataFrame, pd.DatetimeIndex]:
-    """个股日线（仅成分股；停牌行剔除）。"""
+    """个股日线（停牌行剔除）。UNIVERSE=full 时取全市场，否则取三指数成分并集。"""
     con = duckdb.connect(str(WAREHOUSE), read_only=True)
-    codes = [r[0] for r in con.execute(
-        f"SELECT DISTINCT member_code FROM index_component "
-        f"WHERE instrument IN ({','.join(repr(c) for c in INDEXES)})").fetchall()]
-    inlist = ",".join(repr(c) for c in codes)
-    print(f"三指数历史并集 {len(codes):,} 只（当期成分池）")
-    df = con.execute(f"""
-        SELECT date, instrument AS symbol, close, open, pre_close, turn, amount, name
-        FROM stock_bar1d
-        WHERE instrument IN ({inlist}) AND date >= '{START}' AND date <= '{END}'
-    """).fetchdf()
+    if UNIVERSE == "full":
+        print("全市场池（stock_bar1d 全部标的，对标云端 cn_stock_prefactors）")
+        df = con.execute(f"""
+            SELECT date, instrument AS symbol, close, open, pre_close, turn, amount, name
+            FROM stock_bar1d
+            WHERE date >= '{START}' AND date <= '{END}'
+        """).fetchdf()
+    else:
+        codes = [r[0] for r in con.execute(
+            f"SELECT DISTINCT member_code FROM index_component "
+            f"WHERE instrument IN ({','.join(repr(c) for c in INDEXES)})").fetchall()]
+        inlist = ",".join(repr(c) for c in codes)
+        print(f"三指数历史并集 {len(codes):,} 只（当期成分池）")
+        df = con.execute(f"""
+            SELECT date, instrument AS symbol, close, open, pre_close, turn, amount, name
+            FROM stock_bar1d
+            WHERE instrument IN ({inlist}) AND date >= '{START}' AND date <= '{END}'
+        """).fetchdf()
     con.close()
     df["date"] = pd.to_datetime(df["date"])
     n_all = len(df)
@@ -113,7 +132,10 @@ def attach_industry(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def attach_membership(df: pd.DataFrame) -> pd.DataFrame:
-    """当日是否属于三指数之一（严格 point-in-time）。"""
+    """当日是否属于三指数之一（严格 point-in-time）。全市场池下该过滤免掉。"""
+    if UNIVERSE == "full":
+        df["in_index"] = True          # 全市场：无成分限制，后续「在成分内」过滤自动全通过
+        return df
     con = duckdb.connect(str(WAREHOUSE), read_only=True)
     mc = con.execute(f"""
         SELECT DISTINCT instrument AS idx, date, member_code AS symbol
@@ -173,8 +195,9 @@ def main():
     cols = ["date", "symbol", "name", "ind_name", "close", "exec_date", "exec_open",
             "turn_ratio", "px_ma20", "mom_20", "liq_amount", "vol_20", "listed_bars"]
     panel = panel[cols].reset_index(drop=True)
-    panel.to_parquet(OUT / "signal_panel.parquet", index=False)
-    print(f"\n→ {OUT}/signal_panel.parquet  ({len(panel):,} 行 × {len(cols)} 列)")
+    out_name = f"signal_panel{SUFFIX}.parquet"
+    panel.to_parquet(OUT / out_name, index=False)
+    print(f"\n→ {OUT}/{out_name}  ({len(panel):,} 行 × {len(cols)} 列)")
 
     # ── 抽查 ──
     print("\n每年信号日数与候选股数:")

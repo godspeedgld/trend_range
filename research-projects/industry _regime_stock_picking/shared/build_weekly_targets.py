@@ -30,6 +30,10 @@ CACHE = HERE / "_cache"
 WAREHOUSE = ROOT / "data_cache/bigquant_warehouse/bigquant_warehouse.duckdb"
 
 MODE = os.environ.get("MODE", "regime")     # regime（迭代一）| baseline（云端原版·恒反转）
+# ★ 2026-09-28 扩展（向后兼容）：UNIVERSE=index（默认，三指数成分）| full（全市场）
+#   与 build_stock_panel.py 的 UNIVERSE 配套——读/写文件名都带后缀，互不覆盖。
+UNIVERSE = os.environ.get("UNIVERSE", "index")
+SUFFIX = "" if UNIVERSE == "index" else f"_{UNIVERSE}"
 N_IND, N_PER_IND, BUF_MULT = 3, 2, 3
 FACTORS = ["turn_ratio", "px_ma20", "mom_20", "liq_amount"]
 
@@ -72,7 +76,7 @@ def build_targets(cand: pd.DataFrame, inds: list[str], dirs: dict,
 def main():
     ind = pd.read_parquet(CACHE / "industry_index.parquet")
     reg = pd.read_parquet(CACHE / "regime.parquet")
-    panel = pd.read_parquet(CACHE / "signal_panel.parquet")
+    panel = pd.read_parquet(CACHE / f"signal_panel{SUFFIX}.parquet")
 
     regi = reg.set_index("date")
     indi = {d: g for d, g in ind.groupby("date")}
@@ -125,7 +129,7 @@ def main():
     plan = pd.DataFrame(plan_rows)
     tgts = pd.DataFrame(tgt_rows)
     plan.to_parquet(CACHE / "weekly_plan.parquet", index=False)
-    tgts.to_parquet(CACHE / f"weekly_targets_{MODE}.parquet", index=False)
+    tgts.to_parquet(CACHE / f"weekly_targets_{MODE}{SUFFIX}.parquet", index=False)
     print(f"[{MODE}] weekly_plan: {len(plan)} 信号日（满仓 {int(plan['exposure'].sum())}）")
     print(f"[{MODE}] weekly_targets: {len(tgts):,} 行 / {tgts['symbol'].nunique()} 只")
     wsum = tgts.groupby("signal_date")["weight"].sum()
@@ -146,7 +150,7 @@ def main():
         con.close()
         mk["date"] = pd.to_datetime(mk["date"])
         mk = mk.sort_values(["symbol", "date"]).reset_index(drop=True)
-        mk.to_parquet(CACHE / "engine_market.parquet", index=False)
+        mk.to_parquet(CACHE / f"engine_market{SUFFIX}.parquet", index=False)
         print(f"[market] {len(mk):,} 行 / {mk['symbol'].nunique()} 只 / "
               f"{mk['date'].min().date()} ~ {mk['date'].max().date()}")
 

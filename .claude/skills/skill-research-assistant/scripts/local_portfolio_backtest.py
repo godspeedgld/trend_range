@@ -79,6 +79,11 @@ def run_portfolio(market: pd.DataFrame, strat, params: dict):
     # 固定名义口径：每仓固定金额（不复利），weight = 名义/初始本金；None = 复利（weight=1/n）
     fixed_notional = params.get("fixed_notional")
     initial_cash = params.get("initial_cash", 1_000_000.0)
+    # ★ 组件化权重语义（2026-09-28）：fixed（默认，原行为）| rebalance（每日再平衡+逐日成本）
+    weight_mode = params.get("weight_mode", "fixed")
+    if weight_mode == "rebalance":
+        print("[权重模式] rebalance —— 每日把漂移后的权重再平衡回目标并逐日收成本"
+              "（对标 bigtrader handle_data_weight_based）")
 
     dates = sorted(market["date"].unique())
     symbols = sorted(market["symbol"].unique())
@@ -201,6 +206,7 @@ def run_portfolio(market: pd.DataFrame, strat, params: dict):
         d_prev = dates[t - 1]
         r = exit_extra
         held_today = 0
+        per_sym_ret: dict[str, float] = {}   # 当日各持仓股收益（rebalance 模式算漂移用）
         for sym, h in holdings.items():
             if pd.Timestamp(h["entry_date"]) > pd.Timestamp(d):
                 continue                     # t+1 开盘入场，决策日不归因（防前视）
@@ -209,13 +215,27 @@ def run_portfolio(market: pd.DataFrame, strat, params: dict):
             if pd.Timestamp(h["entry_date"]) == pd.Timestamp(d):
                 o = open_px.loc[d, sym] if sym in open_px.columns else np.nan
                 if pd.notna(o) and o > 0 and pd.notna(c_now):
-                    r += h["weight"] * (c_now / o - 1.0)     # 入场日：开盘→收盘
+                    per_sym_ret[sym] = c_now / o - 1.0       # 入场日：开盘→收盘
             else:
                 c_prev = close_ff.loc[d_prev, sym] if sym in close_ff.columns else np.nan
                 if pd.notna(c_now) and pd.notna(c_prev) and c_prev > 0:
-                    r += h["weight"] * (c_now / c_prev - 1.0)
+                    per_sym_ret[sym] = c_now / c_prev - 1.0
+            r += h["weight"] * per_sym_ret.get(sym, 0.0)
             c_raw = close_px.loc[d, sym] if sym in close_px.columns else np.nan
             h["peak"] = max(h["peak"], c_raw if pd.notna(c_raw) else h["peak"])
+
+        # ── weight_mode=rebalance：每日按目标权重再平衡，收当日再平衡成本 ──
+        #   漂移后权重 w'_i = w_i(1+r_i) / Σ w_j(1+r_j)；再平衡回 w_i 需要
+        #   卖出 Σ(w'_i−w_i)+ 、买入 Σ(w_i−w'_i)+ ，两边相等 → turnover = 2×单边偏离。
+        #   fixed 模式（默认）不做这一步，与原行为逐值一致。
+        if weight_mode == "rebalance" and per_sym_ret:
+            drifted = {s: holdings[s]["weight"] * (1.0 + rr)
+                       for s, rr in per_sym_ret.items()}
+            tot = sum(drifted.values())
+            if tot > 0:
+                one_side = sum(abs(drifted[s] / tot - holdings[s]["weight"])
+                               for s in drifted) / 2.0
+                r -= 2.0 * one_side * cost
         r -= turnover * cost  # 调仓成本
         daily_rets.append({"date": d, "ret": r,
                            "n_holdings": held_today,
@@ -413,6 +433,12 @@ def main() -> int:
     p.add_argument("--max-positions", type=int, default=DEFAULT_PARAMS["max_positions"])
     p.add_argument("--cost-bps", type=float, default=DEFAULT_PARAMS["cost_bps"])
     p.add_argument("--warmup", type=int, default=DEFAULT_PARAMS["warmup"])
+    p.add_argument("--weight-mode", choices=["fixed", "rebalance"], default="fixed",
+                   help="持仓权重语义（组件化，使用者选）："
+                        "fixed（默认，原行为）= 每日按**固定目标权重**计收益，仅在调仓日收成本；"
+                        "rebalance = 每日把漂移后的权重**再平衡回目标**并逐日收取再平衡成本 "
+                        "—— 对标 BigQuant bigtrader 的 handle_data_weight_based（目标权重下单，"
+                        "每日执行；实测云端该模式下 56.8%% 的成交 <1 万元、同一只股隔日常再成交）")
     p.add_argument("--output-dir", help="输出目录（默认 {project_dir}/03_backtest_strategy）")
     p.add_argument("--initial-cash", type=float, default=1_000_000.0)
     p.add_argument("--fixed-notional", type=float, default=None,
@@ -439,7 +465,8 @@ def main() -> int:
     strat = load_portfolio_strategy(cfg.strategy_py)
     params = {"max_positions": args.max_positions, "cost_bps": args.cost_bps,
               "warmup": args.warmup, "fixed_notional": args.fixed_notional,
-              "initial_cash": args.initial_cash}
+              "initial_cash": args.initial_cash,
+              "weight_mode": args.weight_mode}
 
     daily_df, holdings_df, trades_df = run_portfolio(market, strat, params)
     daily = daily_df["ret"]
