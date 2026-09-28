@@ -59,19 +59,22 @@ def load_symbols() -> list[str]:
     return sorted(set(syms))
 
 
-def month_ranges(year: int, today: date) -> list[tuple[str, str]]:
-    """(start, end) 列表，YYYYMMDD；最后一个月截到今天
+def month_ranges(year: int, today: date, until: date | None = None) -> list[tuple[str, str]]:
+    """(start, end) 列表，YYYYMMDD；最后一个月截到 today 与 until 的较早者
 
     ⚠ 月末必须用 calendar.monthrange 取真实天数 —— 曾经把 2 月写死成 28 号，
     结果**闰年 2/29 整天被吃掉**（2024-02-29 就这样丢过一次，接口其实有数据）
+    ★ until（--until）：用户指定的截止日（已收盘的完整交易日），避免把"今天的盘中
+      半日快照"写进分区——playbook：只刷新到最新**已收盘**交易日。
     """
+    cap = min(today, until) if until else today
     out = []
     for m in range(1, 13):
         a = date(year, m, 1)
         b = date(year, m, calendar.monthrange(year, m)[1])
-        if a > today:
+        if a > cap:
             break
-        out.append((a.strftime("%Y%m%d"), min(b, today).strftime("%Y%m%d")))
+        out.append((a.strftime("%Y%m%d"), min(b, cap).strftime("%Y%m%d")))
     return out
 
 
@@ -119,24 +122,32 @@ def main():
     ap.add_argument("--start", type=int, default=DEFAULT_START_YEAR, help="起始年")
     ap.add_argument("--end", type=int, default=DEFAULT_END_YEAR, help="结束年")
     ap.add_argument("--force", type=int, nargs="*", default=[], help="强制重拉的年份")
+    ap.add_argument("--force-month", type=str, nargs="*", default=[],
+                    help="强制重拉的月（YYYYMM，可多个）——只重写该月分区（playbook：增量刷新）")
+    ap.add_argument("--until", type=str, default=None,
+                    help="截止日 YYYYMMDD（只拉到该日收盘，避免当日盘中快照入库）")
     args = ap.parse_args()
 
     from pandadata_runtime import init_pandadata
     pd_ = init_pandadata()
     syms = load_symbols()
     today = date.today()
+    until = (datetime.strptime(args.until, "%Y%m%d").date()
+             if args.until else None)
     OUT.mkdir(parents=True, exist_ok=True)
     done = json.loads(CKPT.read_text(encoding="utf-8")) if CKPT.exists() else {}
     t0 = time.time()
-    print(f"HS300 历史并集 {len(syms)} 只 · {args.start}~{args.end} · "
-          f"已落盘 {len(done)} 批\n" + "=" * 68)
+    print(f"HS300 历史并集 {len(syms)} 只 · {args.start}~{args.end}"
+          + (f" · 截止 {until}" if until else "")
+          + f" · 已落盘 {len(done)} 批\n" + "=" * 68)
 
     for year in range(args.start, args.end + 1):
         force = year in args.force
-        for a, b in month_ranges(year, today):
+        for a, b in month_ranges(year, today, until):
             key = f"{a[:6]}"
             f = part_path(year, int(a[4:6]))
-            if f.exists() and not force:
+            fm = key in args.force_month
+            if f.exists() and not (force or fm):
                 print(f"  {key}  跳过（已存在 {f.stat().st_size/1e6:.0f} MB）")
                 continue
             t = time.time()
