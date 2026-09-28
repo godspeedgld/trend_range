@@ -48,6 +48,22 @@ CAPITAL_BASE     = 500_000
 BUY_COST, SELL_COST, MIN_COST = 0.0003, 0.0013, 5
 SLIPPAGE         = 0.0             # 不计滑点
 
+# ==================== ★ 因子对账导出（2026-09-28 加）====================
+# 用途：把「调仓日 × 当周选中行业」的因子 panel 存成文件，下载后与本地 BigQuant
+#       仓库算出的因子逐值比对，定位是哪个因子算得不一样。
+# 背景：行业信号已证实 494/494 周与本地完全一致，差异只可能在因子值。
+PANEL_START = "2026-01-01"      # 只导 2026（用户要求；数据量小、能立刻比对）
+# END 取 2026-08-14：本地信号日到这天为止。原因是 build_stock_panel 的「次日可成交」
+# 过滤需要**下一个交易日**，而 2026-08-21 正好是本地数据的最后一天 → 本地永远产不出
+# 2026-08-21 这一期（属范围边界产物，不是数据缺口）。对齐到 08-14 两边才逐日可比。
+PANEL_END   = "2026-08-14"
+# ★ 叠加累积器：本函数被调用多次 / 本 cell 被重复运行时**追加**而不是覆盖
+#   —— 否则文件里只会剩下最后一次那几天的数据。
+_PANEL_ACCUM = []
+# 注意：**云端没有配额限制**（配额只对本地 SDK 生效），所以取数与回测都照常跑全区间，
+# 这里只把**导出**的部分限定在 2026（比对用，数据量小）。
+# 另外云端 dai 没有 `get_data_quota()`（那是本地 SDK 才有的），别在云端调它。
+
 
 # ==================== 1. 行业层：变盘指数 → 每周前 3 个行业 ====================
 def load_industry_close():
@@ -133,8 +149,15 @@ def compute_stability_exposure(ind_sig, weekly):
 
 # ==================== 2. 选股层：行业内四因子复合排名 ====================
 def load_stock_panel(sig_dates, ind_sig):
-    """只在信号日取数，并裁剪到当周多头行业，避免全区间个股面板过大。"""
+    """只在信号日取数，并裁剪到当周多头行业，避免全区间个股面板过大。
+
+    ★ 2026-09-28 改（供本地因子对账）：取数与截断逻辑**一字未改**，
+      只在最后把生成的 panel 里 2026 的部分**叠加导出**成文件
+      （`_PANEL_ACCUM` 累积 → 重复运行只追加不覆盖，否则只剩最后一次的日期）。
+    """
     dl = ",".join(f"'{pd.Timestamp(d).strftime('%Y-%m-%d')}'" for d in sig_dates)
+    # 两个阈值内联为字面量（值与 MIN_AMOUNT / STOCK_VOL_WINDOW 相同）。
+    # 不用 $占位符 + params：省得再踩「excess parameters」/「can't be prepared」。
     sql = f"""
     WITH ts AS (
         SELECT date, instrument, sw_level_index_code AS ind_code,
@@ -142,21 +165,40 @@ def load_stock_panel(sig_dates, ind_sig):
             close / (m_avg(close, 20) + 1e-8) - 1       AS px_ma20,
             close / m_lag(close, 20) - 1                AS mom_20,
             m_avg(amount, 20)                           AS liq_amount,
-            m_nanstd(close / m_lag(close, 1) - 1, $vol_window) AS vol_stock
+            m_nanstd(close / m_lag(close, 1) - 1, {STOCK_VOL_WINDOW}) AS vol_stock
         FROM cn_stock_prefactors
         WHERE st_status = 0 AND suspended = 0 AND list_days > 252
-          AND amount > $min_amount AND sw_level_index_code IS NOT NULL
+          AND amount > {int(MIN_AMOUNT)} AND sw_level_index_code IS NOT NULL
     )
     SELECT * FROM ts WHERE date IN ({dl})
     """
     # 缓冲 1 年供 m_avg(turn, 60) 等窗口函数预热
     buf = (pd.Timestamp(BT_START) - pd.Timedelta(days=365)).strftime("%Y-%m-%d")
-    df = dai.query(sql, filters={"date": [buf, BT_END]},
-                   params={"min_amount": MIN_AMOUNT,
-                           "vol_window": STOCK_VOL_WINDOW}).df()
+    df = dai.query(sql, filters={"date": [buf, BT_END]}).df()
     df["date"] = pd.to_datetime(df["date"])
     key = set(zip(ind_sig["date"], ind_sig["ind_code"]))
-    return df[[(d, c) in key for d, c in zip(df["date"], df["ind_code"])]].copy()
+    out = df[[(d, c) in key for d, c in zip(df["date"], df["ind_code"])]].copy()
+
+    # ── ★ 叠加写出（对账用）──
+    _sub = out[(out["date"] >= pd.Timestamp(PANEL_START))
+               & (out["date"] <= pd.Timestamp(PANEL_END))]
+    if len(_sub):
+        _PANEL_ACCUM.append(_sub)
+        _acc = (pd.concat(_PANEL_ACCUM, ignore_index=True)
+                  .drop_duplicates(subset=["date", "instrument"], keep="last")
+                  .sort_values(["date", "instrument"]).reset_index(drop=True))
+        try:
+            _acc.to_parquet("panel_2026.parquet", index=False)
+            _path = "panel_2026.parquet"
+        except Exception as _e:
+            _path = "panel_2026.csv.gz"
+            _acc.to_csv(_path, index=False, compression="gzip", encoding="utf-8")
+            print(f"  （parquet 不可用: {type(_e).__name__} → 退 gzip CSV）")
+        print(f"★ 因子panel已**叠加**写出: {len(_acc):,} 行 × {_acc.shape[1]} 列 / "
+              f"{_acc['date'].nunique()} 个信号日 / {_acc['instrument'].nunique()} 只")
+        print(f"  列: {list(_acc.columns)}")
+        print(f"  绝对路径: {os.path.abspath(_path)}")
+    return out
 
 
 def build_holdings(panel, exposure):
