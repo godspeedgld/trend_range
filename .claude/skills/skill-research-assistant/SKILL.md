@@ -13,6 +13,7 @@
 |---|---|---|
 | **研报提取**（**仓库根**） | `<仓库根>/research_report/` | `<slug>_main.md` —— 思想·指标·回测方法/结果 |
 | └ **行业研报提取**（子能力） | `<仓库根>/research_report/industry_research/` | `<slug>_main.md` —— 背景·核心观点·投资建议（多要点六要素） |
+| └ **因子研报提取**（子能力） | `<仓库根>/research_report/factor_research/` | `<slug>_main.md` —— 背景·因子逻辑·分层构建·有效性验证·回测绩效 |
 | **数据分析** | `<工程>/01_data_analysis/analysis_XXX/` | records.md / analysis.py / result_view.html |
 | **策略迭代** | `<工程>/02_strategy_iteration/strategy_XXX/` | main_idea.md / backtest_strategy/ / final_report.md |
 
@@ -108,6 +109,29 @@ python scripts/pdf_extract.py <pdf> [--pages 3-22] [--dpi 150]
 - **多要点拆分**：并列因素各算一个要点。例「地产行业三个关键因素：公积金利率、
   核心城市房价、人民币汇率」→ 拆 3 个要点分别提取与解释
 
+#### 2.2 因子研报提取（子能力，`<仓库根>/research_report/factor_research/`）
+
+面向**因子类研报**（核心是一个因子及其构造与检验）。与研报提取的关系：
+**输入 / 读 PDF / 取简称（slug）/ 落盘 / 铁律 / 引用登记、与其他能力衔接完全一致**，
+仅四处不同——
+
+- **输出目录**：`<仓库根>/research_report/factor_research/<slug>_main.md`（不存在则创建）
+- **提取内容**（模板 `templates/factor_research_template.md`）：
+  1. **研报背景**
+  2. **因子逻辑**——因子生成的逻辑来源：观察的现象 / 交易经验 / 经济学（行为金融）理论等，
+     并整理成"信号 → 预示未来收益"的推理链
+  3. **因子构建**——定义 / 量化表达 / 逻辑解释。因子可能是**组合构造**：每一层的每个
+     （子）因子都要独立提取这三项。例：方正「潮汐因子」= 强潮汐 ⊕ 弱潮汐 → 两个子因子
+     各自完整提取；「适度冒险」= 月耀眼波动率 ⊕ 月耀眼收益率，两侧又各由月均/月稳合成 → 逐层提取
+  4. **因子有效性验证**——文中有则全提：分组结果与单调性 / Rank IC / Rank ICIR / t 值 /
+     信息比率 / 中性化处理（市值、行业、**小市值中性化**）/ 风格因子剥离（纯净因子）/
+     相关性 / 参数敏感性 / IS-OOS / 分年度；原文**没测**的逐条标为验证缺口
+  5. **因子回测**——各**样本空间/样本区间**下的回测绩效（逐池一行）+ 统一设定与局限
+- **与其他研报能力的分流**：报告核心是"一个（组合）因子及其构造与检验" → 本子能力；
+  是"一套策略/信号体系" → 母能力研报提取；重行业观点与逻辑链 → 行业研报提取
+- **与复现的衔接**：提取件是 `skill-report-replication-factor`（端到端复现）的输入——
+  先提取思想卡，再决定是否立项复现
+
 ### 3. 数据分析（01_data_analysis/analysis_XXX/）
 每个分析一个 id（analysis_001, 002...），含 records.md / analysis.py / result_view.html：
 
@@ -148,6 +172,7 @@ python scripts/pdf_extract.py <pdf> [--pages 3-22] [--dpi 150]
 
 - `templates/research_report_template.md`：**研报提取**思想卡（8 节，含 slug 命名规则）
 - `templates/industry_research_template.md`：**行业研报提取**观点卡（背景/核心观点/投资建议，多要点六要素）
+- `templates/factor_research_template.md`：**因子研报提取**因子卡（背景/因子逻辑/分层构建/有效性验证/回测绩效）
 - `templates/records_template.md`：数据分析记录（生成/更新/回滚）
 - `templates/main_idea_template.md`：策略思路（时序/因子两模板）
 - `templates/final_report_template.md`：综合报告（含「引用研报」节）
