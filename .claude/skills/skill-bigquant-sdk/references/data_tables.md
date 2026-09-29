@@ -405,6 +405,104 @@ BigQuant 自编行业指数日线（**同一行业代码 × 3 种 method 各一�
 
 ---
 
+### cn_stock_prefactors（A股预计算因子宽表·逐日）
+
+单表聚合了日线行情 + 股本 + 估值 + 状态 + 行业归属 + 指数成分标记，A股全市场（沪深 + 北交所，含 920 系列 BJ）。行业轮动类策略的常用取数入口（不必 join 多表）。
+
+**★ 关键陷阱（2026-09-28 实测，strategy_001 因子对账定位）：`m_*` 窗口宏的窗口落在「通过了全部过滤的行集」上。**
+> 外层 `SELECT * FROM (子查询) WHERE date IN (...)` 会被 DAI **下推进子查询**，于是
+> `m_avg/m_lag/m_nanstd` 的「n 行」= 过滤后行集的 n 行。若 `date IN` 列表只含**周频**信号日，
+> 则「20 日均线」实际是 **20 周**均线（实测同一列 `m_lag(close,1)`：列表放连续交易日 → 得前一交易日收盘；
+> 放周频日期 → 得上一信号日收盘；只给 1 个日期 → 全部 NaN）。
+> 复现/对账时必须把「信号日网格 + 全部 WHERE 过滤」一起重建，窗口才一致。
+
+**★ `list_days` 是自然日**（`day(date - list_date)`），不是交易日 —— 本地用交易日 bar 数近似会偏严（上市 252~364 自然日的股会被误剔）。
+
+| 字段 | 类型 | 描述 |
+|------|------|------|
+| date | timestamp[ns] | 日期 |
+| instrument | string | 证券代码 |
+| adjust_factor | double | 累计后复权因子（= cn_stock_bar1d.adjust_factor） |
+| pre_close | double | 昨收盘价（后复权） |
+| open | double | 开盘价（后复权） |
+| close | double | 收盘价（后复权） |
+| high | double | 最高价（后复权） |
+| low | double | 最低价（后复权） |
+| volume | int64 | 成交量 |
+| deal_number | int32 | 成交笔数 |
+| amount | double | 成交金额 |
+| change_ratio | double | 涨跌幅（后复权） |
+| turn | double | 换手率 |
+| upper_limit | double | 涨停价 |
+| lower_limit | double | 跌停价 |
+| daily_return | double | 日收益率（close / m_lag(close,1) − 1） |
+| momentum_5 | double | 5日动量（close / m_lag(close,5) − 1；其他周期把 N 替换即可） |
+| reversal_5 | double | 5日反转（momentum_5 × −1） |
+| volatility_5 | double | 5日波动率（m_nanstd(daily_return, 5)） |
+| total_shares | double | 总股本 |
+| a_float_shares | double | 流通 A 股 |
+| free_float_shares | double | 自由流通股 |
+| total_float_shares | double | 流通股合计 |
+| total_market_cap | double | 总市值（当日收盘价 × 当日总股本） |
+| float_market_cap | double | 流通市值（当日收盘价 × 当日总股本） |
+| dividend_yield_ratio | double | 股息率（过去一年分红总额 / 当日总股本），可空 |
+| pe_ttm | double | 市盈率TTM（总市值 / 归母净利润TTM） |
+| pe_leading | double | 动态市盈率（总市值 / 最新一期归母净利润×n；1季报 n=4，2季报 n=2，3季报 n=4/3，4季报 n=1），可空 |
+| pe_trailing | double | 静态市盈率（总市值 / 最新一期年报归母净利润），可空 |
+| pb | double | 市净率（总市值 / 最新一期所有者权益） |
+| ps_ttm | double | 市销率TTM（总市值 / 营业总收入TTM） |
+| ps_leading | double | 动态市销率（同 pe_leading 的 n 规则），可空 |
+| ps_trailing | double | 市销率（总市值 / 最新一期年报营业总收入），可空 |
+| pcf_net_ttm | double | 市现率(净额TTM)（总市值 / 现金及现金等价物净增加额TTM），可空 |
+| pcf_net_leading | double | 市现率(净额动态)（同 n 规则），可空 |
+| pcf_op_ttm | double | 市现率(经营TTM)（总市值 / 最新一期经营活动现金流净额），可空 |
+| pcf_op_leading | double | 市现率(经营动态)（同 n 规则），可空 |
+| list_sector | int8 | 上市板块：0-未知；1-主板；2-创业板；3-科创板；4-北交所 |
+| list_date | timestamp[ns] | 上市日期 |
+| list_days | int64 | 已上市天数（**按自然日**：day(date − list_date)） |
+| name | string | 证券简称 |
+| line_price_limit | int32 | 一字涨跌停：0-正常，1-一字涨停，2-一字跌停 |
+| st_status | int8 | ST状态：0-正常，1-ST，2-*ST |
+| is_risk_warning | int8 | 风险警示：0-正常，1-风险警示 |
+| suspended | int8 | 停牌标记：0-正常，1-停牌 |
+| price_limit_status | int8 | 收盘涨跌停状态：1-跌停，2-非涨跌停，3-涨停 |
+| margin_trading_status | int32 | 两融标的：0-不属于，1-属于 |
+| is_sh | int32 | 上交所（instrument LIKE '%.SH'） |
+| is_sz | int32 | 深交所（instrument LIKE '%.SZ'） |
+| is_bj | int32 | 北交所（instrument LIKE '%.BJ'） |
+| is_shzb | int32 | 上交所主板（60%开头 + .SH） |
+| is_kcb | int32 | 科创板（688%开头 + .SH） |
+| is_szzb | int32 | 深交所主板（00%开头 + .SZ） |
+| is_cyb | int32 | 创业板（300%开头 + .SZ） |
+| holding_by_social_security | int32 | 社保基金持股：1-持有，0-未持有 |
+| holding_by_insurance | int32 | 保险持股：1-持有，0-未持有 |
+| concept_set | string | 所属概念指数 |
+| is_szzs | int32 | 属于上证指数：0/1 |
+| is_sh50 | int32 | 属于上证50：0/1 |
+| is_hs300 | int32 | 属于沪深300：0/1 |
+| is_kc50 | int32 | 属于科创50：0/1 |
+| is_zz1000 | int32 | 属于中证1000：0/1 |
+| is_zz100 | int32 | 属于中证100：0/1 |
+| is_zz500 | int32 | 属于中证500：0/1 |
+| is_szcz | int32 | 属于深证成指：0/1 |
+| is_cybz | int32 | 属于创业板指：0/1 |
+| is_sz100 | int32 | 属于深证100：0/1 |
+| is_bz50 | int32 | 属于北证50：0/1 |
+| sw_level1_name | string | 申万一级行业名称（2021版） |
+| sw_level_index_code | string | 申万一级行业指数代码 |
+| sw2021_level1 | string | 申万一级行业代码(2021) |
+| sw2021_level2 | string | 申万二级行业代码(2021) |
+| sw2021_level1_name | string | 申万一级行业名称(2021) |
+| sw2021_level2_name | string | 申万二级行业名称(2021) |
+
+主键：`(instrument, date)`
+> ⚠ 行情/状态字段与 cn_stock_bar1d 等源表**逐值一致**（2026-09-28 抽验 65/65 日期
+> close/amount/turn 全等）—— 两表可互换用于原料；差异只在窗口宏语义与宽表便利字段。
+> ⚠ 含北交所 920 系列（本地 stock_industry_component_daily 只覆盖 49/343 只 .BJ，
+> 用 sw_level_index_code 做行业过滤时本地对账会缺 BJ）。
+
+---
+
 ## 期货数据
 
 ### cn_future_bar1d（期货日线）
