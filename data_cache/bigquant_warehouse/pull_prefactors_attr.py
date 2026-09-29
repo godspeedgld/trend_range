@@ -24,6 +24,7 @@
     python pull_prefactors_attr.py --dry-run            # 只看估算与配额
     python pull_prefactors_attr.py                      # 按断点续拉（预算内能拉几年拉几年）
     python pull_prefactors_attr.py --until 2026-09-26   # 增量刷新时指定截止日
+    python pull_prefactors_attr.py --dates 2026-08-21   # 只拉指定日（冒烟/补洞，~7万 cells/日）
 """
 from __future__ import annotations
 
@@ -110,6 +111,15 @@ def rebuild_views() -> None:
     con.close()
 
 
+def pull_dates(dates: list[str]) -> pd.DataFrame:
+    """拉指定日期列表（date IN + filters 范围 = 已验证模式）。冒烟/补洞用。"""
+    from bigquant import dai
+    dl = ",".join(f"'{d}'" for d in dates)
+    sql = f"SELECT {', '.join(COLS)} FROM {SOURCE} WHERE date IN ({dl})"
+    lo, hi = min(dates), max(dates)
+    return dai.query(sql, filters={"date": [lo, hi]}).df()[COLS]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="只估算+查配额，不拉")
@@ -117,7 +127,28 @@ def main():
                     help="截止日（默认今天；增量刷新用）")
     ap.add_argument("--max-cells", type=int, default=DEFAULT_MAX_CELLS,
                     help="本次拉取的 cells 预算（默认 9000 万）")
+    ap.add_argument("--dates", default=None,
+                    help="只拉指定日期（逗号分隔，如 2026-08-21）—— 冒烟/补洞，不走年批")
     a = ap.parse_args()
+
+    # ── 冒烟/补洞模式：只拉指定日，不做预算判断（量级 ~7 万 cells/日）──
+    if a.dates:
+        dates = [d.strip() for d in a.dates.split(",") if d.strip()]
+        print(f"指定日模式：{dates}（预计 {len(dates) * 5570 * len(COLS):,} cells）")
+        df = pull_dates(dates)
+        ingest(df)
+        rebuild_views()
+        con = duckdb.connect(str(ROOT / "bigquant_warehouse.duckdb"))
+        n, d0, d1 = con.execute(
+            f"SELECT count(*), min(date), max(date) FROM {TABLE}").fetchone()
+        dup = con.execute(
+            f"SELECT count(*) FROM (SELECT instrument, date FROM {TABLE} "
+            f"GROUP BY 1, 2 HAVING count(*) > 1)").fetchone()[0]
+        con.close()
+        print(f"完成：本次 +{len(df):,} 行；{TABLE} 现 {n:,} 行 / {str(d0)[:10]}~{str(d1)[:10]}"
+              f"  主键重复 {dup} {'OK' if dup == 0 else 'FAIL'}")
+        print("视图已建：stock_prefactors_attr / v_prefactors → 可跑 validate_prefactors_attr.py")
+        return
 
     years = list(range(2015, int(a.until[:4]) + 1))
     done = json.loads(CKPT.read_text()) if CKPT.exists() else []
