@@ -6,12 +6,48 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
 
-DEFAULT_ROOT = Path("/home/coder/project/replication/report-replication")
+def _load_env_upward(start: Path, max_up: int = 8) -> None:
+    """从 start 向上逐级查找 .env，找到则载入 os.environ（不覆盖已存在的变量）。"""
+    p = start.resolve()
+    for _ in range(max_up):
+        env_file = p / ".env"
+        if env_file.exists():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            return
+        if p.parent == p:
+            break
+        p = p.parent
+
+
+def _default_root() -> Path:
+    """默认输出根：平台自适应（与 skill-report-replication-cta-ts 同款）。
+
+    优先级：REPLICATION_ROOT（.env 或环境变量，本机 = C:\\Quant\\trend_range\\replication，
+    项目平铺其下，与 cta-ts 技能共用同一个根）> 云环境 /home/coder/project（若存在）
+    > 本地 ~/report-replication。
+    """
+    _load_env_upward(Path(__file__).parent)
+    env = os.environ.get("REPLICATION_ROOT")
+    if env:
+        return Path(env)
+    cloud = Path("/home/coder/project/replication/report-replication")
+    if cloud.parent.parent.exists():
+        return cloud
+    return Path.home() / "report-replication"
+
+
+DEFAULT_ROOT = _default_root()
 SUBDIRS = [
     "01_translation",
     "02_factor_reproduction",

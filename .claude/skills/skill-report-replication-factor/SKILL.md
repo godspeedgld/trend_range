@@ -43,7 +43,12 @@ quantSkills:
 
 ## Purpose
 
-Turn a quant report, paper, PDF, webpage, or text source into a complete research delivery package under `/home/coder/project/replication/report-replication`:
+Turn a quant report, paper, PDF, webpage, or text source into a complete research delivery package under `<REPLICATION_ROOT>/{report_id}`:
+
+> **输出根解析（与 skill-report-replication-cta-ts 同款）**：优先 `.env` / 环境变量的
+> `REPLICATION_ROOT`（本机 = `C:\Quant\trend_range\replication`，项目**平铺其下**，
+> 与 cta-ts 技能共用同根）；未设且存在 `/home/coder/project`（云端）则用云路径；
+> 否则 `~/report-replication`。下文所有 `<REPLICATION_ROOT>` 均指此根。
 
 1. Full Chinese translation of the original report or paper.
 2. Chinese AI summary plus factor formula reconstruction in Markdown.
@@ -73,7 +78,7 @@ This skill is self-contained for translation, factor reconstruction, factor vali
 Create one project directory per report:
 
 ```text
-/home/coder/project/replication/report-replication/{report_id}/
+<REPLICATION_ROOT>/{report_id}/
   01_translation/full_translation.md
   02_factor_reproduction/ai_summary_and_factor_formula.md
   02_factor_reproduction/reference_implementation.py
@@ -150,7 +155,7 @@ If a subagent/background agent is used:
 
 - The main agent remains fully responsible for correctness and final delivery.
 - Subagent outputs are drafts only. They must never be copied into final artifacts without main-agent review.
-- Subagents must write only under `/home/coder/project/replication/report-replication/{report_id}/.agent_work/` or another explicitly isolated scratch directory.
+- Subagents must write only under `<REPLICATION_ROOT>/{report_id}/.agent_work/` or another explicitly isolated scratch directory.
 - Subagents must not overwrite final artifacts such as `factor_validation_report.html`, `strategy.py`, `signal_log.jsonl`, `manifest.json`, or delivery summaries.
 - The main agent must independently verify formulas, data provenance, leakage checks, generated CSVs, charts, BACKTEST reports, and conclusions before promotion into final artifacts.
 - The main agent must rerun the relevant step checks and final `quality_gate_check.py` after integrating any subagent work.
@@ -169,12 +174,12 @@ python scripts/check_dependencies.py --install
 Use the bundled local BACKTEST engine by default:
 
 ```bash
-python scripts/local_backtest.py /home/coder/project/replication/report-replication/{report_id} --market-data /path/to/market_data.csv
+python scripts/local_backtest.py <REPLICATION_ROOT>/{report_id} --market-data /path/to/market_data.csv
 ```
 
 The bundled engine reads real market data plus `04_backtest_strategy/backtest_logs/signal_log.jsonl`, applies a configurable execution lag, estimates fees/slippage, and writes equity, trade, metric, alignment, raw, and Chinese HTML report artifacts. If the user explicitly supplies an external BACKTEST runner, use it only after documenting the entrypoint, command, config, and output mapping in `manifest.json`.
 
-Use `scripts/create_project.py` to create the output structure and `manifest.json`. The default root is `/home/coder/project/replication/report-replication`.
+Use `scripts/create_project.py` to create the output structure and `manifest.json`. The default root resolves via `REPLICATION_ROOT` (see Purpose above); `--root` overrides it.
 
 Record:
 
@@ -199,7 +204,7 @@ Requirements:
 After Step 2, run:
 
 ```bash
-python scripts/check_step2_translation.py /home/coder/project/replication/report-replication/{report_id}
+python scripts/check_step2_translation.py <REPLICATION_ROOT>/{report_id}
 ```
 
 Do not move to Step 3 until the gate passes or the blocker is documented.
@@ -218,7 +223,7 @@ The reference implementation must include factor calculation functions precise e
 After Step 3, run:
 
 ```bash
-python scripts/check_step3_factor_reconstruction.py /home/coder/project/replication/report-replication/{report_id}
+python scripts/check_step3_factor_reconstruction.py <REPLICATION_ROOT>/{report_id}
 ```
 
 Do not move to factor validation until the gate passes or the blocker is documented.
@@ -295,7 +300,7 @@ Required behavior:
 After Step 5, run:
 
 ```bash
-python scripts/check_step5_strategy.py /home/coder/project/replication/report-replication/{report_id}
+python scripts/check_step5_strategy.py <REPLICATION_ROOT>/{report_id}
 ```
 
 Then update `03_factor_validation/factor_validation_report.html` with Phase B alignment results.
@@ -317,7 +322,7 @@ If any required stage fails, also create `failure_report.md`.
 Before final delivery, run:
 
 ```bash
-python scripts/quality_gate_check.py /home/coder/project/replication/report-replication/{report_id}
+python scripts/quality_gate_check.py <REPLICATION_ROOT>/{report_id}
 ```
 
 If the command reports errors, do not deliver as complete. Fix the errors and rerun, or provide `failure_report.md` and state that the project is blocked rather than complete.
