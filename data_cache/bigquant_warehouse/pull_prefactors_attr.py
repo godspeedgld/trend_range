@@ -20,6 +20,12 @@
     第 1 周：2015–2021 ≈ 8,710 万 ✓
     第 2 周：2022–至今 ≈ 7,680 万 ✓
 
+★ 全量校验（用户 2026-09-29 要求）：云端 cn_stock_prefactors 是全市场表；本地
+  stock_bar1d 也是全市场（5,806 只，09-28 与云端逐月抽样枚举对齐）→ 每年拉完以
+  bar1d 为基准做**键级反连接**（bar1d 有而 attr 没有的 (股,日) 键），发现缺口按
+  instrument IN 整年补拉（预算内）；补完仍缺的 = 云端本身无该行，记录即可。
+  --dates 模式只报告不自动补（冒烟不该触发大查询）。
+
 用法：
     python pull_prefactors_attr.py --dry-run            # 只看估算与配额
     python pull_prefactors_attr.py                      # 按断点续拉（预算内能拉几年拉几年）
@@ -120,6 +126,58 @@ def pull_dates(dates: list[str]) -> pd.DataFrame:
     return dai.query(sql, filters={"date": [lo, hi]}).df()[COLS]
 
 
+def pull_symbols_year(symbols: list[str], year: int, until: str) -> pd.DataFrame:
+    """按股票列表拉一个日历年（instrument IN + 日期范围 = 已验证模式）。补缺用。"""
+    from bigquant import dai
+    in_list = ",".join(f"'{s}'" for s in symbols)
+    lo, hi = f"{year}-01-01", min(f"{year}-12-31", until)
+    sql = (f"SELECT {', '.join(COLS)} FROM {SOURCE} "
+           f"WHERE instrument IN ({in_list}) AND date >= '{lo}' AND date <= '{hi}'")
+    return dai.query(sql, filters={"date": [lo, hi]}).df()[COLS]
+
+
+def check_gap(year: int, only_date: str | None = None) -> pd.DataFrame:
+    """★ 全量校验（用户 2026-09-29 要求）：bar1d 有而 attr 没有的 (instrument, date)。
+
+    本地 stock_bar1d 是全市场（09-28 与云端逐月抽样枚举对齐，5,806 只），以它为基准
+    做键级反连接 —— 缺多少键、涉及多少只股，一目了然。纯本地查询，零配额。
+    """
+    con = duckdb.connect(str(ROOT / "bigquant_warehouse.duckdb"), read_only=True)
+    cond = f"year(b.date) = {year}" + (f" AND b.date = TIMESTAMP '{only_date}'" if only_date else "")
+    miss = con.execute(f"""
+        SELECT b.instrument, count(*) AS n_miss
+        FROM stock_bar1d AS b
+        LEFT JOIN {TABLE} AS a USING (instrument, date)
+        WHERE {cond} AND a.instrument IS NULL
+        GROUP BY 1 ORDER BY n_miss DESC""").fetchdf()
+    con.close()
+    return miss
+
+
+def fill_gap(year: int, until: str, budget_left: int) -> int:
+    """自动补缺：对缺口股票按整年重拉（去重幂等）。返回本次补拉的 cells。"""
+    miss = check_gap(year)
+    if not len(miss):
+        return 0
+    syms = miss["instrument"].tolist()
+    print(f"    ⚠ 缺口：{len(miss)} 只股票 / {int(miss['n_miss'].sum()):,} 个 (股,日) 键 → 补拉")
+    spent = 0
+    for i in range(0, len(syms), 100):
+        batch = syms[i:i + 100]
+        est = len(batch) * 250 * len(COLS)          # ~250 交易日/年的粗估
+        if spent + est > budget_left:
+            print(f"    · 预算不足，剩余缺口下次再补（已补 {i} 只）")
+            break
+        df = pull_symbols_year(batch, year, until)
+        ingest(df)
+        spent += len(df) * len(COLS)
+    # 复查
+    miss2 = check_gap(year)
+    print(f"    补拉后仍缺 {int(miss2['n_miss'].sum()) if len(miss2) else 0:,} 键"
+          + ("（云端本身无此股/日 → 与 bar1d 源差异，记录即可）" if len(miss2) else " ✓ 全量"))
+    return spent
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="只估算+查配额，不拉")
@@ -147,6 +205,11 @@ def main():
         con.close()
         print(f"完成：本次 +{len(df):,} 行；{TABLE} 现 {n:,} 行 / {str(d0)[:10]}~{str(d1)[:10]}"
               f"  主键重复 {dup} {'OK' if dup == 0 else 'FAIL'}")
+        # 全量校验（只查已拉的这些日期，不触发补拉）
+        for d in dates:
+            miss = check_gap(int(d[:4]), only_date=d)
+            msg = f"{int(miss['n_miss'].sum()):,} 键缺" if len(miss) else "全量 ✓"
+            print(f"  校验 {d}：{msg}")
         print("视图已建：stock_prefactors_attr / v_prefactors → 可跑 validate_prefactors_attr.py")
         return
 
@@ -206,6 +269,9 @@ def main():
         CKPT.write_text(json.dumps(sorted(set(done)), ensure_ascii=False))
         print(f"  {y}: {len(df):,} 行 × {len(COLS)} 列 = {len(df) * len(COLS):,} cells"
               f"  ({time.time() - t0:.0f}s)")
+        # ★ 全量校验 + 自动补缺（用户 2026-09-29 要求：云端是全市场，本地必须逐年核对）
+        gap_cells = fill_gap(y, a.until, budget - spent)
+        spent += gap_cells
 
     if pulled_years:
         rebuild_views()

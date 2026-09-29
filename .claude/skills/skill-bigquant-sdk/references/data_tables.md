@@ -489,6 +489,7 @@ BigQuant 自编行业指数日线（**同一行业代码 × 3 种 method 各一�
 | is_sz100 | int32 | 属于深证100：0/1 |
 | is_bz50 | int32 | 属于北证50：0/1 |
 | sw_level1_name | string | 申万一级行业名称（2021版） |
+| sw_level1_close | double | 所属申万一级行业指数收盘价（官方 wiki 函数列表未收录此列，但实测存在：000001.SZ@2026-08-21 → 银行 4036.966；行业指数面板可从本表 `GROUP BY date, sw_level_index_code` 重建 —— 即云端 load_industry_close 的取数方式） |
 | sw_level_index_code | string | 申万一级行业指数代码 |
 | sw2021_level1 | string | 申万一级行业代码(2021) |
 | sw2021_level2 | string | 申万二级行业代码(2021) |
