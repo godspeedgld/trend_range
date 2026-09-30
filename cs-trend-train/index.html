@@ -121,19 +121,25 @@
 <!-- 提交交易面板：按钮开合；保存成功后按钮变「修改」 -->
 <div id="panel" class="drawer">
   <h4><span id="tTitle">提交交易</span><span id="tClose">✕</span></h4>
+  <label class="f">方向（做空 = 跌赚钱、涨赔钱）</label>
+  <label class="f" style="display:flex;gap:14px;align-items:center;font-weight:400">
+    <label><input type="radio" name="tDir" value="long" checked> 做多</label>
+    <label><input type="radio" name="tDir" value="short"> 做空</label>
+  </label>
   <label class="f">开仓时间 *</label>
   <input id="tDate" type="date">
   <label class="f">开仓价（留空 = 该日开盘价）</label>
   <input id="tBuy" type="number" step="0.01" placeholder="留空 = 当日开盘价">
   <label class="f">止损价 *</label>
-  <input id="tStop" type="number" step="0.01" placeholder="必填">
+  <input id="tStop" type="number" step="0.01" placeholder="必填（须低于开仓价）">
   <label class="f">止盈价 *</label>
-  <input id="tTp" type="number" step="0.01" placeholder="必填">
+  <input id="tTp" type="number" step="0.01" placeholder="必填（须高于开仓价）">
   <div id="tPrev">—</div>
   <button id="tSave">保存</button>
   <button id="tNew" class="alt">＋ 新建一笔</button>
   <div class="hint">出场只认你提交的止损/止盈价：从开仓日当根逐日判定，同日双触按止损计，
-    跳空越过触发价按当日开盘价成交。</div>
+    跳空越过触发价按当日开盘价成交。<b>做空时方向反过来</b>：止损价须<b>高于</b>开仓价、
+    止盈价须<b>低于</b>开仓价，价格<b>跌破止盈</b>才算止盈。</div>
 </div>
 
 <!-- 交易心得面板：佐证标的 + 开仓日期 + 标题 + 内容 -->
@@ -282,8 +288,21 @@ async function loadSettings(){
   $("#sTrades").checked = !!settings.show_trades;
   $("#sRisk").value = settings.risk_amount;
 }
+// 日期合法性：<input type=date> 对非法输入（如 9/31）会**清空为 ""**。
+// 空 / 非法一律当「未指定」——否则 d1="" 会让下面的 findIndex 返回 0，
+// endIdx 塌成 1，画面上只剩一根 K 线（2026-09-30 用户报的 bug）。
+function validYMD(s){
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || "");
+  if (!m) return false;
+  const y = +m[1], mo = +m[2], d = +m[3];
+  const dt = new Date(Date.UTC(y, mo - 1, d));      // 非法日期会自动进位，回读校验拦掉
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
+}
 async function loadAll(){
-  const [d0, d1] = [$("#d0").value, $("#d1").value];
+  const d0raw = $("#d0").value, d1raw = $("#d1").value;
+  const d0ok = validYMD(d0raw), d1ok = validYMD(d1raw);
+  const d0 = d0ok ? d0raw : "2015-01-01";
+  if (!d0ok && d0raw) toast(`起日期「${d0raw}」不是合法日期 → 忽略，用 ${d0}`, false);
   // 4.1/4.4：从「开始日期」一直拉到库内最后一条；「止日期」只是初始窗口的右边界，
   // ▶ 可以越过它继续揭示（4.2），最多到数据库最后一根
   allBars = await api(`/api/klines?symbol=${symbol}&start=${d0}&end=2099-12-31`);
@@ -294,8 +313,12 @@ async function loadAll(){
       : `本地仓库无此标的（现有覆盖：沪深300∪中证500 共 ${meta?meta.total:1578} 只），输入代码/名称可搜索可用标的`, false);
     return;
   }
-  // 初始视图：显示到「止日期」当根（或其前最近一根）
-  let i = allBars.findIndex(b => b.date > d1);
+  if (!d1ok){
+    if (d1raw) toast(`止日期「${d1raw}」不是合法日期 → 忽略，显示到库内最后一条`, false);
+    // 未指定 → 不设右边界：endIdx = -1 分支 → 显示全部（到库内最后一根）
+  }
+  // 初始视图：显示到「止日期」当根（或其前最近一根）；止日期未指定则显示全部
+  let i = d1ok ? allBars.findIndex(b => b.date > d1raw) : -1;
   endIdx = Math.max(1, i === -1 ? allBars.length : i);
   newTrade();                              // 切标的 → 面板回到「新建」并刷新默认开仓日
   refresh(); renderOverlays();
@@ -404,11 +427,13 @@ async function renderOverlays(){
     // 一刀切 filter 表达不了「开仓日在未来 / 平仓日在未来」这种混合状态。
     trades.filter(t => t.entry_date && t.entry_date <= lastDate).forEach(t => {
       const id = "tr_"+t.id;
-      // ▲ 红三角向上 = 开仓（画在**开仓日**，价格就是真实成交价）
+      const isShort = t.direction === "short";
+      // ▲ 红三角 = 开仓（画在**开仓日**，价格就是真实成交价；做空标「开空」用绿色系↓）
       chart.createOverlay({ id: id+"_e", name:"triMarker",
         points:[{timestamp:msOf(t.entry_date), value:t.buy_price}],
-        extendData:{ up:true, label:"开仓 "+fmt(t.buy_price) },
-        styles:{ polygon:{color:"#ef232a", borderColor:"#ef232a"}, text:{color:"#ef232a"} } });
+        extendData:{ up:!isShort, label:(isShort?"开空 ":"开仓 ")+fmt(t.buy_price) },
+        styles:{ polygon:{color:isShort?"#14b143":"#ef232a", borderColor:isShort?"#14b143":"#ef232a"},
+                 text:{color:isShort?"#14b143":"#ef232a"} } });
       tradeOverlays.push(id+"_e");
       // 止损/止盈虚线**不画**（用户 2026-09-18：标注太多看不清，只留三角）
       // 需要时把 priceChannelLine 那两段加回来即可（起点用 t.entry_date）
@@ -438,9 +463,22 @@ function newTrade(){
   $("#tTitle").textContent = "提交交易";
   $("#tSave").textContent = "保存";
   ["#tBuy","#tStop","#tTp"].forEach(s => $(s).value = "");
+  $("input[name=tDir][value=long]").checked = true;
+  dirPlaceholders();
   defaultEntryDate();
   previewTrade();
 }
+// 方向读写 + 占位符随方向切换（做空：止损在上、止盈在下）
+// 用函数声明（非 const 箭头）——避免 newTrade() 在定义前被调用时踩 TDZ
+function getDir(){ return (document.querySelector("input[name=tDir]:checked")||{value:"long"}).value; }
+function dirPlaceholders(){
+  const short = getDir() === "short";
+  $("#tStop").placeholder = short ? "必填（做空：须高于开仓价）" : "必填（须低于开仓价）";
+  $("#tTp").placeholder   = short ? "必填（做空：须低于开仓价）" : "必填（须高于开仓价）";
+}
+document.querySelectorAll("input[name=tDir]").forEach(r => r.addEventListener("change", () => {
+  dirPlaceholders(); schedulePreview();
+}));
 function setEditing(rec){
   editingId = rec.id;
   $("#tTitle").textContent = "修改交易";
@@ -449,6 +487,8 @@ function setEditing(rec){
   $("#tBuy").value  = rec.buy_price ?? "";
   $("#tStop").value = rec.stop_price ?? "";
   $("#tTp").value   = rec.tp_price ?? "";
+  $("input[name=tDir][value=" + (rec.direction || "long") + "]").checked = true;
+  dirPlaceholders();
   previewTrade();
 }
 let prevTimer;
@@ -473,11 +513,13 @@ async function previewTrade(){
   }
   try {
     const r = await post("/api/trades?dry_run=1", { symbol,
-      trade:{ entry_date:ed, buy_price:$("#tBuy").value, stop_price:$("#tStop").value,
+      trade:{ entry_date:ed, direction:getDir(), buy_price:$("#tBuy").value,
+              stop_price:$("#tStop").value,
               tp_price:$("#tTp").value, id: editingId || undefined },
       risk_amount: settings.risk_amount });
     box.className = r._duplicate ? "prev warn" : "prev";
-    box.innerHTML = `开仓 <b>${fmt(r.buy_price)}</b>（${r.entry_source==="bar_open"?"当日开盘":"手填"}）· `
+    box.innerHTML = `<b>${r.direction==="short"?"做空":"做多"}</b> · `
+      + `开仓 <b>${fmt(r.buy_price)}</b>（${r.entry_source==="bar_open"?"当日开盘":"手填"}）· `
       + `每股风险 <b>${fmt(r.risk_per_share)}</b>（${fmt(r.risk_pct*100)}%）· `
       + `可开 <b>${r.shares}</b> 股 · 开仓金额 ${wan(r.notional)} · 止损亏损 ${fmt(r.risk_amount,0)} 元`
       + (r._duplicate ? `<br>⚠ ${r.entry_date} 已有开仓记录，保存时会问是否覆盖` : "");
@@ -492,7 +534,8 @@ $("#tSave").onclick = async () => {
   if (!$("#tStop").value) return toast("止损价必填", false);
   if (!$("#tTp").value)   return toast("止盈价必填", false);
   const mk = extra => ({ symbol, risk_amount: settings.risk_amount, ...extra,
-    trade:{ id: editingId || undefined, entry_date: ed, buy_price: $("#tBuy").value,
+    trade:{ id: editingId || undefined, entry_date: ed, direction: getDir(),
+            buy_price: $("#tBuy").value,
             stop_price: $("#tStop").value, tp_price: $("#tTp").value } });
   $("#tSave").disabled = true;
   try {
@@ -510,7 +553,7 @@ $("#tSave").onclick = async () => {
     editingId = r.id;
     $("#tSave").textContent = "修改";
     $("#tTitle").textContent = "修改交易";
-    toast(`已${r._action==="update"?"更新":"保存"}：开仓 ${fmt(r.buy_price)} × ${r.shares} 股 · `
+    toast(`已${r._action==="update"?"更新":"保存"}：${r.direction==="short"?"开空":"开仓"} ${fmt(r.buy_price)} × ${r.shares} 股 · `
           + (r.exit_date ? `${r.exit_reason} ${fmt(r.exit_price)} @ ${r.exit_date}` : "持仓中"));
     renderOverlays();
   } catch (e) {

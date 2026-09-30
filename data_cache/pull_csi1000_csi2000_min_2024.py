@@ -47,7 +47,13 @@ ROW_GROUP = 200_000
 
 
 def load_todo() -> tuple[list[str], int, int]:
-    """两指 2024 并集 − 表内 2024 已有。返回 (待拉, 重叠数, BJ缺口数)。"""
+    """两指 2024 并集（SH/SZ）。返回 (待拉清单, 已在本地2024的数量, BJ缺口数)。
+
+    ★ 2026-09-30 修 bug：原版减"表内 2024 已有股票"——但分页是【月分区】，昨天拉完
+      1~9 月后并集股几乎全部"已有"→ 待拉=空列表 → get_stock_min(symbol=[]) 行为未定义
+      （10 月碰巧返回全市场 5,110 只，11/12 月返回空）。月粒度断点由 checkpoint 负责
+      跳过、分区合并去重幂等，股票清单**不做"已有"裁剪**，直接用完整并集。
+    """
     con = duckdb.connect(str(BQ), read_only=True)
     rows = [r[0] for r in con.execute(f"""
         SELECT DISTINCT member_code FROM index_component
@@ -61,7 +67,7 @@ def load_todo() -> tuple[list[str], int, int]:
     con.close()
     bj = [s for s in rows if s.endswith(".BJ")]
     overlap = len([s for s in rows if s in have])
-    todo = [s for s in rows if s not in have and s.endswith((".SH", ".SZ"))]
+    todo = [s for s in rows if s.endswith((".SH", ".SZ"))]
     return todo, overlap, len(bj)
 
 

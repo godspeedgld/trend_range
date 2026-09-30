@@ -40,6 +40,8 @@
   .tag.loss { background: #17301f; color: #4cc47a; }
   .tag.tail { background: #3a3320; color: #e8c35a; margin-left: 4px; }
   .tag.pend { background: #2a2e38; color: #9aa3b2; }
+  .tag.longd { background: #3a2020; color: #ef7a7a; }
+  .tag.short { background: #17301f; color: #4cc47a; }
   .del { cursor: pointer; color: #6b7280; }
   .del:hover { color: #e86a6a; }
   #cards { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -150,8 +152,9 @@
   <div class="note">
     <b>统计口径</b>（全部基于上面的过滤结果，不是全库）：<br>
     · <b>只算已平仓</b>的笔 —— 止损止盈都没触及的「持仓中」单列，不进胜率/盈亏比/净值/夏普<br>
-    · <code>R = (平仓价 − 开仓价) / (开仓价 − 止损价)</code>：每笔按自己的风险归一化，
-      止损那笔 = −1.0R。<b>R 不需要股数</b>，所以老记录（无股数）也能参与统计<br>
+    · <code>R = (平仓价 − 开仓价) / (开仓价 − 止损价)</code>（做多）；
+      <code>R = (开仓价 − 平仓价) / (止损价 − 开仓价)</code>（做空，跌赚钱）：每笔按自己的风险归一化，
+      止损那笔 = −1.0R。<b>R 不需要股数</b>，所以老记录（无股数）也能参与统计；老记录无方向字段一律按做多<br>
     · <b>胜率</b> = 盈利笔数 / 已平仓笔数　·　<b>盈亏比</b> = 平均盈利R / |平均亏损R|　·　<b>期望R</b> = 平均R<br>
     · <b>肥尾率</b> = 收益率 ≥ +30% 的占比（与 analysis_012/014 的 <code>is_tail = ret &gt;= 0.3</code> 同口径）<br>
     · <b>夏普</b> = 平均R / R标准差，再乘 <code>√(252 / 平均持仓天数)</code> 年化；同时给出不年化的「逐笔夏普」<br>
@@ -273,7 +276,8 @@ function filtered(){
 
 // ── 清单表 ──
 const COLS = [
-  ["symbol","标的","l"], ["name","名称","l"], ["entry_date","开仓日","l"], ["entry_source","开仓价来源","l"],
+  ["symbol","标的","l"], ["name","名称","l"], ["_dir","方向","l"], ["entry_date","开仓日","l"],
+  ["entry_source","开仓价来源","l"],
   ["buy_price","开仓价"], ["stop_price","止损"], ["tp_price","止盈"], ["shares","股数"],
   ["notional","开仓金额"], ["exit_date","平仓日","l"], ["exit_price","平仓价"], ["exit_reason","平仓原因","l"],
   ["holding_days","持仓天数"], ["pnl","盈亏(元)"], ["ret_pct","收益率%"], ["R","R"],
@@ -283,6 +287,8 @@ function cell(r, k){
   const num = v => v==null ? '<span class="dim">—</span>' : fmt(v);
   switch(k){
     case "name": return r.name || '<span class="dim">—</span>';
+    case "_dir": return r.direction==="short"
+      ? '<span class="tag short">做空</span>' : '<span class="tag longd">做多</span>';
     case "entry_source": return `<span class="dim">${r.entry_source==="bar_open"?"当日开盘":(r.legacy?"手填(旧)":"手填")}</span>`;
     case "exit_reason": return r.exit_date ? (r.exit_reason||"—") : '<span class="dim">持仓中</span>';
     case "pnl": return r.pnl==null ? '<span class="dim">—</span>'

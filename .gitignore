@@ -68,3 +68,6 @@ research-projects/**/*.parquet
 .idea/
 .DS_Store
 Thumbs.db
+
+# ===== 临时观察产物（dataviz/快速分析输出，不入库）=====
+temp/

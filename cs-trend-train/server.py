@@ -65,6 +65,20 @@ def get_settings() -> dict:
     return s
 
 
+def _ymd(v, default: str) -> str:
+    """日期容错：只接受真实的 YYYY-MM-DD，其余（空串/非法如 2025-09-31）→ 回落默认值。
+
+    ★ 2026-09-30 修：非法日期串直接进 duckdb 的 `date<=?` 会抛转换异常、**打断连接**
+      （实测 end=2025-09-31 → RemoteDisconnected，前端只看到网络错误）。
+    """
+    s = (v or "").strip()
+    try:
+        d = datetime.strptime(s, "%Y-%m-%d")
+    except ValueError:
+        return default
+    return d.strftime("%Y-%m-%d") if d.strftime("%Y-%m-%d") == s else default
+
+
 def _num(v):
     """前端空串 / null / 非数字 → None（空串必须当"没填"而不是 0）"""
     if v is None or v == "":
@@ -247,7 +261,8 @@ def auto_exit(symbol: str, rec: dict) -> dict:
     规则（用户 2026-09-17 指定）：
       · 出场**只由提交的止损价/止盈价决定**，不用吊灯等自适应规则
       · 同日既触止损又触止盈 → 按**止损**计（日内路径不可知，取保守假设）
-      · 跳空越过触发价 → 按**当日开盘价**成交（止损取 min(止损价, 开盘)、止盈取 max)，
+      · 跳空越过触发价 → 按**当日开盘价**成交（做多：止损取 min、止盈取 max；
+        做空相反：止损取 max、止盈取 min —— 都取对**自己更差**的成交价），
         否则会系统性高估收益（现实中跳空从来成交不到理论价）
     """
     kl = load_klines(symbol, rec["entry_date"], "2099-01-01")
@@ -256,14 +271,18 @@ def auto_exit(symbol: str, rec: dict) -> dict:
         rec.update(exit_date=None, exit_price=None, exit_reason="pending", holding_days=None)
         return rec
     stop, tp = rec["stop_price"], rec["tp_price"]
+    short = rec.get("direction") == "short"
     for i in range(i0, len(kl)):
         b = kl[i]
-        if b["low"] <= stop:
-            rec.update(exit_date=b["date"], exit_price=min(stop, b["open"]),
+        if (b["high"] >= stop) if short else (b["low"] <= stop):
+            # 做空止损在上方：high 触到即止损，跳空按 max(止损, 开盘)（更差价）成交
+            rec.update(exit_date=b["date"],
+                       exit_price=max(stop, b["open"]) if short else min(stop, b["open"]),
                        exit_reason="止损", holding_days=i - i0 + 1)
             return rec
-        if b["high"] >= tp:
-            rec.update(exit_date=b["date"], exit_price=max(tp, b["open"]),
+        if (b["low"] <= tp) if short else (b["high"] >= tp):
+            rec.update(exit_date=b["date"],
+                       exit_price=min(tp, b["open"]) if short else max(tp, b["open"]),
                        exit_reason="止盈", holding_days=i - i0 + 1)
             return rec
     # 两根线都没打到 → 一直持仓（统计里单列，不计入胜率/盈亏比）
@@ -290,17 +309,25 @@ def build_trade(symbol: str, body: dict, settings: dict):
     source = "manual" if buy is not None else "bar_open"
     if buy is None:
         buy = bar["open"]                     # 留空 = 用开仓时间那根的开盘价
-    if buy <= stop:
-        return None, {"err": f"止损价须低于开仓价（开仓 {buy:.2f} / 止损 {stop:.2f}）"}
-    if tp <= buy:
-        return None, {"err": f"止盈价须高于开仓价（开仓 {buy:.2f} / 止盈 {tp:.2f}）"}
+    direction = t.get("direction") or "long"  # 做空（2026-09-30 加）：short = 做空
+    if direction == "short":
+        if stop <= buy:
+            return None, {"err": f"做空：止损价须【高于】开仓价（开仓 {buy:.2f} / 止损 {stop:.2f}）"}
+        if tp >= buy:
+            return None, {"err": f"做空：止盈价须【低于】开仓价（开仓 {buy:.2f} / 止盈 {tp:.2f}）"}
+    else:
+        if buy <= stop:
+            return None, {"err": f"止损价须低于开仓价（开仓 {buy:.2f} / 止损 {stop:.2f}）"}
+        if tp <= buy:
+            return None, {"err": f"止盈价须高于开仓价（开仓 {buy:.2f} / 止盈 {tp:.2f}）"}
     risk = _num(body.get("risk_amount")) or settings["risk_amount"]
-    rps = buy - stop                          # 每股风险
+    rps = abs(buy - stop)                     # 每股风险（做多=买−止损，做空=止损−买，量纲同）
     shares = int(math.floor(risk / rps / LOT) * LOT)   # 向下取整到整手（不向上，否则放大风险）
     if shares <= 0:
-        return None, {"err": f"按 {risk:g} 元止损额度买不满 1 手："
+        return None, {"err": f"按 {risk:g} 元止损额度开不满 1 手："
                              f"每股风险 {rps:.2f} 元 → 1 手需 {rps * LOT:,.0f} 元"}
     rec = {"id": t.get("id") or uuid.uuid4().hex[:8],
+           "direction": direction,
            "entry_date": entry_date, "entry_source": source,
            "buy_price": round(buy, 4), "stop_price": round(stop, 4), "tp_price": round(tp, 4),
            "risk_amount": risk, "shares": shares,
@@ -339,29 +366,34 @@ def build_note(body: dict):
 
 def decorate(rec: dict) -> dict:
     """读时补齐派生量（**不改库**）。全部容忍 None：老记录（上一版 schema，无 entry_date /
-    shares / risk_amount）也能算—— 因为 R 是价格层量，不需要股数：
+    shares / risk_amount / direction）也能算—— 因为 R 是价格层量，不需要股数。
+    老记录无 direction 一律按做多（历史数据全是做多）。
 
-        R = (平仓价 − 开仓价) / (开仓价 − 止损价)
+        做多：R = (平仓价 − 开仓价) / (开仓价 − 止损价)
+        做空：R = (开仓价 − 平仓价) / (止损价 − 开仓价)   ← 跌赚钱、涨赔钱，与做多相反
 
     """
     out = dict(rec)
+    out["direction"] = rec.get("direction") or "long"
+    short = out["direction"] == "short"
     buy, stop, ex = rec.get("buy_price"), rec.get("stop_price"), rec.get("exit_price")
     if not out.get("entry_date"):                 # 老记录：开仓日退回信号日
         out["entry_date"] = rec.get("signal_date")
         out["legacy"] = True
-    rps = (buy - stop) if (buy is not None and stop is not None) else None
+    rps = abs(buy - stop) if (buy is not None and stop is not None) else None
     shares = rec.get("shares")
     out.update(risk_per_share=rps, risk_pct=(rps / buy if rps and buy else None),
                notional=(buy * shares if buy and shares else None),
                ret_pct=None, R=None, pnl=None, is_fat_tail=False)
     if ex is not None and buy is not None:
-        out["ret_pct"] = (ex / buy - 1) * 100
-        out["R"] = (ex - buy) / rps if rps else None
+        out["ret_pct"] = (1 - ex / buy) * 100 if short else (ex / buy - 1) * 100
+        out["R"] = ((buy - ex) if short else (ex - buy)) / rps if rps else None
         out["is_fat_tail"] = out["ret_pct"] >= FAT_TAIL_PCT
         # 老记录没有 shares → pnl 留 None（反填止损额度会凭空造出从未发生过的仓位）
         if shares:
-            out["pnl"] = (ex - buy) * shares
-        out["status"] = "win" if ex > buy else ("loss" if ex < buy else "flat")
+            out["pnl"] = ((buy - ex) if short else (ex - buy)) * shares
+        out["status"] = ("win" if (ex < buy if short else ex > buy)
+                         else "loss" if (ex > buy if short else ex < buy) else "flat")
     else:
         out["status"] = "pending"                 # 持仓中：不计入统计
     return out
@@ -416,8 +448,9 @@ class H(BaseHTTPRequestHandler):
                              "last": str(row[1])[:10] if row[1] else None,
                              "total": total})
         elif u.path == "/api/klines":
-            self._send(200, load_klines(q.get("symbol", ""), q.get("start", "2015-01-01"),
-                                        q.get("end", "2099-01-01")))
+            self._send(200, load_klines(q.get("symbol", ""),
+                                        _ymd(q.get("start"), "2015-01-01"),
+                                        _ymd(q.get("end"), "2099-12-31")))
         elif u.path == "/api/lines":
             self._send(200, _load(LINES_F).get(q.get("symbol", ""), []))
         elif u.path == "/api/indices":
@@ -425,8 +458,8 @@ class H(BaseHTTPRequestHandler):
         elif u.path == "/api/index_klines":
             # start/end 由前端按**主图当前区间**传（含揭示进度）—— 宏观窗口不能看到主图还没揭示的日子
             self._send(200, load_index_klines(q.get("symbol", ""),
-                                              q.get("start", "2015-01-01"),
-                                              q.get("end", "2099-01-01")))
+                                              _ymd(q.get("start"), "2015-01-01"),
+                                              _ymd(q.get("end"), "2099-12-31")))
         elif u.path == "/api/notes":
             lst = load_notes()
             names = symbol_names(sorted({n.get("symbol", "") for n in lst}))
