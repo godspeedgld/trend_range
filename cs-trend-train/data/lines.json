@@ -121,19 +121,19 @@
    "adj": "hfq"
   },
   {
-   "id": "lnmuau4jx6",
-   "start_date": "2024-10-08",
-   "start_price": 185.09345077454722,
-   "end_date": "2025-01-05",
-   "end_price": 177.15295184339845,
-   "adj": "hfq"
-  },
-  {
    "id": "lnmuau4rv9",
    "start_date": "2024-09-30",
    "start_price": 160.2910579900234,
    "end_date": "2025-01-11",
    "end_price": 160.2750852603544,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmuntwvll",
+   "start_date": "2025-06-25",
+   "start_price": 170.1557364103584,
+   "end_date": "2025-10-19",
+   "end_price": 170.2862779016173,
    "adj": "hfq"
   }
  ],
