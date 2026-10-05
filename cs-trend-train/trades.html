@@ -107,6 +107,24 @@
   button.danger:hover { background: #a54444; }
   .noteicon { cursor: pointer; }
   .noteicon.has { color: #e8c35a; }
+  /* 评分列 + 评分修改弹窗（可编辑：radio 理由单选 + 0-10 滑杆） */
+  .scorecell { cursor: pointer; color: #e8c35a; }
+  .scorecell:hover { text-decoration: underline; }
+  .scorecell.low { color: #e86a6a; }
+  #scBody .sg-head { font-size: 11px; color: #7a8494; margin: 10px 0 4px; }
+  #scBody .sg-head:first-child { margin-top: 0; }
+  #scBody .sopt { display: flex; align-items: center; gap: 8px; padding: 3px 6px;
+      border-radius: 4px; font-size: 12px; cursor: pointer; }
+  #scBody .sopt:hover { background: #1e222a; }
+  #scBody .sopt input { accent-color: #2b5fad; }
+  #scBody .sitem { display: flex; align-items: center; gap: 8px; padding: 3px 6px; font-size: 12px; }
+  #scBody .sitem label { flex: 1; }
+  #scBody .sitem input[type=range] { width: 120px; accent-color: #2b5fad; }
+  #scBody .sitem .sv { width: 24px; text-align: right; font-weight: 600; }
+  .mfoot { display: flex; align-items: center; gap: 10px; margin-top: 12px;
+      border-top: 1px solid #2a2e38; padding-top: 10px; }
+  .mfoot .vbtns { margin-left: auto; display: flex; gap: 8px; }
+  #vsTotal { font-size: 16px; }
 </style>
 </head>
 <body>
@@ -176,6 +194,21 @@
     <div class="mbtns">
       <button id="nmSave" class="pri">保存</button>
       <button id="nmDel">删除备注</button>
+    </div>
+  </div>
+</div>
+<!-- 评分修改弹窗：交易清单里点击评分/理由弹出，可查看也可修改（<70 分不能保存） -->
+<div id="scoreModal" class="modal">
+  <div class="mbox">
+    <h4>评分修改<span id="scClose">✕</span></h4>
+    <div id="scInfo" class="dim"></div>
+    <div id="scBody"></div>
+    <div class="mfoot">
+      <span>总分 <b id="vsTotal">—</b> / 100 <span class="dim">（理由 60 + 四项各 0-10 · ≥70 才能保存）</span></span>
+      <div class="vbtns">
+        <button id="vsCancel">取消</button>
+        <button id="vsSave" class="pri">保存</button>
+      </div>
     </div>
   </div>
 </div>
@@ -276,7 +309,9 @@ function filtered(){
 
 // ── 清单表 ──
 const COLS = [
-  ["symbol","标的","l"], ["name","名称","l"], ["_dir","方向","l"], ["entry_date","开仓日","l"],
+  ["symbol","标的","l"], ["name","名称","l"], ["_dir","方向","l"],
+  ["_score","评分"], ["_sreason","理由","l"],
+  ["entry_date","开仓日","l"],
   ["entry_source","开仓价来源","l"],
   ["buy_price","开仓价"], ["stop_price","止损"], ["tp_price","止盈"], ["shares","股数"],
   ["notional","开仓金额"], ["exit_date","平仓日","l"], ["exit_price","平仓价"], ["exit_reason","平仓原因","l"],
@@ -289,6 +324,15 @@ function cell(r, k){
     case "name": return r.name || '<span class="dim">—</span>';
     case "_dir": return r.direction==="short"
       ? '<span class="tag short">做空</span>' : '<span class="tag longd">做多</span>';
+    // 评分 / 理由：点击弹出评分修改弹窗（历史记录无 score → 服务端已补默认口径 100）
+    case "_score": { const sc = r.score || {};
+      return sc.total == null ? '<span class="dim">—</span>'
+        : `<span class="scorecell${sc.total >= 70 ? "" : " low"}" data-score
+             title="点击查看 / 修改评分">${sc.total}</span>`; }
+    case "_sreason": { const sc = r.score || {};
+      return sc.reason ? `<span class="scorecell" data-score>${esc(sc.reason)}</span>`
+        + (sc._default ? ' <span class="dim" title="历史记录，未单独打分">（默认）</span>' : "")
+        : '<span class="dim">—</span>'; }
     case "entry_source": return `<span class="dim">${r.entry_source==="bar_open"?"当日开盘":(r.legacy?"手填(旧)":"手填")}</span>`;
     case "exit_reason": return r.exit_date ? (r.exit_reason||"—") : '<span class="dim">持仓中</span>';
     case "pnl": return r.pnl==null ? '<span class="dim">—</span>'
@@ -311,6 +355,8 @@ function cell(r, k){
 }
 function sortVal(r, k){
   if (k === "_tag") return r.status === "pending" ? -9 : (r.is_fat_tail ? 2 : (r.status==="win"?1:0));
+  if (k === "_score") return r.score ? (r.score.total ?? -Infinity) : -Infinity;
+  if (k === "_sreason") return r.score ? String(r.score.reason || "") : "";
   const v = r[k]; return v==null ? -Infinity : (typeof v === "number" ? v : String(v));
 }
 function renderTable(rows){
@@ -330,6 +376,7 @@ function renderTable(rows){
     const r = sorted[i];
     const nt = tr.querySelector("[data-note]");
     if (nt) nt.onclick = () => openNoteModal(r);
+    tr.querySelectorAll("[data-score]").forEach(el => el.onclick = () => openScoreModal(r));
     const dl = tr.querySelector("[data-del]");
     if (dl) dl.onclick = async () => {
       if (!window.confirm(`删除 ${r.symbol} 的这条交易记录？`)) return;
@@ -507,6 +554,73 @@ $("#nmSave").onclick = () => saveTradeNote($("#nmText").value).catch(e => toast(
 $("#nmDel").onclick = () => { $("#nmText").value = ""; saveTradeNote(""); };
 $("#nmClose").onclick = closeNoteModal;
 $("#noteModal").onclick = e => { if (e.target.id === "noteModal") closeNoteModal(); };
+
+// ── 开仓评分修改弹窗（查看 + 修改，保存走 /api/trade_score，只动 score 字段）──
+// 选项配置与 index.html 的 SCORE_OPTS / server.py 的 SCORE_REASONS·SCORE_ITEMS 保持一致
+const SCORE_OPTS = {
+  long: {
+    reasonGroups: [["突破类", ["三头突破", "w底突破", "三角收敛突破"]],
+                   ["摸底类", ["主力攻击成本摸底", "破线翻摸底", "双底摸底", "价格逐步提升摸底"]]],
+    items: ["价格处于底部", "距离历史价格高点较远", "不是下跌趋势反弹", "突破/摸底有量能配合"]
+  },
+  short: {
+    reasonGroups: [["跌破类", ["三头跌破", "m头跌破", "三角形跌破"]],
+                   ["摸头类", ["跌破反弹摸头", "假突破摸头", "m头第二个头摸头"]]],
+    items: ["价格处于高点", "距离历史价格低点较远", "不是上升趋势回调", "跌破/摸头有量能配合"]
+  }
+};
+let vsRow = null;                                   // 当前在改评分的那行（rows0 里的对象）
+function openScoreModal(r){
+  vsRow = r;
+  const sc = r.score || {}, dir = r.direction || "long", o = SCORE_OPTS[dir];
+  $("#scInfo").innerHTML = `${esc(r.symbol)} ${esc(r.name || "")} · 开仓 ${r.entry_date}`
+    + (sc._default
+        ? ` · <span class="dim">历史记录，未单独打分：当前显示默认口径，改完保存即落为真实评分</span>`
+        : "");
+  let h = `<div class="sg-head">理由类（${dir === "short" ? "跌破 / 摸头" : "突破 / 摸底"}只能选一个 · 60 分 · 必选）</div>`;
+  o.reasonGroups.forEach(([g, opts]) => {
+    h += `<div class="sg-head">· ${g}</div>`;
+    h += opts.map(x => `<label class="sopt"><input type="radio" name="vsReason" value="${x}"
+      ${x === sc.reason ? "checked" : ""}> ${esc(x)}</label>`).join("");
+  });
+  h += `<div class="sg-head">其余各项（0-10 分）</div>`;
+  h += o.items.map(n => { const v = sc.items ? (sc.items[n] ?? 0) : 0;
+    return `<div class="sitem"><label>${esc(n)}</label>
+      <input type="range" min="0" max="10" step="1" data-item="${n}" value="${v}">
+      <span class="sv" data-sv="${n}">${v}</span></div>`; }).join("");
+  $("#scBody").innerHTML = h;
+  $("#scBody").querySelectorAll("input[type=range]").forEach(rg => rg.oninput = () => {
+    $(`[data-sv="${rg.dataset.item}"]`).textContent = rg.value;
+    vsTotalUpd();
+  });
+  vsTotalUpd();
+  $("#scoreModal").classList.add("on");
+}
+const vsTotalUpd = () => {
+  const t = 60 + [...$("#scBody").querySelectorAll("input[type=range]")]
+              .reduce((a, x) => a + (+x.value), 0);
+  const el = $("#vsTotal");
+  el.textContent = t;
+  el.style.color = t >= 70 ? "#4cc47a" : "#e86a6a";
+  $("#vsSave").disabled = t < 70;                  // 与提交侧同规：低于 70 分不能保存
+};
+const closeScoreModal = () => $("#scoreModal").classList.remove("on");
+$("#vsSave").onclick = async () => {
+  const reason = (document.querySelector("input[name=vsReason]:checked") || {}).value;
+  if (!reason) return toast("理由必选", false);
+  const items = {};
+  $("#scBody").querySelectorAll("input[type=range]").forEach(rg => items[rg.dataset.item] = +rg.value);
+  try {
+    const r = await post("/api/trade_score", { symbol: vsRow.symbol, id: vsRow.id,
+                                               score: { reason, items } });
+    vsRow.score = r.score;                         // 就地更新，不整页重载
+    closeScoreModal(); renderTable(filtered());
+    toast(`评分已更新：${r.score.total} 分 · ${r.score.reason}`);
+  } catch (e) { toast((e.body && e.body.err) || e.message, false); }
+};
+$("#vsCancel").onclick = closeScoreModal;
+$("#scClose").onclick = closeScoreModal;
+$("#scoreModal").onclick = e => { if (e.target.id === "scoreModal") closeScoreModal(); };
 
 // ── 调度 ──
 let statDirty = true, lastRows = [];
