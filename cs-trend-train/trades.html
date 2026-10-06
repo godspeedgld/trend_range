@@ -197,14 +197,14 @@
     </div>
   </div>
 </div>
-<!-- 评分修改弹窗：交易清单里点击评分/理由弹出，可查看也可修改（<70 分不能保存） -->
+<!-- 评分修改弹窗：交易清单里点击评分/理由弹出，可查看也可修改（<60 分不能保存） -->
 <div id="scoreModal" class="modal">
   <div class="mbox">
     <h4>评分修改<span id="scClose">✕</span></h4>
     <div id="scInfo" class="dim"></div>
     <div id="scBody"></div>
     <div class="mfoot">
-      <span>总分 <b id="vsTotal">—</b> / 100 <span class="dim">（理由 60 + 四项各 0-10 · ≥70 才能保存）</span></span>
+      <span>总分 <b id="vsTotal">—</b> 分 <span class="dim">（理由 60 + 七项各 0-10 · ≥60 才能保存）</span></span>
       <div class="vbtns">
         <button id="vsCancel">取消</button>
         <button id="vsSave" class="pri">保存</button>
@@ -327,7 +327,7 @@ function cell(r, k){
     // 评分 / 理由：点击弹出评分修改弹窗（历史记录无 score → 服务端已补默认口径 100）
     case "_score": { const sc = r.score || {};
       return sc.total == null ? '<span class="dim">—</span>'
-        : `<span class="scorecell${sc.total >= 70 ? "" : " low"}" data-score
+        : `<span class="scorecell${sc.total >= 60 ? "" : " low"}" data-score
              title="点击查看 / 修改评分">${sc.total}</span>`; }
     case "_sreason": { const sc = r.score || {};
       return sc.reason ? `<span class="scorecell" data-score>${esc(sc.reason)}</span>`
@@ -560,13 +560,17 @@ $("#noteModal").onclick = e => { if (e.target.id === "noteModal") closeNoteModal
 const SCORE_OPTS = {
   long: {
     reasonGroups: [["突破类", ["三头突破", "w底突破", "三角收敛突破"]],
-                   ["摸底类", ["主力攻击成本摸底", "破线翻摸底", "双底摸底", "价格逐步提升摸底"]]],
-    items: ["价格处于底部", "距离历史价格高点较远", "不是下跌趋势反弹", "突破/摸底有量能配合"]
+                   ["摸底类", ["主力攻击成本摸底", "破线翻摸底", "双底摸底", "价格逐步提升摸底", "突破前摸底"]]],
+    items: ["价格处于底部", "距离历史价格高点较远", "不是下跌趋势反弹",
+            "突破/摸底有量能配合", "二段涨幅起涨",
+            "近期是否没有压力", "是否没有涨幅满足"]
   },
   short: {
     reasonGroups: [["跌破类", ["三头跌破", "m头跌破", "三角形跌破"]],
-                   ["摸头类", ["跌破反弹摸头", "假突破摸头", "m头第二个头摸头"]]],
-    items: ["价格处于高点", "距离历史价格低点较远", "不是上升趋势回调", "跌破/摸头有量能配合"]
+                   ["摸头类", ["跌破反弹摸头", "假突破摸头", "m头第二个头摸头", "跌破前摸头"]]],
+    items: ["价格处于高点", "距离历史价格低点较远", "不是上升趋势回调",
+            "跌破/摸头有量能配合", "二段跌幅起跌",
+            "近期是否没有支撑", "是否没有跌幅满足"]
   }
 };
 let vsRow = null;                                   // 当前在改评分的那行（rows0 里的对象）
@@ -601,8 +605,8 @@ const vsTotalUpd = () => {
               .reduce((a, x) => a + (+x.value), 0);
   const el = $("#vsTotal");
   el.textContent = t;
-  el.style.color = t >= 70 ? "#4cc47a" : "#e86a6a";
-  $("#vsSave").disabled = t < 70;                  // 与提交侧同规：低于 70 分不能保存
+  el.style.color = t >= 60 ? "#4cc47a" : "#e86a6a";
+  $("#vsSave").disabled = t < 60;                  // 与提交侧同规：低于 60 分不能保存
 };
 const closeScoreModal = () => $("#scoreModal").classList.remove("on");
 $("#vsSave").onclick = async () => {

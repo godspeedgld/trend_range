@@ -37,21 +37,25 @@ LOT = 100                                     # A 股 1 手 = 100 股
 DEFAULT_SETTINGS = {"risk_amount": 5000, "show_lines": True, "show_trades": False}
 FAT_TAIL_PCT = 30.0                           # 肥尾线：收益率 ≥ +30%（与 analysis_012/014 同口径）
 
-# ── 开仓评分（2026-10-05 需求）──
+# ── 开仓评分（2026-10-05 需求；10-06 多轮扩项，总分上限放开到 130，门槛降到 60）──
 # 理由类单选 60 分（做多：突破/摸底互斥；做空：跌破/摸头互斥 —— 开仓逻辑只有一个）；
-# 其余四项各 0-10 分，满分 100。理由必选、总分 ≥ 70 才允许提交。
+# 其余七项各 0-10 分，总分不限制 100（60 + 7×10 = 130 封顶）。理由必选、总分 ≥ 60 即可提交。
 SCORE_REASONS = {
     "long": ["三头突破", "w底突破", "三角收敛突破",
-             "主力攻击成本摸底", "破线翻摸底", "双底摸底", "价格逐步提升摸底"],
+             "主力攻击成本摸底", "破线翻摸底", "双底摸底", "价格逐步提升摸底", "突破前摸底"],
     "short": ["三头跌破", "m头跌破", "三角形跌破",
-              "跌破反弹摸头", "假突破摸头", "m头第二个头摸头"],
+              "跌破反弹摸头", "假突破摸头", "m头第二个头摸头", "跌破前摸头"],
 }
 SCORE_ITEMS = {
-    "long": ["价格处于底部", "距离历史价格高点较远", "不是下跌趋势反弹", "突破/摸底有量能配合"],
-    "short": ["价格处于高点", "距离历史价格低点较远", "不是上升趋势回调", "跌破/摸头有量能配合"],
+    "long": ["价格处于底部", "距离历史价格高点较远", "不是下跌趋势反弹",
+             "突破/摸底有量能配合", "二段涨幅起涨",
+             "近期是否没有压力", "是否没有涨幅满足"],
+    "short": ["价格处于高点", "距离历史价格低点较远", "不是上升趋势回调",
+              "跌破/摸头有量能配合", "二段跌幅起跌",
+              "近期是否没有支撑", "是否没有跌幅满足"],
 }
 SCORE_REASON_PTS = 60          # 理由类固定得分
-SCORE_MIN_SUBMIT = 70          # 低于此分不能提交
+SCORE_MIN_SUBMIT = 60          # 低于此分不能提交（理由本身就是 60 分 → 评分完成即可过线）
 # 静态托管白名单 —— 用**显式枚举**而非路径拼接，从根上免掉目录穿越
 STATIC = {"index.html": "text/html; charset=utf-8",
           "trades.html": "text/html; charset=utf-8",
@@ -309,7 +313,7 @@ def auto_exit(symbol: str, rec: dict) -> dict:
 def build_score(direction: str, raw) -> tuple[dict | None, dict | None]:
     """校验并归一化开仓评分 → (score, None) 或 (None, 错误)。
     理由必须是对应方向的合法选项（突破/摸底 或 跌破/摸头 互斥，天然由单选保证）；
-    四个评分项每个都要有 0-10 的分值；总分 = 60 + Σitems，低于 70 不能提交。"""
+    七个评分项每个都要有 0-10 的分值；总分 = 60 + Σitems（不设 100 上限），低于 60 不能提交。"""
     if not isinstance(raw, dict):
         return None, {"err": "必须先完成开仓评分才能提交（缺 score 字段）"}
     reason = raw.get("reason")
@@ -333,10 +337,10 @@ def build_score(direction: str, raw) -> tuple[dict | None, dict | None]:
 
 def default_score(direction: str) -> dict:
     """历史记录（无 score 字段）的读时默认口径（不改库）：
-    理由 = 三头突破/三头跌破，其余各项 10 分 → 总分 100。"""
+    理由 = 三头突破/三头跌破，其余各项 10 分 → 总分 = 60 + 项数×10（当前 130）。"""
     return {"reason": SCORE_REASONS[direction][0],
             "items": {n: 10 for n in SCORE_ITEMS[direction]},
-            "total": 100, "_default": True}
+            "total": SCORE_REASON_PTS + 10 * len(SCORE_ITEMS[direction]), "_default": True}
 
 
 def build_trade(symbol: str, body: dict, settings: dict):
@@ -384,7 +388,7 @@ def build_trade(symbol: str, body: dict, settings: dict):
            "buy_price": round(buy, 4), "stop_price": round(stop, 4), "tp_price": round(tp, 4),
            "risk_amount": risk, "shares": shares,
            "adj": "hfq",                                   # 备注口径（见 README 已知限制）
-           "score": score,                                 # 开仓评分（理由 60 + 四项各 0-10）
+           "score": score,                                 # 开仓评分（理由 60 + 七项各 0-10）
            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
     return auto_exit(symbol, rec), None
 
@@ -584,7 +588,7 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, decorate(hit))
         if path == "/api/trade_score":
             # 只改评分，不动其它字段（与 /api/trade_note 同模式：独立编辑入口，
-            # 不触发交易重校验 / 出场重判）。校验复用 build_score（含 ≥70 分门槛）。
+            # 不触发交易重校验 / 出场重判）。校验复用 build_score（含 ≥60 分门槛）。
             symbol, rid = body.get("symbol", ""), body.get("id", "")
             db = _load(TRADES_F)
             hit = next((r for r in db.get(symbol, []) if r.get("id") == rid), None)

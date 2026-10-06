@@ -172,7 +172,7 @@
   <input id="tStop" type="number" step="0.01" placeholder="必填（须低于开仓价）">
   <label class="f">止盈价 *</label>
   <input id="tTp" type="number" step="0.01" placeholder="必填（须高于开仓价）">
-  <label class="f">开仓评分 *（理由 60 分 + 其余四项各 0-10，≥70 才能保存）</label>
+  <label class="f">开仓评分 *（理由 60 分 + 其余七项各 0-10，≥60 即可保存）</label>
   <div id="tScore">—</div>
   <div id="tPrev">—</div>
   <button id="tSave">保存</button>
@@ -219,7 +219,7 @@
     <h4><span id="smTitle">开仓评分</span><span id="smClose">✕</span></h4>
     <div id="smBody"></div>
     <div class="sfoot">
-      <span class="stotal"><span id="smTotal">60</span><small> / 100 分</small></span>
+      <span class="stotal"><span id="smTotal">60</span><small> 分</small></span>
       <div class="sbtns">
         <button id="smCancel" class="alt">取消</button>
         <button id="smOk">确定</button>
@@ -519,7 +519,7 @@ function newTrade(){
   ["#tBuy","#tStop","#tTp"].forEach(s => $(s).value = "");
   $("input[name=tDir][value=long]").checked = true;
   dirPlaceholders();
-  pendingScore = defaultScore("long");       // 评分回默认：三头突破 60 分（<70 不能保存）
+  pendingScore = defaultScore("long");       // 评分回默认：三头突破 60 分（已达提交线）
   renderScoreBox();
   defaultEntryDate();
   previewTrade();
@@ -560,26 +560,31 @@ function setEditing(rec){
   previewTrade();
 }
 
-// ── 开仓评分（2026-10-05）：理由类单选 60 分 + 其余四项各 0-10 分，满分 100 ──
+// ── 开仓评分（2026-10-05；10-06 两次扩项，总分上限放开到 60+7×10=130）──
+// 理由类单选 60 分 + 其余七项各 0-10 分，总分不限制 100
 // 做多：突破类/摸底类统称理由类，互斥只能选一个（开仓逻辑只有一个）；做空：跌破/摸头同理
 const SCORE_OPTS = {
   long: {
     reasonGroups: [["突破类", ["三头突破", "w底突破", "三角收敛突破"]],
-                   ["摸底类", ["主力攻击成本摸底", "破线翻摸底", "双底摸底", "价格逐步提升摸底"]]],
-    items: ["价格处于底部", "距离历史价格高点较远", "不是下跌趋势反弹", "突破/摸底有量能配合"],
+                   ["摸底类", ["主力攻击成本摸底", "破线翻摸底", "双底摸底", "价格逐步提升摸底", "突破前摸底"]]],
+    items: ["价格处于底部", "距离历史价格高点较远", "不是下跌趋势反弹",
+            "突破/摸底有量能配合", "二段涨幅起涨",
+            "近期是否没有压力", "是否没有涨幅满足"],
     defReason: "三头突破"
   },
   short: {
     reasonGroups: [["跌破类", ["三头跌破", "m头跌破", "三角形跌破"]],
-                   ["摸头类", ["跌破反弹摸头", "假突破摸头", "m头第二个头摸头"]]],
-    items: ["价格处于高点", "距离历史价格低点较远", "不是上升趋势回调", "跌破/摸头有量能配合"],
+                   ["摸头类", ["跌破反弹摸头", "假突破摸头", "m头第二个头摸头", "跌破前摸头"]]],
+    items: ["价格处于高点", "距离历史价格低点较远", "不是上升趋势回调",
+            "跌破/摸头有量能配合", "二段跌幅起跌",
+            "近期是否没有支撑", "是否没有跌幅满足"],
     defReason: "三头跌破"
   }
 };
 const scoreReasons = d => SCORE_OPTS[d].reasonGroups.map(g => g[1]).flat();
 let pendingScore = null;      // {direction, reason, items:{}} —— 始终与面板方向同步
 // legacy=true：历史记录口径（理由三头突破/跌破 + 其余各项 10 = 100）；
-// 否则新交易默认：理由三头突破、其余各项 0 → 60 分（<70 不能保存，逼着补分）
+// 否则新交易默认：理由三头突破、其余各项 0 → 60 分（理由即达提交线，其余项可全 0）
 function defaultScore(direction, legacy = false){
   const o = SCORE_OPTS[direction];
   return { direction, reason: o.defReason,
@@ -593,10 +598,10 @@ function scorePayload(){
 function renderScoreBox(){
   if (!pendingScore) return;
   const total = scoreTotal(pendingScore), box = $("#tScore");
-  box.className = total >= 70 ? "ok" : "low";
+  box.className = total >= 60 ? "ok" : "low";
   box.innerHTML = `<span class="sc-total">${total}</span>分 · 理由：${pendingScore.reason}`
-    + `<br><span class="sc-hint">${total >= 70 ? "点击修改评分" : "低于 70 分不能提交 —— 点击评分补足其余各项"}</span>`;
-  $("#tSave").disabled = total < 70;          // ★ 低于 70 分不能提交
+    + `<br><span class="sc-hint">${total >= 60 ? "点击修改评分" : "低于 60 分不能提交 —— 点击评分补足其余各项"}</span>`;
+  $("#tSave").disabled = total < 60;          // ★ 低于 60 分不能提交
 }
 // 二级评分弹窗：打开时快照，取消/点遮罩 = 回滚；确定 = 应用并回到提交面板
 let smBackup = null;
@@ -614,7 +619,7 @@ function openScoreModal(){
     h += opts.map(r => `<label class="sopt"><input type="radio" name="smReason" value="${r}"
       ${pendingScore.reason === r ? "checked" : ""}> ${r}</label>`).join("");
   });
-  h += `<div class="sg-head">其余各项（0-10 分，满分 100）</div>`;
+  h += `<div class="sg-head">其余各项（0-10 分）</div>`;
   h += o.items.map(n => `<div class="sitem"><label>${n}</label>
       <input type="range" min="0" max="10" step="1" data-item="${n}" value="${pendingScore.items[n]}">
       <span class="sv" data-sv="${n}">${pendingScore.items[n]}</span></div>`).join("");
@@ -640,7 +645,7 @@ $("#smOk").onclick = () => {
   $("#scoreModal").classList.remove("on");
   renderScoreBox(); schedulePreview();
   const t = scoreTotal(pendingScore);
-  if (t < 70) toast(`当前 ${t} 分：低于 70 分不能提交`, false);
+  if (t < 60) toast(`当前 ${t} 分：低于 60 分不能提交`, false);
 };
 $("#tScore").onclick = () => openScoreModal();
 
@@ -687,10 +692,10 @@ $("#tSave").onclick = async () => {
   if (!ed) return toast("开仓时间必填", false);
   if (!$("#tStop").value) return toast("止损价必填", false);
   if (!$("#tTp").value)   return toast("止盈价必填", false);
-  // 交易提交必须有打分记录；低于 70 分不能提交（前后端双重把关，后端同样校验）
+  // 交易提交必须有打分记录；低于 60 分不能提交（前后端双重把关，后端同样校验）
   const scTotal = scoreTotal(pendingScore || defaultScore(getDir()));
-  if (scTotal < 70){
-    toast(`评分 ${scTotal} 分低于 70 分，不能提交 —— 请先完成评分`, false);
+  if (scTotal < 60){
+    toast(`评分 ${scTotal} 分低于 60 分，不能提交 —— 请先完成评分`, false);
     openScoreModal();
     return;
   }
@@ -720,7 +725,7 @@ $("#tSave").onclick = async () => {
     renderOverlays();
   } catch (e) {
     toast((e.body && e.body.err) || e.message, false);
-  } finally { $("#tSave").disabled = scoreTotal(pendingScore || defaultScore(getDir())) < 70; }
+  } finally { $("#tSave").disabled = scoreTotal(pendingScore || defaultScore(getDir())) < 60; }
 };
 $("#tNew").onclick = newTrade;
 const toggle = (el, on) => { const d=$(el), v = on===undefined ? d.style.display!=="block" : on;
