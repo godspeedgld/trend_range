@@ -1,30 +1,6 @@
 {
  "601318.SH": [
   {
-   "id": "lnmu55n7t2",
-   "start_date": "2025-11-26",
-   "start_price": 192.92115637593076,
-   "end_date": "2026-04-16",
-   "end_price": 192.42552798078594,
-   "adj": "hfq"
-  },
-  {
-   "id": "lnmu56n1k3",
-   "start_date": "2024-12-17",
-   "start_price": 162.13541411507705,
-   "end_date": "2025-06-24",
-   "end_price": 162.21886704618137,
-   "adj": "hfq"
-  },
-  {
-   "id": "lnmu577ivf",
-   "start_date": "2025-06-25",
-   "start_price": 169.75566964848804,
-   "end_date": "2025-11-02",
-   "end_price": 169.85247848304903,
-   "adj": "hfq"
-  },
-  {
    "id": "lnmu6etx7w",
    "start_date": "2020-02-03",
    "start_price": 186.94151597976682,
@@ -65,6 +41,14 @@
    "adj": "hfq"
   },
   {
+   "id": "lnmu6l9d8o",
+   "start_date": "2021-07-21",
+   "start_price": 143.66792312513732,
+   "end_date": "2024-10-11",
+   "end_price": 142.6286453646724,
+   "adj": "hfq"
+  },
+  {
    "id": "lnmu6ew2c8",
    "start_date": "2021-07-23",
    "start_price": 142.90156625655456,
@@ -89,11 +73,11 @@
    "adj": "hfq"
   },
   {
-   "id": "lnmu6l9d8o",
-   "start_date": "2021-07-21",
-   "start_price": 143.66792312513732,
-   "end_date": "2024-10-11",
-   "end_price": 142.6286453646724,
+   "id": "lnmu6lsx78",
+   "start_date": "2023-04-28",
+   "start_price": 127.52353259102806,
+   "end_date": "2024-09-18",
+   "end_price": 127.47995331683416,
    "adj": "hfq"
   },
   {
@@ -113,19 +97,27 @@
    "adj": "hfq"
   },
   {
-   "id": "lnmu6lsx78",
-   "start_date": "2023-04-28",
-   "start_price": 127.52353259102806,
-   "end_date": "2024-09-18",
-   "end_price": 127.47995331683416,
-   "adj": "hfq"
-  },
-  {
    "id": "lnmuau4rv9",
    "start_date": "2024-09-30",
    "start_price": 160.2910579900234,
    "end_date": "2025-01-11",
    "end_price": 160.2750852603544,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmu56n1k3",
+   "start_date": "2024-12-13",
+   "start_price": 162.0500354117616,
+   "end_date": "2025-06-24",
+   "end_price": 162.21886704618137,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmu577ivf",
+   "start_date": "2025-06-25",
+   "start_price": 169.75566964848804,
+   "end_date": "2025-11-02",
+   "end_price": 169.85247848304903,
    "adj": "hfq"
   },
   {
@@ -135,7 +127,72 @@
    "end_date": "2025-10-19",
    "end_price": 170.2862779016173,
    "adj": "hfq"
+  },
+  {
+   "id": "lnmunvuxri",
+   "start_date": "2025-10-28",
+   "start_price": 180.9586615978896,
+   "end_date": "2026-05-03",
+   "end_price": 184.915604583912,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmu55n7t2",
+   "start_date": "2025-11-26",
+   "start_price": 192.92115637593076,
+   "end_date": "2026-04-16",
+   "end_price": 192.42552798078594,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmunvu77y",
+   "start_date": "2025-12-03",
+   "start_price": 194.52035824409873,
+   "end_date": "2026-04-01",
+   "end_price": 194.36924179623242,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmunulcxk",
+   "start_date": "2025-12-08",
+   "start_price": 213.7634053012742,
+   "end_date": "2026-02-24",
+   "end_price": 213.9161152501328,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmunwhmkt",
+   "start_date": "2026-05-28",
+   "start_price": 163.38286361374554,
+   "end_date": "2026-07-22",
+   "end_price": 163.48362214610597,
+   "adj": "hfq"
   }
  ],
- "688981.SH": []
+ "688981.SH": [
+  {
+   "id": "lnmunzzekw",
+   "start_date": "2022-03-10",
+   "start_price": 44.84040927555067,
+   "end_date": "2023-03-21",
+   "end_price": 44.593705115287534,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmunzxxdk",
+   "start_date": "2022-04-26",
+   "start_price": 37.22962217877648,
+   "end_date": "2022-10-10",
+   "end_price": 36.67319821564284,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmunzyxiw",
+   "start_date": "2022-10-26",
+   "start_price": 40.01174199444469,
+   "end_date": "2023-02-28",
+   "end_price": 40.05434658029794,
+   "adj": "hfq"
+  }
+ ]
 }
