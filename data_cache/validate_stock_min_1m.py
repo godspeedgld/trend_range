@@ -54,10 +54,15 @@ def main():
     con = duckdb.connect(str(DDB), read_only=True)
 
     # ① 分区完整性
+    # ★ 当前自然月**不作期待**（2026-10-08 修）：本月即使已开始，数据也常在收盘后才发布
+    #   （且当月分区本就是"进行中"的半成品，"分区是否存在"对它不是有效判据）。
+    #   数据新鲜度由 ③ 日期范围 负责报告。此前逻辑会把"本月尚未发布"误报成"缺分区"。
+    today = date.today()
+    month_floor = date(today.year, today.month, 1)
     expected = []
-    for y in range(2021, date.today().year + 1):
+    for y in range(2021, today.year + 1):
         for m in range(1, 13):
-            if date(y, m, 1) > date.today():
+            if date(y, m, 1) >= month_floor:
                 break
             expected.append((y, m))
     have = {(int(p.parent.parent.name.split("=")[1]), int(p.parent.name.split("=")[1]))
