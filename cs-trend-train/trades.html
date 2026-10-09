@@ -204,7 +204,7 @@
     <div id="scInfo" class="dim"></div>
     <div id="scBody"></div>
     <div class="mfoot">
-      <span>总分 <b id="vsTotal">—</b> 分 <span class="dim">（理由 60 + 八项各 0-10 · ≥60 才能保存）</span></span>
+      <span>总分 <b id="vsTotal">—</b> 分 <span class="dim">（理由 60 + 各项 0-10 · ≥60 才能保存）</span></span>
       <div class="vbtns">
         <button id="vsCancel">取消</button>
         <button id="vsSave" class="pri">保存</button>
@@ -559,12 +559,12 @@ $("#noteModal").onclick = e => { if (e.target.id === "noteModal") closeNoteModal
 // 选项配置与 index.html 的 SCORE_OPTS / server.py 的 SCORE_REASONS·SCORE_ITEMS 保持一致
 const SCORE_OPTS = {
   long: {
-    reasonGroups: [["突破类", ["三头突破", "w底突破", "三角收敛突破"]],
+    reasonGroups: [["突破类", ["三头突破", "w底突破", "三角收敛突破", "牛市天际线"]],
                    ["摸底类", ["主力攻击成本摸底", "破线翻摸底", "双底摸底", "价格逐步提升摸底", "突破前摸底",
                               "震荡底部摸底"]]],
     items: ["价格处于底部", "距离历史价格高点较远", "不是下跌趋势反弹",
             "突破/摸底有量能配合", "二段涨幅起涨",
-            "近期没有压力", "没有涨幅满足", "满足时间波对称"]
+            "近期没有压力", "没有涨幅满足", "满足时间波对称", "是否历史最高"]
   },
   short: {
     reasonGroups: [["跌破类", ["三头跌破", "m头跌破", "三角形跌破"]],

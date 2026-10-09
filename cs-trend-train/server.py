@@ -6,7 +6,8 @@
   ③ 画线 / 交易记录 / 全局设置的读写（data/lines.json, data/trades.json, data/settings.json）
   ④ 交易出场判定：**只认用户提交的止损价 / 止盈价**，从开仓日当根起逐日判定，
      先止损后止盈（同日双触按止损计）；跳空越过触发价时按**当日开盘价**成交
-  ⑤ 按「等额止损」反算股数：止损额度 ÷ 每股风险，向下取整到 1 手（100 股）
+  ⑤ 按「等额止损」反算股数：止损额度 ÷ 每股风险，向下取整到 1 手（100 股）；
+     一手止损超出额度时保底开一手，该笔止损额度按一手实际风险计（2026-10-09）
 
 启动：python cs-trend-train/server.py   →  http://127.0.0.1:8710
 """
@@ -37,11 +38,11 @@ LOT = 100                                     # A 股 1 手 = 100 股
 DEFAULT_SETTINGS = {"risk_amount": 5000, "show_lines": True, "show_trades": False}
 FAT_TAIL_PCT = 30.0                           # 肥尾线：收益率 ≥ +30%（与 analysis_012/014 同口径）
 
-# ── 开仓评分（2026-10-05 需求；10-06 多轮扩项，总分上限放开到 140，门槛降到 60）──
+# ── 开仓评分（2026-10-05 需求；10-06 多轮扩项；10-09 做多侧再扩：+突破类「牛市天际线」+其他项「是否历史最高」）──
 # 理由类单选 60 分（做多：突破/摸底互斥；做空：跌破/摸头互斥 —— 开仓逻辑只有一个）；
-# 其余八项各 0-10 分，总分不限制 100（60 + 8×10 = 140 封顶）。理由必选、总分 ≥ 60 即可提交。
+# 其余各项各 0-10 分（做多 9 项 → 60+90=150 封顶；做空 8 项 → 140）。理由必选、总分 ≥ 60 即可提交。
 SCORE_REASONS = {
-    "long": ["三头突破", "w底突破", "三角收敛突破",
+    "long": ["三头突破", "w底突破", "三角收敛突破", "牛市天际线",
              "主力攻击成本摸底", "破线翻摸底", "双底摸底", "价格逐步提升摸底", "突破前摸底",
              "震荡底部摸底"],
     "short": ["三头跌破", "m头跌破", "三角形跌破",
@@ -51,7 +52,7 @@ SCORE_REASONS = {
 SCORE_ITEMS = {
     "long": ["价格处于底部", "距离历史价格高点较远", "不是下跌趋势反弹",
              "突破/摸底有量能配合", "二段涨幅起涨",
-             "近期没有压力", "没有涨幅满足", "满足时间波对称"],
+             "近期没有压力", "没有涨幅满足", "满足时间波对称", "是否历史最高"],
     "short": ["价格处于高点", "距离历史价格低点较远", "不是上升趋势回调",
               "跌破/摸头有量能配合", "二段跌幅起跌",
               "近期是否没有支撑", "是否没有跌幅满足", "满足时间波对称"],
@@ -339,7 +340,7 @@ def build_score(direction: str, raw) -> tuple[dict | None, dict | None]:
 
 def default_score(direction: str) -> dict:
     """历史记录（无 score 字段）的读时默认口径（不改库）：
-    理由 = 三头突破/三头跌破，其余各项 10 分 → 总分 = 60 + 项数×10（当前 140）。"""
+    理由 = 三头突破/三头跌破，其余各项 10 分 → 总分 = 60 + 项数×10（做多 150 / 做空 140）。"""
     return {"reason": SCORE_REASONS[direction][0],
             "items": {n: 10 for n in SCORE_ITEMS[direction]},
             "total": SCORE_REASON_PTS + 10 * len(SCORE_ITEMS[direction]), "_default": True}
@@ -381,16 +382,18 @@ def build_trade(symbol: str, body: dict, settings: dict):
     risk = _num(body.get("risk_amount")) or settings["risk_amount"]
     rps = abs(buy - stop)                     # 每股风险（做多=买−止损，做空=止损−买，量纲同）
     shares = int(math.floor(risk / rps / LOT) * LOT)   # 向下取整到整手（不向上，否则放大风险）
-    if shares <= 0:
-        return None, {"err": f"按 {risk:g} 元止损额度开不满 1 手："
-                             f"每股风险 {rps:.2f} 元 → 1 手需 {rps * LOT:,.0f} 元"}
+    if shares < LOT:
+        # ★ 2026-10-09：一手止损超出全局额度时**保底开一手**，止损额度按实际（一手风险）计
+        #   —— 例：额度 5000、每股风险 80 → 1 手需 8000，则开 1 手、该笔 risk_amount=8000
+        shares = LOT
+        risk = round(rps * shares, 2)
     rec = {"id": t.get("id") or uuid.uuid4().hex[:8],
            "direction": direction,
            "entry_date": entry_date, "entry_source": source,
            "buy_price": round(buy, 4), "stop_price": round(stop, 4), "tp_price": round(tp, 4),
            "risk_amount": risk, "shares": shares,
            "adj": "hfq",                                   # 备注口径（见 README 已知限制）
-           "score": score,                                 # 开仓评分（理由 60 + 八项各 0-10）
+           "score": score,                                 # 开仓评分（理由 60 + 各项 0-10）
            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
     return auto_exit(symbol, rec), None
 
