@@ -251,6 +251,242 @@
    "end_date": "2021-03-12",
    "end_price": 122.21802738532648,
    "adj": "hfq"
+  },
+  {
+   "id": "lnmv0i9pxo",
+   "start_date": "2021-07-02",
+   "start_price": 271.336911440627,
+   "end_date": "2023-12-27",
+   "end_price": 272.03814219832844,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0m2zsa",
+   "start_date": "2023-12-26",
+   "start_price": 247.9337247315508,
+   "end_date": "2024-09-22",
+   "end_price": 246.93733138015776,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0mjqzx",
+   "start_date": "2024-10-10",
+   "start_price": 338.9548054764648,
+   "end_date": "2025-08-18",
+   "end_price": 338.4047384693845,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0mjtxx",
+   "start_date": "2024-10-14",
+   "start_price": 265.9690272669721,
+   "end_date": "2025-08-14",
+   "end_price": 265.19507506206844,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0my4st",
+   "start_date": "2026-06-23",
+   "start_price": 1950.0768372733219,
+   "end_date": "2026-07-17",
+   "end_price": 2022.948452844319,
+   "adj": "hfq"
+  }
+ ],
+ "300274.SZ": [
+  {
+   "id": "lnmv0q63c9",
+   "start_date": "2015-07-06",
+   "start_price": 81.76525732684158,
+   "end_date": "2017-01-09",
+   "end_price": 81.30227314014486,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0qfeoc",
+   "start_date": "2015-10-09",
+   "start_price": 91.78665887117386,
+   "end_date": "2017-09-07",
+   "end_price": 91.27348235191442,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0qhsnj",
+   "start_date": "2016-12-08",
+   "start_price": 70.68071418193168,
+   "end_date": "2017-06-08",
+   "end_price": 71.27049228508902,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0r9fp2",
+   "start_date": "2018-02-27",
+   "start_price": 103.89747086357787,
+   "end_date": "2018-02-27",
+   "end_price": 126.69517158105295,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0rat3a",
+   "start_date": "2017-09-19",
+   "start_price": 103.11920690536499,
+   "end_date": "2018-05-25",
+   "end_price": 103.54598744993208,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0s0ewd",
+   "start_date": "2019-02-14",
+   "start_price": 88.69022928924886,
+   "end_date": "2020-06-16",
+   "end_price": 83.40151292561274,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0s0jm5",
+   "start_date": "2018-12-05",
+   "start_price": 55.310269832611084,
+   "end_date": "2020-07-04",
+   "end_price": 65.86524287776658,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0sqmsg",
+   "start_date": "2020-02-12",
+   "start_price": 75.08935717105867,
+   "end_date": "2020-03-21",
+   "end_price": 75.19008488733556,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0t15k7",
+   "start_date": "2015-06-23",
+   "start_price": 131.72569583415984,
+   "end_date": "2020-07-23",
+   "end_price": 122.2943494881163,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0t93q3",
+   "start_date": "2020-12-16",
+   "start_price": 410.36035845211546,
+   "end_date": "2022-11-21",
+   "end_price": 413.54796057365854,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0t9jkr",
+   "start_date": "2021-08-02",
+   "start_price": 1218.9223222914475,
+   "end_date": "2021-10-28",
+   "end_price": 1197.419245004654,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0tq7la",
+   "start_date": "2022-07-04",
+   "start_price": 691.0771330091466,
+   "end_date": "2023-08-31",
+   "end_price": 687.5453035004394,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0tvn2z",
+   "start_date": "2023-02-07",
+   "start_price": 842.2279624938965,
+   "end_date": "2025-08-19",
+   "end_price": 839.7484956096343,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0u1x0q",
+   "start_date": "2023-09-05",
+   "start_price": 634.5905630026166,
+   "end_date": "2025-07-11",
+   "end_price": 638.7658898429685,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0wmiia",
+   "start_date": "2024-12-17",
+   "start_price": 716.28246689294,
+   "end_date": "2025-08-10",
+   "end_price": 714.1343670054682,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0xeml1",
+   "start_date": "2021-08-02",
+   "start_price": 1116.8902566862107,
+   "end_date": "2025-09-03",
+   "end_price": 1121.3381842435626,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0yc6m7",
+   "start_date": "2025-09-05",
+   "start_price": 1320.8173181507727,
+   "end_date": "2026-07-15",
+   "end_price": 1301.5805666572755,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0ykglb",
+   "start_date": "2025-11-10",
+   "start_price": 1996.001115761055,
+   "end_date": "2026-06-01",
+   "end_price": 1872.8967696115758,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0ykk7r",
+   "start_date": "2025-09-05",
+   "start_price": 1228.836827130817,
+   "end_date": "2026-07-07",
+   "end_price": 1225.281008608004,
+   "adj": "hfq"
+  }
+ ],
+ "300394.SZ": [
+  {
+   "id": "lnmv0zgs6i",
+   "start_date": "2016-04-07",
+   "start_price": 104.0743286568603,
+   "end_date": "2017-04-14",
+   "end_price": 104.34228027443723,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0zgvbu",
+   "start_date": "2015-04-24",
+   "start_price": 74.69973395914408,
+   "end_date": "2017-04-07",
+   "end_price": 77.80514357312718,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv102bqd",
+   "start_date": "2016-03-21",
+   "start_price": 76.18763811588288,
+   "end_date": "2016-11-30",
+   "end_price": 93.19214047193528,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv108pmd",
+   "start_date": "2017-03-03",
+   "start_price": 72.11017422961112,
+   "end_date": "2019-02-20",
+   "end_price": 71.73547932761477,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv109vm4",
+   "start_date": "2017-12-26",
+   "start_price": 55.36150136297665,
+   "end_date": "2018-09-15",
+   "end_price": 55.07919139806909,
+   "adj": "hfq"
   }
  ]
 }
