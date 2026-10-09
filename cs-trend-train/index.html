@@ -89,13 +89,15 @@
   #tScore.low .sc-total { color: #e86a6a; }
   #tScore.ok .sc-total { color: #4cc47a; }
   #tScore .sc-hint { color: #7a8494; }
-  .smodal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; z-index: 80;
-      align-items: center; justify-content: center; }
-  .smodal.on { display: flex; }
-  .sbox { background: #1b1e24; border: 1px solid #3a3f4b; border-radius: 8px; padding: 14px;
-      width: 430px; max-height: 84vh; overflow-y: auto; box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+  /* ★ 2026-10-08：评分窗从「全屏遮罩 + 居中」改成**非模态浮窗** —— 原来一弹出就盖住整张 K 线，
+     打分时看不到图（评分项全靠看图判断）。现在停在左上角、没有遮罩层，拖标题栏即可挪开；
+     也不挡右侧的「提交交易」面板，可以边看 K 线边打分。 */
+  .smodal { position: fixed; left: 40px; top: 88px; display: none; z-index: 80; }
+  .smodal.on { display: block; }
+  .sbox { background: rgba(27,30,36,.97); border: 1px solid #3a3f4b; border-radius: 8px; padding: 14px;
+      width: 430px; max-height: calc(100vh - 110px); overflow-y: auto; box-shadow: 0 10px 30px rgba(0,0,0,.5); }
   .sbox h4 { font-size: 13px; color: #9aa3b2; display: flex; justify-content: space-between;
-      margin-bottom: 8px; }
+      margin-bottom: 8px; cursor: move; }
   .sbox h4 span:last-child { cursor: pointer; }
   .sg-head { font-size: 11px; color: #7a8494; margin: 10px 0 3px; }
   .sg-head:first-child { margin-top: 0; }
@@ -538,6 +540,9 @@ document.querySelectorAll("input[name=tDir]").forEach(r => r.addEventListener("c
   if (pendingScore && pendingScore.direction !== getDir()){
     pendingScore = defaultScore(getDir());
     renderScoreBox();
+    // ★ 2026-10-08：评分窗改成非模态后，切方向时窗口可能正开着 —— 必须连窗口内容一起重建，
+    //   否则旧的滑杆还挂在上一个方向的项名上，会往新的 pendingScore.items 里写脏键
+    if ($("#scoreModal").classList.contains("on")) openScoreModal();
   }
 }));
 function setEditing(rec){
@@ -570,7 +575,7 @@ const SCORE_OPTS = {
                               "震荡底部摸底"]]],
     items: ["价格处于底部", "距离历史价格高点较远", "不是下跌趋势反弹",
             "突破/摸底有量能配合", "二段涨幅起涨",
-            "近期是否没有压力", "是否没有涨幅满足", "满足时间波对称"],
+            "近期没有压力", "没有涨幅满足", "满足时间波对称"],
     defReason: "三头突破"
   },
   short: {
@@ -605,7 +610,8 @@ function renderScoreBox(){
     + `<br><span class="sc-hint">${total >= 60 ? "点击修改评分" : "低于 60 分不能提交 —— 点击评分补足其余各项"}</span>`;
   $("#tSave").disabled = total < 60;          // ★ 低于 60 分不能提交
 }
-// 二级评分弹窗：打开时快照，取消/点遮罩 = 回滚；确定 = 应用并回到提交面板
+// 二级评分浮窗：打开时快照，✕ / 取消 = 回滚；确定 = 应用并回到提交面板
+// （★ 2026-10-08 起没有遮罩层了 —— 点浮窗外面不再关闭，只有 ✕ / 取消 两个出口）
 let smBackup = null;
 function openScoreModal(){
   const dir = getDir();
@@ -641,7 +647,7 @@ const smTotalUpd = () => $("#smTotal").textContent = scoreTotal(pendingScore);
 const smCloseRollback = () => { pendingScore = smBackup; $("#scoreModal").classList.remove("on"); renderScoreBox(); };
 $("#smClose").onclick = smCloseRollback;
 $("#smCancel").onclick = smCloseRollback;
-$("#scoreModal").onclick = e => { if (e.target.id === "scoreModal") smCloseRollback(); };
+// 遮罩点击关闭已去掉：现在是非模态浮窗，没有遮罩层（点外面关掉会误伤"边看图边改分"）
 $("#smOk").onclick = () => {
   pendingScore.direction = getDir();
   $("#scoreModal").classList.remove("on");
@@ -761,7 +767,7 @@ function makeDraggable(el, handleSel = "h4, .mhead"){
     e.preventDefault();
   });
 }
-["#panel", "#setPanel", "#notePanel", "#macroWin"].forEach(s => makeDraggable($(s)));
+["#panel", "#setPanel", "#notePanel", "#macroWin", "#scoreModal"].forEach(s => makeDraggable($(s)));
 
 // ── 宏观行情：指数 close 曲线 + MA200（判牛熊）──
 let macroChart = null, macroBars = [], macroSym = "000300.SH", macroList = [];
