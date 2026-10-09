@@ -8,7 +8,14 @@
   · 本脚本：池 = 本地 stock_bar1d 全部标的 ∪ cn_stock_basic_info（抓新上市）；
     列 = **严格按 references/data_tables.md 的 16 列**。
 
-用法：python pull_bar1d_recent.py [--start 2026-08-22] [--end 2026-09-29] [--dry-run]
+★ 2026-10-09 两处修正（此前会导致"静默零拉取"和批次无序）：
+  ① 断点改为**按日期区间隔离**（`{"range":[start,end],"done":[...]}`）。原实现存成纯标的
+     列表、不含区间 → 换区间重跑时每只都被判成"已完成"，todo=0，**一行不拉却报成功**。
+     旧版纯列表 ckpt 一律忽略（入库按 (instrument,date) 去重，重拉幂等）。
+  ② 批次按用户指定优先级排序：**沪深300 → 中证500 → 中证1000 → 中证2000 → 其他**
+     （用 index_component 全期并集，仅决定先后；配额中途耗尽时重要组已拉完）。
+
+用法：python pull_bar1d_recent.py --start 2026-09-30 --end 2026-10-08 [--dry-run]
 """
 from __future__ import annotations
 
@@ -27,6 +34,50 @@ ROOT = Path(__file__).resolve().parent
 TABLE, SOURCE = "stock_bar1d", "cn_stock_bar1d"
 BATCH = 300
 CKPT = ROOT / "_pull_bar1d_recent_ckpt.json"
+
+# 用户指定的批次优先级：沪深300 → 中证500 → 中证1000 → 中证2000 → 其他。
+# 意义同 pull_min_year_group.py：配额中途耗尽时，**重要的组已经拉完**。
+# 用指数成分的**历史并集**（index_component 全期），仅决定批次先后，不影响语义。
+INDEX_PRIORITY = [("000300.SH", "沪深300"), ("000905.SH", "中证500"),
+                  ("000852.SH", "中证1000"), ("932000.CSI", "中证2000")]
+
+
+def order_by_priority(syms: list[str]) -> list[str]:
+    con = duckdb.connect(str(ROOT / "bigquant_warehouse.duckdb"), read_only=True)
+    rest, out = set(syms), []
+    for inst, name in INDEX_PRIORITY:
+        grp = {r[0] for r in con.execute(
+            "SELECT DISTINCT member_code FROM index_component WHERE instrument=?",
+            [inst]).fetchall()}
+        hit = sorted(rest & grp)
+        print(f"   {name:8} {len(hit):>5} 只")
+        out += hit
+        rest -= grp
+    con.close()
+    print(f"   其他      {len(rest):>5} 只")
+    return out + sorted(rest)
+
+
+def read_ckpt(start: str, end: str) -> set[str]:
+    """断点按**日期区间**隔离。
+
+    ★ 2026-10-09 修：原实现把 ckpt 存成纯标的列表、不含区间 → 换区间重跑时每只都被
+      判成"已完成"，todo=0，**一行不拉却打印"完成"**。旧版列表格式一律忽略（宁可重拉，
+      入库有 (instrument,date) 主键去重，幂等）。
+    """
+    if not CKPT.exists():
+        return set()
+    raw = json.loads(CKPT.read_text(encoding="utf-8"))
+    if isinstance(raw, dict) and raw.get("range") == [start, end]:
+        return set(raw.get("done", []))
+    why = raw.get("range") if isinstance(raw, dict) else "旧版纯列表"
+    print(f"（断点区间 {why} ≠ 本次 [{start}, {end}] → 忽略旧断点，从头拉）")
+    return set()
+
+
+def write_ckpt(start: str, end: str, done: set[str]):
+    CKPT.write_text(json.dumps({"range": [start, end], "done": sorted(done)},
+                               ensure_ascii=False), encoding="utf-8")
 
 # ★ 严格按 data_tables.md 的 cn_stock_bar1d 定义列（16 列），禁 SELECT *
 COLS = ["instrument", "date", "name", "open", "high", "low", "close", "pre_close",
@@ -79,14 +130,15 @@ def main():
 
     syms = load_syms()
     print(f"① 池 = 本地 ∪ 母表 = {len(syms):,} 只 · 区间 {a.start} ~ {a.end}")
+    print("   批次优先级（沪深300 → 中证500 → 中证1000 → 中证2000 → 其他）：")
+    syms = order_by_priority(syms)
     est = len(syms) * 26 * len(COLS)
-    print(f"   估算上限 ≈ {est/1e6:.2f}M cells（实际按每天在市只数，约 5500×26×16 ≈ 2.4M）")
+    print(f"   估算上限 ≈ {est/1e6:.2f}M cells（实际按每天在市只数）")
     if a.dry_run:
         return
 
     from bigquant import dai
-    done = json.loads(CKPT.read_text(encoding="utf-8")) if CKPT.exists() else []
-    done_set = set(done)
+    done_set = read_ckpt(a.start, a.end)
     todo = [s for s in syms if s not in done_set]
     print(f"② 断点续传：已完成 {len(done_set)}，待拉 {len(todo)}")
 
@@ -110,8 +162,8 @@ def main():
         if len(df):
             ingest(df)
             total += len(df)
-        done.extend(batch)
-        CKPT.write_text(json.dumps(sorted(set(done)), ensure_ascii=False))
+        done_set.update(batch)
+        write_ckpt(a.start, a.end, done_set)
         print(f"   批 {i//BATCH+1:>3}: {len(batch):>4} 只 → {len(df):>7,} 行  累计 {total:>9,}")
 
     n, ns = rebuild_view()
