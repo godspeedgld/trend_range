@@ -100,8 +100,8 @@
    "id": "lnmuau4rv9",
    "start_date": "2024-09-30",
    "start_price": 160.2910579900234,
-   "end_date": "2025-01-11",
-   "end_price": 160.2750852603544,
+   "end_date": "2025-01-03",
+   "end_price": 160.31086580599225,
    "adj": "hfq"
   },
   {
@@ -113,35 +113,11 @@
    "adj": "hfq"
   },
   {
-   "id": "lnmu577ivf",
-   "start_date": "2025-06-25",
-   "start_price": 169.75566964848804,
-   "end_date": "2025-11-02",
-   "end_price": 169.85247848304903,
-   "adj": "hfq"
-  },
-  {
-   "id": "lnmuntwvll",
-   "start_date": "2025-06-25",
-   "start_price": 170.1557364103584,
-   "end_date": "2025-10-19",
-   "end_price": 170.2862779016173,
-   "adj": "hfq"
-  },
-  {
    "id": "lnmunvuxri",
    "start_date": "2025-10-28",
    "start_price": 180.9586615978896,
    "end_date": "2026-05-03",
    "end_price": 184.915604583912,
-   "adj": "hfq"
-  },
-  {
-   "id": "lnmu55n7t2",
-   "start_date": "2025-11-26",
-   "start_price": 192.92115637593076,
-   "end_date": "2026-04-16",
-   "end_price": 192.42552798078594,
    "adj": "hfq"
   },
   {
@@ -167,6 +143,22 @@
    "end_date": "2026-07-22",
    "end_price": 163.48362214610597,
    "adj": "hfq"
+  },
+  {
+   "id": "lnmuzc8qr6",
+   "start_date": "2022-11-03",
+   "start_price": 99.86994597673416,
+   "end_date": "2024-01-16",
+   "end_price": 107.9084555864334,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmuzc9z7m",
+   "start_date": "2025-06-25",
+   "start_price": 170.1557364103584,
+   "end_date": "2025-10-24",
+   "end_price": 170.42237846575892,
+   "adj": "hfq"
   }
  ],
  "688981.SH": [
@@ -179,19 +171,27 @@
    "adj": "hfq"
   },
   {
-   "id": "lnmunzxxdk",
-   "start_date": "2022-04-26",
-   "start_price": 37.22962217877648,
-   "end_date": "2022-10-10",
-   "end_price": 36.67319821564284,
-   "adj": "hfq"
-  },
-  {
    "id": "lnmunzyxiw",
    "start_date": "2022-10-26",
    "start_price": 40.01174199444469,
    "end_date": "2023-02-28",
    "end_price": 40.05434658029794,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmuzhkqmf",
+   "start_date": "2023-05-09",
+   "start_price": 58.96,
+   "end_date": "2023-12-13",
+   "end_price": 58.419698963886034,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmuzjnxtb",
+   "start_date": "2023-03-07",
+   "start_price": 48.336306952800825,
+   "end_date": "2024-03-19",
+   "end_price": 48.07890327196956,
    "adj": "hfq"
   }
  ]
