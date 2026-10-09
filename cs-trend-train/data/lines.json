@@ -214,8 +214,42 @@
    "id": "lnmv0faa1g",
    "start_date": "2025-08-27",
    "start_price": 109.74537651258899,
-   "end_date": "2026-08-14",
-   "end_price": 110.09217955565563,
+   "end_date": "2026-09-30",
+   "end_price": 109.99546502741097,
+   "adj": "hfq"
+  }
+ ],
+ "300604.SZ": [
+  {
+   "id": "lnmv0h919d",
+   "start_date": "2020-01-07",
+   "start_price": 85.2275727034718,
+   "end_date": "2021-01-07",
+   "end_price": 85.62138595924873,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0h9bbt",
+   "start_date": "2020-07-16",
+   "start_price": 117.76577974319459,
+   "end_date": "2021-01-07",
+   "end_price": 113.98494021848379,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0hcgxh",
+   "start_date": "2021-01-05",
+   "start_price": 114.10860800131346,
+   "end_date": "2021-04-02",
+   "end_price": 113.90720855691343,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv0hcqdp",
+   "start_date": "2021-01-11",
+   "start_price": 122.30675011846205,
+   "end_date": "2021-03-12",
+   "end_price": 122.21802738532648,
    "adj": "hfq"
   }
  ]
