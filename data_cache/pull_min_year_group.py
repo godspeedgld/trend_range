@@ -1,7 +1,8 @@
 """按【年份 + 分组】补齐 stock_min_1m —— 逐月缺口法，断点安全，支持指定补齐顺序。
 
-用户 2026-09-30 指定补齐 2023 分钟线为全市场，顺序：
-    沪深300 → 中证500 → 中证1000/2000 → 其他(rest)
+补齐顺序（用户指定，`--group all` 按此序连跑）：
+    沪深300 → 中证500 → 中证1000 → 中证2000 → 其他(rest)
+（2026-09-30 首次用于 2023 时是「中证1000/2000」合并一组；2026-10-09 按用户要求拆成两组独立排序。）
 
 为什么用分组跑（而不是一个脚本全市场一把梭）：PandaData 有**单日 5GB 流量上限**
 （错误码 500009）。按重要性分组、逐组跑 → 万一当天额度用尽，**重要的指数组已经完整**，
@@ -16,9 +17,10 @@
 用法：
     python pull_min_year_group.py --year 2023 --group hs300            [--dry-run]
     python pull_min_year_group.py --year 2023 --group csi500
-    python pull_min_year_group.py --year 2023 --group csi1000csi2000
+    python pull_min_year_group.py --year 2023 --group csi1000
+    python pull_min_year_group.py --year 2023 --group csi2000
     python pull_min_year_group.py --year 2023 --group rest
-    python pull_min_year_group.py --year 2023 --group all     # 上面前四组按序连跑
+    python pull_min_year_group.py --year 2023 --group all     # 上面五组按序连跑
 
 产物：并入同一张 stock_min_1m（year=YYYY/month=MM 分区合并去重）→ 重建视图 → 更新 _meta.json
 """
@@ -52,12 +54,16 @@ ROW_GROUP = 200_000
 
 # 分组定义 + 用户指定的补齐顺序（all 按此序连跑）
 GROUPS = {
-    "hs300":         ("沪深300",         "instrument = '000300.SH'"),
-    "csi500":        ("中证500",         "instrument = '000905.SH'"),
-    "csi1000csi2000": ("中证1000∪2000",  "instrument IN ('000852.SH','932000.CSI')"),
-    "rest":          ("其他(rest)",      None),        # 全市场 − 上面三组
+    "hs300":    ("沪深300",    "instrument = '000300.SH'"),
+    "csi500":   ("中证500",    "instrument = '000905.SH'"),
+    "csi1000":  ("中证1000",   "instrument = '000852.SH'"),
+    "csi2000":  ("中证2000",   "instrument = '932000.CSI'"),
+    "rest":     ("其他(rest)", None),        # 全市场 − 上面四组
 }
-ORDER = ["hs300", "csi500", "csi1000csi2000", "rest"]
+# ★ 2026-10-09 拆分：原 "csi1000csi2000" 合并组按用户要求拆成 csi1000 / csi2000 两组独立排序。
+#   注意 932000.CSI（中证2000）2023-08 才发布 → **2023 年以前该组当年并集为空**，
+#   那几年的符号全部落进 rest（rest 定义不受影响：过去减 1 个并集组、现在减 2 个，结果相同）。
+ORDER = ["hs300", "csi500", "csi1000", "csi2000", "rest"]
 
 
 def group_symbols(group: str, year: int) -> set[str]:
@@ -73,7 +79,7 @@ def group_symbols(group: str, year: int) -> set[str]:
             SELECT DISTINCT instrument FROM stock_bar1d
             WHERE TRY_CAST(date AS VARCHAR) LIKE '{year}%' AND close IS NOT NULL
               AND (instrument LIKE '%.SH' OR instrument LIKE '%.SZ')""").fetchall()}
-        for g in ("hs300", "csi500", "csi1000csi2000"):
+        for g in ("hs300", "csi500", "csi1000", "csi2000"):
             allm -= idx_syms(GROUPS[g][1])
         bq.close()
         return allm
