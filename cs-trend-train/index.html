@@ -790,7 +790,9 @@ function makeDraggable(el, handleSel = "h4, .mhead"){
 ["#panel", "#setPanel", "#notePanel", "#macroWin", "#scoreModal"].forEach(s => makeDraggable($(s)));
 
 // ── 宏观行情：指数 close 曲线 + MA200（判牛熊）──
-let macroChart = null, macroBars = [], macroSym = "000300.SH", macroList = [];
+// ★ 2026-10-10：宏观默认指数 沪深300 → 创业板指 —— 练习池过半是创业板/科创板，
+//   实测同批做多单按创业板指 MA200 分割最干净（牛 +9.1% vs 熊 −0.4%），闸门匹配池子
+let macroChart = null, macroBars = [], macroSym = "399006.SZ", macroList = [];
 async function ensureMacro(){
   if (macroChart) return;
   // ★ 必须在窗口可见后再 init —— 容器 display:none 时 klinecharts 量到 0×0
