@@ -213,7 +213,10 @@
   <label class="ck"><input type="checkbox" id="sTrades">显示交易标注</label>
   <label class="f">止损额度（元 · 全局，与标的无关）</label>
   <input id="sRisk" type="number" step="100" min="100">
-  <div class="hint">改额度只影响**以后**提交的交易；已提交的仓位是历史事实，不会重算。</div>
+  <label class="f">初始资金（元 · 仅统计页算 净值/年化 用）</label>
+  <input id="sCapital" type="number" step="10000" min="10000">
+  <div class="hint">改额度只影响**以后**提交的交易；已提交的仓位是历史事实，不会重算。
+    初始资金不影响仓位，只作统计页「净值/年化」的分母。</div>
   <button id="sClear" class="danger">清除当前标的交易记录</button>
   <div class="hint">只清 <b id="sSymName">—</b> 一个标的，不可恢复（会先二次确认）。</div>
 </div>
@@ -345,6 +348,7 @@ async function loadSettings(){
   $("#sLines").checked  = !!settings.show_lines;
   $("#sTrades").checked = !!settings.show_trades;
   $("#sRisk").value = settings.risk_amount;
+  $("#sCapital").value = settings.capital ?? 1000000;
 }
 // 日期合法性：<input type=date> 对非法输入（如 9/31）会**清空为 ""**。
 // 空 / 非法一律当「未指定」——否则 d1="" 会让下面的 findIndex 返回 0，
@@ -970,7 +974,8 @@ async function saveSettings(patch){
 }
 $("#sLines").onchange  = e => saveSettings({ show_lines:  e.target.checked });
 $("#sTrades").onchange = e => saveSettings({ show_trades: e.target.checked });
-$("#sRisk").onchange   = e => saveSettings({ risk_amount: e.target.value });
+$("#sRisk").onchange    = e => saveSettings({ risk_amount: e.target.value });
+$("#sCapital").onchange = e => saveSettings({ capital: e.target.value });
 $("#sClear").onclick = async () => {
   if (!window.confirm(`确定清除 ${symbol} ${symName} 的**全部**交易记录？\n不可恢复。`)) return;
   if (!window.confirm(`再确认一次：删除 ${symbol} 的所有交易记录（其他标的保留）。`)) return;

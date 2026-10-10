@@ -35,7 +35,9 @@ TRADES_F = DATA / "trades.json"
 NOTES_F = DATA / "notes.json"          # 交易心得（扁平列表，不按标的分组：统计页要跨标的看）
 SETTINGS_F = DATA / "settings.json"
 LOT = 100                                     # A 股 1 手 = 100 股
-DEFAULT_SETTINGS = {"risk_amount": 5000, "show_lines": True, "show_trades": False}
+DEFAULT_SETTINGS = {"risk_amount": 5000, "capital": 1000000,
+                    "show_lines": True, "show_trades": False}
+# capital = 初始资金（仅用于统计页的 净值/年化 收益 计算，不影响仓位）
 FAT_TAIL_PCT = 30.0                           # 肥尾线：收益率 ≥ +30%（与 analysis_012/014 同口径）
 
 # ── 开仓评分（2026-10-05 需求；10-06 多轮扩项；10-09 做多侧再扩：+突破类「牛市天际线」+其他项「是否历史最高」）──
@@ -555,12 +557,13 @@ class H(BaseHTTPRequestHandler):
             for k, v in (body or {}).items():
                 if k in DEFAULT_SETTINGS and v is not None:
                     s[k] = v
-            try:                                   # 前端可能传来字符串
-                s["risk_amount"] = float(s["risk_amount"])
-            except (TypeError, ValueError):
-                s["risk_amount"] = DEFAULT_SETTINGS["risk_amount"]
-            if s["risk_amount"] <= 0:
-                s["risk_amount"] = DEFAULT_SETTINGS["risk_amount"]
+            for num_key in ("risk_amount", "capital"):   # 前端可能传来字符串
+                try:
+                    s[num_key] = float(s[num_key])
+                except (TypeError, ValueError):
+                    s[num_key] = DEFAULT_SETTINGS[num_key]
+                if s[num_key] <= 0:
+                    s[num_key] = DEFAULT_SETTINGS[num_key]
             _save(SETTINGS_F, s)
             return self._send(200, s)
         if path == "/api/notes":

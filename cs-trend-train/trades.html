@@ -235,7 +235,9 @@ function toast(t, ok=true){ const m=$("#msg"); m.textContent=t;
   setTimeout(()=>m.style.display="none", 2600); }
 
 // ── 数据 ──
+let CAPITAL = 1000000;                          // 初始资金（settings.capital，净值/年化的分母）
 async function reload(){
+  try { CAPITAL = (await api("/api/settings")).capital ?? 1000000; } catch(_) {}
   const d = await api("/api/trades?all=1");
   RAW = d.trades || {}; NAMES = d.names || {};
   rows0 = [];
@@ -410,12 +412,24 @@ function stats(rows){
   const tails = closed.filter(r => r.ret_pct != null);
   const sh = sd(Rs) ? mean(Rs)/sd(Rs) : null;
   const ann = avgHold > 0 ? Math.sqrt(252/avgHold) : null;
+  // 净值/年化（元口径）：期末净值 = (初始资金+Σ盈亏)/初始资金；年化 = 复合年化
+  // 跨度 = 最早开仓日 → 最晚平仓日（自然日）。老记录无 shares → pnl 缺 → 显示 —
+  const sumPnl = closed.some(r=>r.pnl!=null) ? closed.reduce((s,r)=>s+(r.pnl||0),0) : null;
+  const ents = closed.map(r=>r.entry_date).filter(Boolean), exts = closed.map(r=>r.exit_date).filter(Boolean);
+  // ★ 日期是 "YYYY-MM-DD" 字符串：Math.max(...字符串) 会先 ToNumber → NaN（2026-10-09 用户报
+  //   年化/跨度 NaN 的根因）。必须先转时间戳再取极值。
+  const spanDays = (ents.length && exts.length)
+    ? Math.round((Math.max(...exts.map(d => +new Date(d))) - Math.min(...ents.map(d => +new Date(d)))) / 86400000)
+    : null;
+  const nav = sumPnl != null ? 1 + sumPnl / CAPITAL : null;
+  const annRet = (nav != null && nav > 0 && spanDays > 0) ? Math.pow(nav, 365/spanDays) - 1 : null;
   return { closed, Rs, cum, n: closed.length, pend: rows.length - closed.length,
     winRate: Rs.length ? wins.length/Rs.length*100 : null,
     payoff: (wins.length && losses.length) ? mean(wins)/Math.abs(mean(losses)) : null,
     expect: mean(Rs), sharpe: sh, sharpeAnn: (sh!=null&&ann) ? sh*ann : null,
     mdd, sumR: Rs.reduce((s,x)=>s+x,0),
-    sumPnl: closed.some(r=>r.pnl!=null) ? closed.reduce((s,r)=>s+(r.pnl||0),0) : null,
+    sumPnl,
+    nav, annRet, spanDays,
     tailRate: tails.length ? tails.filter(r=>r.is_fat_tail).length/tails.length*100 : null,
     avgHold, wins: wins.length, losses: losses.length };
 }
@@ -431,6 +445,11 @@ function renderStats(rows){
          s.expect>0?"pos":(s.expect<0?"neg":"")),
     card("累计R", fmt(s.sumR,1), s.sumR>0?"pos":(s.sumR<0?"neg":"")),
     card("累计盈亏", s.sumPnl==null?"—":wan(s.sumPnl), s.sumPnl>0?"pos":(s.sumPnl<0?"neg":"")),
+    card(`净值（期末 · 本金${wan(CAPITAL)}）`, s.nav==null?"—":fmt(s.nav,3),
+         s.nav>1?"pos":(s.nav<1?"neg":"")),
+    card("年化收益", s.annRet==null?"—":fmt(s.annRet*100,1)+"%",
+         s.annRet>0?"pos":(s.annRet<0?"neg":"")),
+    card("练习跨度(自然日)", s.spanDays==null?"—":s.spanDays+" 天"),
     card("逐笔夏普", fmt(s.sharpe)),
     card("年化夏普", fmt(s.sharpeAnn)),
     card("最大回撤(R)", fmt(s.mdd,1), "neg"),
