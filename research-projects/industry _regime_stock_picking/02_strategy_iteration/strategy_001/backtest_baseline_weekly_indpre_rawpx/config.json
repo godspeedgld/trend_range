@@ -1,0 +1,9 @@
+{
+  "strategy": "baseline 云端等价版 · 修正价格口径(原始价)+行业来源(prefactors)",
+  "fixes": ["PRICE=raw (后复权价/adjust_factor)", "IND=prefactors (sw_level_index_code, 5830只)"],
+  "engine": "scripts/local_portfolio_backtest.py",
+  "max_positions": 6,
+  "cost_bps": 8.0,
+  "initial_cash": 1000000.0,
+  "benchmark": "000300.SH"
+}
