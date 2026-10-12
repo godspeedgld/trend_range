@@ -40,11 +40,13 @@ QUOTE_COLS = ["close", "amount", "turn"]
 KEY = ["date", "instrument"]
 
 
-def sample_dates(n: int, year: str | None = None) -> list[str]:
+def sample_dates(n: int, year: str | None = None, random: bool = False) -> list[str]:
     """在本地 attr 已覆盖的日期里均匀抽 n 天（首尾必含，便于盯边界）。
 
     `year`（如 "2022"）：只在指定年份的交易日里抽 —— 分批拉取时**只验新入库的年份**，
     避免把配额花在已验过的年份上（2026-10-08 新增，向后兼容：不传=全区间均匀抽）。
+    `random=True`：改为**随机抽**（固定种子 42，可复现；不强制含首尾）——
+    均匀抽样有规律，随机抽样防"按固定网格对齐"的巧合性一致（2026-10-12 用户要求）。
     """
     try:
         con = duckdb.connect(str(DB), read_only=True)
@@ -58,6 +60,9 @@ def sample_dates(n: int, year: str | None = None) -> list[str]:
         raise SystemExit("本地 stock_prefactors_attr 还没有数据 —— 先跑 pull_prefactors_attr.py")
     if n >= len(days):
         return days
+    if random:
+        rng = np.random.default_rng(42)
+        return sorted({days[i] for i in rng.choice(len(days), size=n, replace=False)})
     idx = np.linspace(0, len(days) - 1, n).round().astype(int)
     return sorted({days[i] for i in idx})
 
@@ -103,11 +108,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=30)   # 用户 2026-09-29 定：默认 30 个交易日
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--random", action="store_true",
+                    help="随机抽样（种子42）而非等距 —— 防固定网格巧合一致")
     ap.add_argument("--year", default=None,
                     help="只验该年份的交易日（如 2022）—— 分批拉取后验新入库年份，省配额")
     a = ap.parse_args()
 
-    dates = sample_dates(a.days, a.year)
+    dates = sample_dates(a.days, a.year, a.random)
     print(f"抽样 {len(dates)} 个交易日：{dates[0]} ~ {dates[-1]}")
     n_cols = (2 + len(ATTR_COLS)) + (2 + len(QUOTE_COLS))   # 两趟：属性 13 列 + 行情 5 列
     print(f"预计配额：{len(dates)} × ~5,500 行 × {n_cols} 列（两趟）"
