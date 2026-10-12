@@ -17,21 +17,51 @@
   "strategy_iterations": [
     {
       "id": "strategy_001",
-      "idea": "变盘指数行业轮动·第一次迭代 —— 选股层四因子（turn_ratio/px_ma20/mom_20/liq_amount）方向跟随 regime 切换：T'<0 动量期全部取正（镜像版），T'>0 反转期维持取负。基准 = 恒反转（云端原版）。**假设被否**：迭代一 +72.1% vs 基准 +100.5%（trades 口径）。核心洞察：**regime 该管「买哪个行业」，不该管「买什么样的股」** —— 云端策略的行业层切动量/选股层永远反转是正确分工，不是框架矛盾。",
+      "idea": "变盘指数行业轮动·第一次迭代 —— 选股层四因子（turn_ratio/px_ma20/mom_20/liq_amount）方向跟随 regime 切换：T'<0 动量期全部取正（镜像版），T'>0 反转期维持取负。基准 = 恒反转（云端原版）。~~假设被否~~ → **结论 2026-10-12 修正**（旧口径 +72.1% vs +100.5% 判被否；云端对齐口径下迭代一收益更高、夏普更低，见 cloud_caliber / verdict）。核心洞察：**regime 该管「买哪个行业」，不该管「买什么样的股」** —— 云端策略的行业层切动量/选股层永远反转是正确分工，不是框架矛盾。",
       "annual_return": 0.0608,
       "sharpe": 0.286,
       "max_drawdown": -0.4224,
       "n_trades": 689,
-      "metrics_source": "trades 口径（shared/from_trades.py），技能指标铁律主口径",
-      "baseline": {
-        "id": "baseline_cloud_original",
-        "idea": "恒反转 = 云端原版（选股层与 regime 无关）",
-        "annual_return": 0.0786,
-        "sharpe": 0.4962,
-        "max_drawdown": -0.2415,
-        "n_trades": 703
+      "metrics_source": "以下 annual_return/sharpe/max_drawdown/n_trades = **旧口径**（三指数池/日频/信号引擎，trades 口径）留档；当前口径见 cloud_caliber",
+      "cloud_caliber": {
+        "dir": "backtest_regime_cloud_repro",
+        "engine": "local_weight_backtest.py（对标 bigtrader handle_data_weight_based）",
+        "caliber": "全市场池 + 周频因子窗口 + 原始价 + 窗口起点 2016-12-30 + 剔除复合分 NaN 候选",
+        "total_return": 3.7793,
+        "annual_return": 0.1817,
+        "sharpe": 0.8368,
+        "max_drawdown": -0.3556,
+        "n_trades": 4676,
+        "note": "同口径下迭代一收益更高（+377.9% vs 基准 +260.0%），但夏普更低、回撤更深（0.837 vs 0.904；−35.6% vs −24.3%）",
+        "created_at": "2026-10-12"
       },
-      "verdict": "假设被否",
+      "baseline": {
+        "id": "backtest_baseline_cloud_repro",
+        "dir": "backtest_baseline_cloud_repro",
+        "idea": "恒反转 = **云端原版**的本地逐值复现 —— 全市场池 + 周频因子窗口 + 原始价 + 权重引擎（对标 bigtrader handle_data_weight_based）+ 窗口起点 2016-12-30；选股集合与权重均与云端逐值一致（173/173、Δ≤1.3e-14）",
+        "total_return": 2.6001,
+        "annual_return": 0.1465,
+        "sharpe": 0.9036,
+        "max_drawdown": -0.2431,
+        "n_trades": 4864,
+        "cloud_same_window": {
+          "window": "2017-05-15 ~ 2026-08-21",
+          "total_multiple": 3.797,
+          "annual_return": 0.1561
+        },
+        "ratio_vs_cloud": 1.055,
+        "residual_cause": "剩余差主要在引擎：本地按原始价估值、不记分红现金（≈1.09x）",
+        "created_at": "2026-10-12"
+      },
+      "legacy_local_caliber": {
+        "note": "2026-09-22 的旧口径（三指数池 + 日频因子 + 信号引擎）产物，目录已删（2026-10-12），仅留档",
+        "iteration_trades_return": 0.721,
+        "iteration_sharpe": 0.286,
+        "baseline_annual_return": 0.0786,
+        "baseline_sharpe": 0.4962,
+        "baseline_n_trades": 703
+      },
+      "verdict": "结论修正（2026-10-12）：旧口径判「迭代一被否」（+72.1% vs +100.5%）；**云端对齐口径下迭代一收益更高但夏普更低、回撤更深 ⇒ 是「高收益·高风险」，非简单被否**。旧口径的「被否」源于口径偏差。",
       "pending_rebuild": "逐因子归因 / 随机化对照（20 次随机选股，基准落 50 分位 → 选股层≈随机） / liq_amount 机制诊断（控制三方向性因子后动量期 Q5−Q1 仅 +0.009%，推算年化 +0.44% vs 实测 +6.27pp/年，差 14 倍 → 判伪信号）—— 这三项实验原用一版自写引擎实现，该引擎及产物已按技能合规要求移除，实验设计与结论留档于 strategy_001/final_report.md，**待用技能引擎重建**"
     }
   ],
@@ -42,11 +72,12 @@
     "stock_bars": "stock_bar1d 3,474 只 / 828 万行 / 16 列",
     "backtest_window": "2016-12-23 ~ 2026-08-21"
   },
-  "status": "strategy_001 完成（迭代一假设被否）",
-  "backtest_engine": ".claude/skills/skill-research-assistant/scripts/local_portfolio_backtest.py（开仓池/平仓池框架，5 接口）",
-  "backtest_command": "python .claude/skills/skill-research-assistant/scripts/local_portfolio_backtest.py 'research-projects/industry _regime_stock_picking' --market-data 'research-projects/industry _regime_stock_picking/shared/_cache/engine_market.parquet' --strategy 'research-projects/industry _regime_stock_picking/02_strategy_iteration/strategy_001/backtest_strategy/strategy.py' --max-positions 6 --cost-bps 8 --warmup 1 --benchmark 000300.SH",
+  "status": "strategy_001 完成（2026-10-12 重建为**云端对齐口径**）—— 迭代一 = 高收益·高风险（收益↑ 但夏普↓/回撤↑）；旧口径的「被否」结论已修正",
+  "backtest_engine": ".claude/skills/skill-research-assistant/scripts/local_weight_backtest.py（权重引擎，对标 bigtrader handle_data_weight_based 三层：调仓模板/调仓周期/order_target_percent）。旧口径曾用 local_portfolio_backtest.py（开仓池/平仓池 5 接口），其产物已删",
+  "backtest_command": "python .claude/skills/skill-research-assistant/scripts/local_weight_backtest.py 'research-projects/industry _regime_stock_picking' --market-data 'research-projects/industry _regime_stock_picking/shared/_cache/engine_market_weekly_indpre_rawpx.parquet' --targets 'research-projects/industry _regime_stock_picking/shared/_cache/targets_daily_regime_indpre.parquet' --output-dir 'research-projects/industry _regime_stock_picking/02_strategy_iteration/strategy_001/backtest_regime_cloud_repro/backtest_logs'  （baseline 用同命令、--targets 换 targets_daily_indpre.parquet、输出换 backtest_baseline_cloud_repro）",
   "known_caliber_gaps": [
-    "成本：策略真实为不对称（买 0.03% / 卖 0.13%），技能引擎只支持对称双边 cost_bps → 以 8bps 近似",
-    "引擎漏算平仓日隔夜收益：平仓在 d+1 开盘执行，引擎把持仓收益记到 close[d] 为止，未计入 close[d]→open[d+1] 段；trades 口径已计入（故 trades 口径总收益高约 17pp）"
+    "★ 旧口径坑（已解决）：旧信号引擎只支持对称双边 cost_bps → 曾以 8bps 近似（真实为买 0.03%/卖 0.13%）；权重引擎已支持非对称",
+    "引擎漏计分红：本地按**原始价**估值、不记分红现金 ⇒ 相对云端系统性少赚 ≈1.09x（9.3 年累计），是当前本地/云端 1.055x 残差的主因",
+    "指标口径：权重引擎的 annual_return 按全部 2361 个交易日折算（含 2016-12~2017-05 空仓段）；与云端按交易窗口折算略有差异"
   ]
 }
