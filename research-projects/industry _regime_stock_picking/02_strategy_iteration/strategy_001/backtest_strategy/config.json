@@ -1,0 +1,14 @@
+{
+  "engine": "portfolio pool-based",
+  "params": {
+    "max_positions": 6,
+    "cost_bps": 8.0,
+    "warmup": 1,
+    "fixed_notional": null,
+    "initial_cash": 1000000.0,
+    "benchmark": "000300.SH"
+  },
+  "cost_bps": 8.0,
+  "n_trades": 689,
+  "benchmark": "000300.SH"
+}

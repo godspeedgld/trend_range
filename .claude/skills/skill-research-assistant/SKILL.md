@@ -144,7 +144,9 @@ python scripts/pdf_extract.py <pdf> [--pages 3-22] [--dpi 150]
 - **思路**：main_idea.md 记录当前迭代思路
 - **回测**：
   - **单标的 CTA**：reference_implementation.py + `local_backtest.py`（事件驱动引擎）
-  - **组合/选股/因子**：strategy.py 实现 5 接口 + `local_portfolio_backtest.py`（开仓池/平仓池引擎，`templates/portfolio_strategy.py` 模板）
+  - **组合/选股/因子（信号口径）**：strategy.py 实现 5 接口 + `local_portfolio_backtest.py`（开仓池/平仓池引擎，`templates/portfolio_strategy.py` 模板）
+  - **权重口径（复现云端权重型策略，如 bigtrader `handle_data_weight_based`）**：strategy.py 产出**目标权重表** + `local_weight_backtest.py`（逐日 `order_target_percent` 对齐目标、卖掉目标外持仓，`templates/weight_strategy.py` 模板）。
+    ★ **两套引擎不可混用**——同一份 targets，权重引擎与信号引擎的绩效可差到**符号相反**（实测 +377.9% vs −46.1%）。要复现云端权重型策略必须用权重引擎。
 - **分析**：根据回测结果给出改进建议
 - **报告**：final_report.md 综合思路/回测/分析/改进
 - **质控**：quality_gate_check.py
@@ -166,7 +168,7 @@ python scripts/pdf_extract.py <pdf> [--pages 3-22] [--dpi 150]
 - `scripts/pdf_extract.py`：**PDF 提取**——auto 判定文本层/图片型；图片型逐页渲染 PNG 供 Read 看图
 - `scripts/create_project.py`：建工程目录（`01_data_analysis` / `02_strategy_iteration` / `04_delivery`；**不含 `research_report`**——那是仓库根的公共库）
 - `scripts/check_data.py`：数据检查
-- `scripts/local_backtest.py` / `local_portfolio_backtest.py`：回测引擎（单标的 CTA / 组合）
+- `scripts/local_backtest.py` / `local_portfolio_backtest.py` / `local_weight_backtest.py`：回测引擎（单标的 CTA / 组合信号 / 组合权重）
 
 ## Templates
 
@@ -176,4 +178,5 @@ python scripts/pdf_extract.py <pdf> [--pages 3-22] [--dpi 150]
 - `templates/records_template.md`：数据分析记录（生成/更新/回滚）
 - `templates/main_idea_template.md`：策略思路（时序/因子两模板）
 - `templates/final_report_template.md`：综合报告（含「引用研报」节）
-- `templates/portfolio_strategy.py`：组合策略 5 接口模板
+- `templates/portfolio_strategy.py`：组合策略 5 接口模板（**信号引擎** `local_portfolio_backtest.py`）
+- `templates/weight_strategy.py`：**目标权重表**生成模板（**权重引擎** `local_weight_backtest.py`，对标 bigtrader `handle_data_weight_based`）

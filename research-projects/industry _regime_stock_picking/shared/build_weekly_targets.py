@@ -90,14 +90,32 @@ def build_targets(cand: pd.DataFrame, inds: list[str], dirs: dict,
     return out
 
 
-def main():
-    ind = pd.read_parquet(CACHE / "industry_index.parquet")
-    reg = pd.read_parquet(CACHE / "regime.parquet")
-    import os as _os2
-    _panel_sfx = "_indpre" if _os2.environ.get("IND", "component") == "prefactors" else ""
-    _price_sfx = "_rawpx" if _os2.environ.get("PRICE", "hfq") == "raw" else ""
-    panel = pd.read_parquet(CACHE / f"signal_panel{SUFFIX}{_panel_sfx}.parquet")
+def factor_directions(mode: str, regime: str) -> dict:
+    """选股层四因子的**方向**——这是两个迭代唯一的差别。
+      mode="baseline"：恒反转（`-1`，云端原版）
+      mode="regime"  ：动量期镜像（`+1`）/ 反转期取负（`-1`）
+    """
+    if mode == "baseline":
+        return {f: -1 for f in FACTORS}
+    return {f: (1 if regime == "momentum" else -1) for f in FACTORS}
 
+
+def industry_weights(cand: pd.DataFrame, syms: list) -> pd.Series:
+    """行业内已选股的权重 = 20 周波动率**倒数**归一（风险平价）。
+
+    ★ 波动率缺失（新股/数据不足）用**本行业当日已选股中位数**兜底，clip 下限 1e-4
+      —— 逐字对齐云端 `build_holdings`：
+        picks.vol_stock.fillna(groupby([date, ind_code]).median()) → 1/vol.clip(1e-4)
+    """
+    sub = cand[cand["symbol"].isin(syms)].set_index("symbol")
+    vol = sub["vol_20"]
+    vol = vol.fillna(vol.median())
+    inv = 1.0 / vol.clip(lower=1e-4)
+    return inv / inv.sum()
+
+
+def build(mode: str, panel: pd.DataFrame, ind: pd.DataFrame, reg: pd.DataFrame):
+    """信号日 → (weekly_plan, weekly_targets)。**纯函数、不读写文件**，供各迭代 strategy.py 复用。"""
     regi = reg.set_index("date")
     indi = {d: g for d, g in ind.groupby("date")}
     panel_by_day = {d: g for d, g in panel.groupby("date")}
@@ -121,10 +139,7 @@ def main():
         #   —— **首个信号日也算满仓**（prev 为 None）。本地原要求 prev_top3 非空 ⇒ 首周
         #   恒为空仓，与云端差 1 周（实测云端 industry_log 首周 2017-01-06 exposure=1）。
         exposure = 1.0 if (prev_top3 is None or set(top3) == set(prev_top3)) else 0.0
-        if MODE == "baseline":
-            dirs = {f: -1 for f in FACTORS}
-        else:
-            dirs = {f: (1 if regime == "momentum" else -1) for f in FACTORS}
+        dirs = factor_directions(mode, regime)
 
         exec_date = cand["exec_date"].iloc[0]
         plan_rows.append({"signal_date": t, "exec_date": exec_date, "regime": regime,
@@ -140,15 +155,7 @@ def main():
         for ind_name, syms in targets.items():
             if not syms:
                 continue
-            sub = cand[cand["symbol"].isin(syms)].set_index("symbol")
-            # ★ 2026-10-12：波动率缺失（新股/数据不足）用**本行业当日已选股中位数**兜底，
-            #   clip 下限 1e-4 —— 逐字对齐云端 build_holdings：
-            #     picks.vol_stock.fillna(groupby([date,ind_code]).median()) → 1/vol.clip(1e-4)
-            #   本地原直接 1/vol_20.clip(lower=1e-6)，NaN 会污染整只股权重（→被 weight>0 丢掉）。
-            vol = sub["vol_20"]
-            vol = vol.fillna(vol.median())
-            inv = 1.0 / vol.clip(lower=1e-4)
-            w = inv / inv.sum()
+            w = industry_weights(cand, syms)     # 行业内波动率倒数权重（见函数 docstring）
             for s in syms:
                 new_pos[s] = ind_name
                 tgt_rows.append({"signal_date": t, "exec_date": exec_date,
@@ -157,8 +164,18 @@ def main():
         positions = new_pos
         prev_top3 = top3
 
-    plan = pd.DataFrame(plan_rows)
-    tgts = pd.DataFrame(tgt_rows)
+    return pd.DataFrame(plan_rows), pd.DataFrame(tgt_rows)
+
+
+def main():
+    import os as _os2
+    _panel_sfx = "_indpre" if _os2.environ.get("IND", "component") == "prefactors" else ""
+    _price_sfx = "_rawpx" if _os2.environ.get("PRICE", "hfq") == "raw" else ""
+    ind = pd.read_parquet(CACHE / "industry_index.parquet")
+    reg = pd.read_parquet(CACHE / "regime.parquet")
+    panel = pd.read_parquet(CACHE / f"signal_panel{SUFFIX}{_panel_sfx}.parquet")
+
+    plan, tgts = build(MODE, panel, ind, reg)
     plan.to_parquet(CACHE / "weekly_plan.parquet", index=False)
     tgts.to_parquet(CACHE / f"weekly_targets_{MODE}{SUFFIX}{_panel_sfx}{_price_sfx}.parquet", index=False)
     print(f"[{MODE}] weekly_plan: {len(plan)} 信号日（满仓 {int(plan['exposure'].sum())}）")
