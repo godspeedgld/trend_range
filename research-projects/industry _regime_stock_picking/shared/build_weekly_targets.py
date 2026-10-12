@@ -62,7 +62,9 @@ def build_targets(cand: pd.DataFrame, inds: list[str], dirs: dict,
             out[ind] = []
             continue
         sub["score"] = score_stocks(sub, dirs)
-        ranked = sub.sort_values("score", ascending=False)["symbol"].tolist()
+        # ★ 2026-10-12：并列破除加 instrument 二级键。云端注释明确：复合分约 1/3 存在并列，
+        #   不显式定序则名次由上游行序决定 → 同一份数据重跑结果漂移（云端实测年化差 0.5pp）。
+        ranked = sub.sort_values(["score", "symbol"], ascending=[False, True])["symbol"].tolist()
         targets = [s for s in ranked[:buf] if s in held]
         for s in ranked:
             if len(targets) >= N_PER_IND:
@@ -76,7 +78,10 @@ def build_targets(cand: pd.DataFrame, inds: list[str], dirs: dict,
 def main():
     ind = pd.read_parquet(CACHE / "industry_index.parquet")
     reg = pd.read_parquet(CACHE / "regime.parquet")
-    panel = pd.read_parquet(CACHE / f"signal_panel{SUFFIX}.parquet")
+    import os as _os2
+    _panel_sfx = "_indpre" if _os2.environ.get("IND", "component") == "prefactors" else ""
+    _price_sfx = "_rawpx" if _os2.environ.get("PRICE", "hfq") == "raw" else ""
+    panel = pd.read_parquet(CACHE / f"signal_panel{SUFFIX}{_panel_sfx}.parquet")
 
     regi = reg.set_index("date")
     indi = {d: g for d, g in ind.groupby("date")}
@@ -107,29 +112,31 @@ def main():
         plan_rows.append({"signal_date": t, "exec_date": exec_date, "regime": regime,
                           "T_prime": float(tp), "top3": ",".join(top3), "exposure": exposure})
 
-        if exposure == 0:                    # 空仓周 → 清仓，不开新仓
-            positions = {}
-        else:
-            targets = build_targets(cand, top3, dirs, set(positions))
-            new_pos = {}
-            for ind_name, syms in targets.items():
-                if not syms:
-                    continue
-                sub = cand[cand["symbol"].isin(syms)].set_index("symbol")
-                inv = 1.0 / sub["vol_20"].clip(lower=1e-6)
-                w = inv / inv.sum()
-                for s in syms:
-                    new_pos[s] = ind_name
-                    tgt_rows.append({"signal_date": t, "exec_date": exec_date,
-                                     "symbol": s, "ind_name": ind_name, "regime": regime,
-                                     "weight": float(exposure * w[s] / N_IND)})
-            positions = new_pos
+        # ★ 2026-10-12 对齐云端 build_holdings：
+        #   ① 空仓周**也要发出行**（exposure=0 → weight=0）。否则策略侧 expand_to_daily
+        #      只在满仓信号日之间铺权重 → 空仓周被"跨桥"，实际从不清仓；
+        #   ② held（缓冲记忆）**跨空仓周延续** —— 云端 held 只在行业轮出时 pop，
+        #      不因 exposure=0 清空。
+        targets = build_targets(cand, top3, dirs, set(positions))
+        new_pos = {}
+        for ind_name, syms in targets.items():
+            if not syms:
+                continue
+            sub = cand[cand["symbol"].isin(syms)].set_index("symbol")
+            inv = 1.0 / sub["vol_20"].clip(lower=1e-6)
+            w = inv / inv.sum()
+            for s in syms:
+                new_pos[s] = ind_name
+                tgt_rows.append({"signal_date": t, "exec_date": exec_date,
+                                 "symbol": s, "ind_name": ind_name, "regime": regime,
+                                 "weight": float(exposure * w[s] / N_IND)})
+        positions = new_pos
         prev_top3 = top3
 
     plan = pd.DataFrame(plan_rows)
     tgts = pd.DataFrame(tgt_rows)
     plan.to_parquet(CACHE / "weekly_plan.parquet", index=False)
-    tgts.to_parquet(CACHE / f"weekly_targets_{MODE}{SUFFIX}.parquet", index=False)
+    tgts.to_parquet(CACHE / f"weekly_targets_{MODE}{SUFFIX}{_panel_sfx}{_price_sfx}.parquet", index=False)
     print(f"[{MODE}] weekly_plan: {len(plan)} 信号日（满仓 {int(plan['exposure'].sum())}）")
     print(f"[{MODE}] weekly_targets: {len(tgts):,} 行 / {tgts['symbol'].nunique()} 只")
     wsum = tgts.groupby("signal_date")["weight"].sum()
@@ -137,20 +144,30 @@ def main():
           f"最大 {wsum.max():.4f}（应≈1.0）")
 
     # ── 引擎输入行情（回测期 · 全部候选股）──
-    if MODE == "regime":
+    # ★ 2026-10-12：行情与 MODE 无关（只取决于 panel + PRICE 开关），原 `if MODE=="regime"`
+    #   让 baseline 模式建不出行情文件 → 改为两种模式都建
+    if MODE in ("regime", "baseline"):
         import duckdb
         syms = sorted(panel["symbol"].unique())
         con = duckdb.connect(str(WAREHOUSE), read_only=True)
         inlist = ",".join(repr(s) for s in syms)
+        # ★ PRICE 开关（2026-10-12）：云端 bigtrader 用**原始价**成交
+        #   （实证：云端 5,548 笔成交价 = 后复权价÷adjust_factor，99.7% 逐笔吻合）
+        #   本地原用后复权价 → PRICE=raw 还原真实价格交易
+        import os as _os
+        _raw = _os.environ.get("PRICE", "hfq") == "raw"
+        _px = ("open / adjust_factor AS open, high / adjust_factor AS high, "
+               "low / adjust_factor AS low, close / adjust_factor AS close"
+               if _raw else "open, high, low, close")
         mk = con.execute(f"""
-            SELECT date, instrument AS symbol, open, high, low, close, name
+            SELECT date, instrument AS symbol, {_px}, name
             FROM stock_bar1d
             WHERE instrument IN ({inlist}) AND date >= '{BT_START}' AND date <= '{BT_END}'
         """).fetchdf()
         con.close()
         mk["date"] = pd.to_datetime(mk["date"])
         mk = mk.sort_values(["symbol", "date"]).reset_index(drop=True)
-        mk.to_parquet(CACHE / f"engine_market{SUFFIX}.parquet", index=False)
+        mk.to_parquet(CACHE / f"engine_market{SUFFIX}{_panel_sfx}{_price_sfx}.parquet", index=False)
         print(f"[market] {len(mk):,} 行 / {mk['symbol'].nunique()} 只 / "
               f"{mk['date'].min().date()} ~ {mk['date'].max().date()}")
 

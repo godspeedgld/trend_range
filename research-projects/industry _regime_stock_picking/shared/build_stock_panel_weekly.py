@@ -85,12 +85,28 @@ def load_bars() -> tuple[pd.DataFrame, pd.DatetimeIndex]:
 
 
 def attach_industry(df: pd.DataFrame) -> pd.DataFrame:
+    """行业归属。★ IND 开关（2026-10-12）：
+      IND=component（默认，旧行为）→ stock_industry_component_daily(sw2021)，5,033 只
+      IND=prefactors            → stock_prefactors_attr.sw_level_index_code/name，
+                                  **5,830 只（=云端 cn_stock_prefactors 同源，池与云端对齐）**
+      两源已验证：31 个一级行业同名、同日同股 100% 一致 → 换源只扩覆盖不改语义。
+    """
+    import os
+    IND = os.environ.get("IND", "component")
     con = duckdb.connect(str(WAREHOUSE), read_only=True)
-    si = con.execute(f"""
-        SELECT instrument AS symbol, date, industry_level1_name AS ind_name
-        FROM stock_industry_component_daily
-        WHERE date >= '{START}' AND date <= '{END}'
-    """).fetchdf()
+    if IND == "prefactors":
+        si = con.execute(f"""
+            SELECT instrument AS symbol, date, sw_level1_name AS ind_name,
+                   sw_level_index_code AS ind_code
+            FROM stock_prefactors_attr
+            WHERE date >= '{START}' AND date <= '{END}' AND sw_level_index_code IS NOT NULL
+        """).fetchdf()
+    else:
+        si = con.execute(f"""
+            SELECT instrument AS symbol, date, industry_level1_name AS ind_name
+            FROM stock_industry_component_daily
+            WHERE date >= '{START}' AND date <= '{END}'
+        """).fetchdf()
     con.close()
     si["date"] = pd.to_datetime(si["date"])
     return df.merge(si.drop_duplicates(["symbol", "date"]), on=["symbol", "date"], how="left")
@@ -152,7 +168,9 @@ def main():
     cols = ["date", "symbol", "name", "ind_name", "close", "exec_date", "exec_open",
             "turn_ratio", "px_ma20", "mom_20", "liq_amount", "vol_20", "listed_bars"]
     p = p[cols].reset_index(drop=True)
-    out = OUT / "signal_panel_weekly.parquet"
+    import os as _os
+    _sfx = "_indpre" if _os.environ.get("IND", "component") == "prefactors" else ""
+    out = OUT / f"signal_panel_weekly{_sfx}.parquet"
     p.to_parquet(out, index=False, compression="zstd")
     print(f"\n→ {out}  ({len(p):,} 行 × {p.shape[1]} 列)")
 
