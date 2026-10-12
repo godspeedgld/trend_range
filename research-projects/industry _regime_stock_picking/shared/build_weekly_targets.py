@@ -52,7 +52,7 @@ def score_stocks(sub: pd.DataFrame, dirs: dict) -> pd.Series:
 
 
 def build_targets(cand: pd.DataFrame, inds: list[str], dirs: dict,
-                  held: set) -> dict[str, list[str]]:
+                  held: dict) -> dict[str, list[str]]:
     """每行业挑 2 只；老仓在行业内前 N_PER_IND×BUF_MULT=6 名内则保留（降换手）。"""
     buf = N_PER_IND * BUF_MULT
     out = {}
@@ -62,10 +62,25 @@ def build_targets(cand: pd.DataFrame, inds: list[str], dirs: dict,
             out[ind] = []
             continue
         sub["score"] = score_stocks(sub, dirs)
+        # ★ 2026-10-12：对齐云端 `sc = sc.dropna(subset=["_s"])` —— 复合分 NaN 的候选
+        #   （四个因子全算不出，早期窗口未满）云端**直接剔除**；本地原先保留、按 NaN 排序
+        #   ⇒ 2017 早期多出 6 个「云端空仓、本地持垃圾股」的满仓周（实测这 6 日云端面板
+        #   100% 行四因子全 NaN → 云端 picks 为空）。剔除后两边一致。
+        sub = sub.dropna(subset=["score"])
+        if sub.empty:
+            out[ind] = []
+            continue
         # ★ 2026-10-12：并列破除加 instrument 二级键。云端注释明确：复合分约 1/3 存在并列，
         #   不显式定序则名次由上游行序决定 → 同一份数据重跑结果漂移（云端实测年化差 0.5pp）。
         ranked = sub.sort_values(["score", "symbol"], ascending=[False, True])["symbol"].tolist()
-        targets = [s for s in ranked[:buf] if s in held]
+        # ★ 2026-10-12 修：保留顺序必须**按 held（老仓进入先后）**，而不是按排名。
+        #   ★ held 必须传**有序容器**（dict 保插入序），不能传 set —— 否则顺序丢失、修不生效。
+        #   云端原文：`stay = [x for x in held.get(ind, []) if rank_of.get(x,1e9) <= keep_n][:N_PER_IND]`
+        #   —— 遍历 held、过滤出仍在 top-keep_n 的老仓、取前 2。
+        #   本地原先写 `[s for s in ranked[:buf] if s in held]`（按排名序），当 top6 内的老仓 ≥3 只时
+        #   两者截取的前 2 名不同 → 选股分叉（实测云端/本地集合仅 30.1% 一致，即由此而来）。
+        top_keep = set(ranked[:buf])
+        targets = [s for s in held if s in top_keep][:N_PER_IND]
         for s in ranked:
             if len(targets) >= N_PER_IND:
                 break
@@ -102,7 +117,10 @@ def main():
         if day is None or cand is None:
             continue
         top3, regime = pick_industries(day, float(tp))
-        exposure = 1.0 if (prev_top3 is not None and set(top3) == set(prev_top3)) else 0.0
+        # ★ 2026-10-12：云端 `exposure = 1.0 if (prev is None or cur == prev) else 0.0`
+        #   —— **首个信号日也算满仓**（prev 为 None）。本地原要求 prev_top3 非空 ⇒ 首周
+        #   恒为空仓，与云端差 1 周（实测云端 industry_log 首周 2017-01-06 exposure=1）。
+        exposure = 1.0 if (prev_top3 is None or set(top3) == set(prev_top3)) else 0.0
         if MODE == "baseline":
             dirs = {f: -1 for f in FACTORS}
         else:
@@ -117,13 +135,19 @@ def main():
         #      只在满仓信号日之间铺权重 → 空仓周被"跨桥"，实际从不清仓；
         #   ② held（缓冲记忆）**跨空仓周延续** —— 云端 held 只在行业轮出时 pop，
         #      不因 exposure=0 清空。
-        targets = build_targets(cand, top3, dirs, set(positions))
+        targets = build_targets(cand, top3, dirs, positions)   # ★ 传 dict（保序），勿传 set
         new_pos = {}
         for ind_name, syms in targets.items():
             if not syms:
                 continue
             sub = cand[cand["symbol"].isin(syms)].set_index("symbol")
-            inv = 1.0 / sub["vol_20"].clip(lower=1e-6)
+            # ★ 2026-10-12：波动率缺失（新股/数据不足）用**本行业当日已选股中位数**兜底，
+            #   clip 下限 1e-4 —— 逐字对齐云端 build_holdings：
+            #     picks.vol_stock.fillna(groupby([date,ind_code]).median()) → 1/vol.clip(1e-4)
+            #   本地原直接 1/vol_20.clip(lower=1e-6)，NaN 会污染整只股权重（→被 weight>0 丢掉）。
+            vol = sub["vol_20"]
+            vol = vol.fillna(vol.median())
+            inv = 1.0 / vol.clip(lower=1e-4)
             w = inv / inv.sum()
             for s in syms:
                 new_pos[s] = ind_name

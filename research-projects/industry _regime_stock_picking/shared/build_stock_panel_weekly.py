@@ -47,6 +47,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import os
+
 import duckdb
 import numpy as np
 import pandas as pd
@@ -61,6 +63,19 @@ sys.path.insert(0, str(HERE.parent))
 from shared.build_stock_panel import MIN_LISTED_BARS, signal_dates   # noqa: E402 只 import 不改
 
 START, END = "2015-01-01", "2026-08-21"
+# ★ 2026-10-12：窗口行集**起点对齐云端**。云端 SQL 的 `date IN ({dl})` 被 DAI 下推进 CTE，
+#   而 dl 只含「BT_START 前最后一个信号日」起的周频信号日 ⇒ 云端窗口只能在这些行上数。
+#   turn_ratio(60 周) 因此到 2018-03-02 才非 NaN、px/mom/liq(20 周) 到 2017-05-12。
+#   本地原从 2015 起数 ⇒ 2017~2018 年本地 4 个因子齐全而云端只有 1~3 个，
+#   复合分 mean(axis=1) 跳过 NaN ⇒ 分数不同 ⇒ 选股分叉。
+#
+#   ★★ 起点取值由**云端真实成交**反标定（不是猜）：云端 2017 年首笔成交 = 2017-05-15，
+#      ⇒ 首个「满 20 周窗口」的信号日 = 2017-05-12 ⇒ dl 首日 = 2016-12-30（往前数第 20 个
+#      信号日）。用 2016-12-30 起数时，2017-05-12 恰好只有 20 个信号日、三因子(px/mom/liq)
+#      有效，复现出云端当天 6 只票**逐只一致**；用 2017-01-06 起数则 2017-05-12 全 NaN、0 只。
+#      全历史逐周比对：2016-12-30 起点 vs 云端真实逐日持仓 **94.3% 集合完全一致 / Jaccard 0.974**
+#      （2019 年起 ~98-100%）。置空字符串则回到"从 START(2015) 起数"的旧行为。
+PANEL_WINDOW_START = os.environ.get("PANEL_WINDOW_START", "2016-12-30")
 MIN_AMOUNT = 2e7                    # 云端 WHERE: amount > 2e7（**当日**额）
 W_TURN_FAST, W_TURN_SLOW = 5, 60    # 单位是**周**（= 信号日行数）
 W_MA = W_MOM = W_LIQ = W_VOL = 20
@@ -97,7 +112,8 @@ def attach_industry(df: pd.DataFrame) -> pd.DataFrame:
     if IND == "prefactors":
         si = con.execute(f"""
             SELECT instrument AS symbol, date, sw_level1_name AS ind_name,
-                   sw_level_index_code AS ind_code
+                   sw_level_index_code AS ind_code,
+                   st_status, suspended, list_days
             FROM stock_prefactors_attr
             WHERE date >= '{START}' AND date <= '{END}' AND sw_level_index_code IS NOT NULL
         """).fetchdf()
@@ -132,15 +148,35 @@ def main():
     df["exec_date"] = g["date"].shift(-1)
 
     p = attach_industry(df[df["date"].isin(set(sd))].copy())
+    if PANEL_WINDOW_START:                       # ★ 窗口行集起点对齐云端（见文件头常量说明）
+        _b = len(p)
+        p = p[p["date"] >= pd.Timestamp(PANEL_WINDOW_START)].copy()
+        print(f"窗口起点对齐云端 {PANEL_WINDOW_START}: {_b:,} → {len(p):,} 行")
     n0 = len(p)
 
     # ── 云端 CTE 的五个过滤（**必须在算窗口之前**，这正是周频口径的来源）──
-    flt = {
-        "非ST": ~p["name"].fillna("").str.contains("ST"),
-        "上市>252": p["listed_bars"] > 252,
-        "当日额>2e7": p["amount"] > MIN_AMOUNT,
-        "有行业归属": p["ind_name"].notna(),
-    }
+    # ★ 2026-10-12：过滤口径改为**与云端 WHERE 逐字对齐**。
+    #   云端：st_status = 0 AND suspended = 0 AND list_days > 252 AND amount > min_amount
+    #         AND sw_level_index_code IS NOT NULL
+    #   本地原用「name 含 ST」+「listed_bars(交易日) > 252」—— 与云端不同源：
+    #     · st_status 是显式字段（name 含 ST 会漏掉部分风险警示股 / 误伤）
+    #     · list_days 是**自然日**，listed_bars 是**交易日**（252 自然日≈8.4 月 vs 252 交易日≈12 月）
+    #   实测这导致约 2% 的 (股,周) 单边 NaN，进而影响 20/60 周窗口的行数。
+    if "st_status" in p.columns:
+        flt = {
+            "非ST(st_status=0)": p["st_status"].fillna(0) == 0,
+            "未停牌(suspended=0)": p["suspended"].fillna(0) == 0,
+            "上市>252自然日(list_days)": p["list_days"].fillna(0) > 252,
+            "当日额>2e7": p["amount"] > MIN_AMOUNT,
+            "有行业归属": p["ind_name"].notna(),
+        }
+    else:
+        flt = {
+            "非ST(name含ST)": ~p["name"].fillna("").str.contains("ST"),
+            "上市>252交易日(listed_bars)": p["listed_bars"] > 252,
+            "当日额>2e7": p["amount"] > MIN_AMOUNT,
+            "有行业归属": p["ind_name"].notna(),
+        }
     mask = pd.Series(True, index=p.index)
     print("\n逐条过滤（信号日快照，对齐云端 CTE）:")
     for k, v in flt.items():
@@ -162,8 +198,14 @@ def main():
     p["mom_20"] = p["close"] / g["close"].transform(lambda s: s.shift(W_MOM)) - 1
     p["liq_amount"] = g["amount"].transform(lambda s: s.rolling(W_LIQ).mean())
     p["_r"] = p["close"] / g["close"].transform(lambda s: s.shift(1)) - 1
+    # ★ 2026-10-12：m_nanstd(x, n) 的 min_periods=**2**，不是满窗口！
+    #   云端 `m_nanstd(close/m_lag(close,1)-1, 20)` 实测 = 可用行上的样本 std（≥2 行即算），
+    #   与 rolling(20, min_periods=2) 在**全量 153,432 可比行**上最大绝对差 1.7e-14。
+    #   本地原用 rolling(20)（默认 min_periods=20）⇒ 不足 20 周的老股 vol=NaN（NaN 率 6.15%
+    #   vs 云端 0.59%），其权重经 1/vol 变 NaN → 被 weight>0 过滤掉、整只股消失
+    #   （实测 8,580 行命中；2017 年 3 个调仓日的选股分歧全由此而来）。
     p["vol_20"] = p.groupby("symbol", sort=False)["_r"].transform(
-        lambda s: s.rolling(W_VOL).std(ddof=1))                      # m_nanstd = 样本标准差
+        lambda s: s.rolling(W_VOL, min_periods=2).std(ddof=1))       # m_nanstd = 样本标准差(≥2行)
 
     cols = ["date", "symbol", "name", "ind_name", "close", "exec_date", "exec_open",
             "turn_ratio", "px_ma20", "mom_20", "liq_amount", "vol_20", "listed_bars"]
