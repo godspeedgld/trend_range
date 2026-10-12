@@ -353,6 +353,128 @@ def run_weight_backtest(market: pd.DataFrame, targets: pd.DataFrame,
     return dl.reset_index(), tr, ho
 
 
+# ═════════════════════ 由 trades 直接推算净值/指标（技能「指标铁律」）═════════════════════
+def nav_from_trades(market: pd.DataFrame, trades: pd.DataFrame,
+                    initial_cash: float) -> tuple[pd.DataFrame, dict]:
+    """只用**成交明细 + 收盘价**重建逐日净值 —— 独立于引擎内部记账的**第二事实源**。
+
+    技能铁律：净值/统计指标必须由交易记录（trades）直接推算。口径与引擎一致：
+      当日成交按 `trade.price` 计入现金与持股，当日按 close 估值。
+    只对**被交易过的股票**取价（几百只，避免 5000+ 只的全市场 pivot）。
+
+    返回 (nav_df[date,ret,nav,drawdown], metrics)。
+    """
+    m = raw_prices(market)
+    m["date"] = pd.to_datetime(m["date"])
+    syms = sorted(trades["symbol"].unique()) if trades is not None and len(trades) else []
+    px = (m[m["symbol"].isin(syms)]
+          .pivot_table(index="date", columns="symbol", values="close").sort_index().ffill())
+    by_day = ({} if not syms else
+              {d: g for d, g in trades.assign(date=pd.to_datetime(trades["date"])).groupby("date")})
+    cash, pos, rows = float(initial_cash), {}, []
+    for d in px.index:
+        for r in (by_day[d].itertuples() if d in by_day else []):
+            if r.side == "buy":
+                pos[r.symbol] = pos.get(r.symbol, 0) + r.shares
+                cash -= float(r.amount) + float(r.fee)
+            else:
+                pos[r.symbol] = pos.get(r.symbol, 0) - r.shares
+                if pos[r.symbol] <= 0:
+                    pos.pop(r.symbol, None)
+                cash += float(r.amount) - float(r.fee)
+        val = sum(sh * px.at[d, s] for s, sh in pos.items()
+                  if s in px.columns and pd.notna(px.at[d, s]))
+        rows.append({"date": d, "nav": (cash + val) / float(initial_cash)})
+    nav = pd.DataFrame(rows).set_index("date")["nav"]
+    ret = nav.pct_change().fillna(0.0)
+    dd = nav / nav.cummax() - 1.0
+    out = pd.DataFrame({"date": nav.index, "ret": ret.values,
+                        "nav": nav.values, "drawdown": dd.values})
+    ann = nav.iloc[-1] ** (252 / max(len(ret) - 1, 1)) - 1
+    metrics = {"periods": int(len(ret) - 1), "final_nav": float(nav.iloc[-1]),
+               "total_return": float(nav.iloc[-1] - 1), "annual_return": float(ann),
+               "annual_volatility": float(ret.std() * np.sqrt(252)),
+               "sharpe": float(ret.mean() / ret.std() * np.sqrt(252)) if ret.std() else None,
+               "max_drawdown": float(dd.min())}
+    return out, metrics
+
+
+def build_report(nav_df: pd.DataFrame, metrics: dict, trades: pd.DataFrame,
+                 cfg: WeightBacktestConfig, period: RebalancePeriod,
+                 out_dir: Path, engine_metrics: dict | None = None) -> Path:
+    """生成 `backtest_report.html`（指标卡 + 净值/回撤曲线 + 成交明细）。
+
+    ★ 指标与净值**全部来自 trades 推算**（技能指标铁律）；`engine_metrics` 仅用于
+      在报告里标注「引擎口径 vs trades 口径」的差异（若有），不参与展示口径。
+    风格对齐本技能另两个引擎（plotly CDN + CSS 页签）。
+    """
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    nv = nav_df.set_index("date")["nav"]
+    dd = nav_df.set_index("date")["drawdown"]
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.72, 0.28],
+                        subplot_titles=("组合净值（由 trades 推算）", "Drawdown"))
+    fig.add_trace(go.Scatter(x=nv.index, y=nv.values, name="净值",
+                             line=dict(color="#2980b9", width=1.4)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=dd.index, y=dd.values, name="Drawdown", fill="tozeroy",
+                             line=dict(color="#c0392b", width=0.7),
+                             fillcolor="rgba(192,57,43,0.15)"), row=2, col=1)
+    fig.update_layout(template="plotly_white", height=460, hovermode="x unified",
+                      margin=dict(l=50, r=30, t=40, b=30))
+    nav_html = fig.to_html(full_html=False, include_plotlyjs=False, div_id="fig_nav")
+
+    n = int(len(trades)) if trades is not None else 0
+    rows = "".join(
+        f"<tr><td>{i + 1}</td><td>{r.date}</td><td>{r.symbol}</td>"
+        f"<td>{getattr(r, 'name', r.symbol)}</td>"
+        f"<td style='color:{'#e74c3c' if r.side == 'buy' else '#27ae60'}'>{r.side}</td>"
+        f"<td>{r.shares:,}</td><td>{r.price:.2f}</td><td>{r.amount:,.0f}</td><td>{r.fee:.2f}</td></tr>"
+        for i, r in enumerate(trades.itertuples())) if n else ""
+    gap = ""
+    if engine_metrics:
+        d = {k: abs(float(engine_metrics.get(k, 0)) - float(metrics.get(k, 0)))
+             for k in ("final_nav", "annual_return", "sharpe", "max_drawdown")}
+        gap = (f"<div class='note'>引擎口径 vs trades 口径 最大绝对差："
+               + "、".join(f"{k}={v:.2e}" for k, v in d.items()) + "</div>")
+
+    body = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<title>权重引擎回测报告</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+body{{font-family:Arial,"Microsoft YaHei",sans-serif;margin:24px;}}
+table{{border-collapse:collapse;width:100%;}}th,td{{border:1px solid #d6dae1;padding:6px 10px;}}
+th{{background:#f3f5f8;}}
+.note{{color:#6b7480;font-size:13px;margin:8px 0;}}
+.metrics{{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0;}}
+.metrics .item{{flex:1 1 120px;text-align:center;border:1px solid #e4e8ee;border-radius:8px;padding:12px 6px;}}
+.metrics .item b{{display:block;font-size:18px;margin-top:4px;}}
+.metrics .item span{{color:#6b7480;font-size:12px;}}
+</style></head><body>
+<h1>回测报告（权重引擎 · 对标 bigtrader handle_data_weight_based）</h1>
+<div class="note">调仓周期 {period.name}（{period.days}）× 每{'收盘决策 → 次日开盘成交'}；
+成本 买 {cfg.buy_bps:g}bps / 卖 {cfg.sell_bps:g}bps（最低 {cfg.min_cost:g} 元）；初始资金 {cfg.initial_cash:,.0f}。
+<b>净值与指标均由成交明细（trades）推算</b>。</div>
+{gap}
+<div class="metrics">
+  <div class="item"><span>净值</span><b>{metrics['final_nav']:.3f}</b></div>
+  <div class="item"><span>累计收益</span><b>{metrics['total_return'] * 100:.2f}%</b></div>
+  <div class="item"><span>年化收益</span><b>{metrics['annual_return'] * 100:.2f}%</b></div>
+  <div class="item"><span>Sharpe</span><b>{(metrics['sharpe'] or 0):.2f}</b></div>
+  <div class="item"><span>最大回撤</span><b>{metrics['max_drawdown'] * 100:.2f}%</b></div>
+  <div class="item"><span>成交笔数</span><b>{n}</b></div>
+</div>
+{nav_html}
+<h3>成交明细</h3>
+<div style='max-height:480px;overflow:auto'>
+<table><tr><th>#</th><th>日期</th><th>symbol</th><th>名称</th><th>方向</th>
+<th>股数</th><th>价格</th><th>金额</th><th>费用</th></tr>{rows}</table></div>
+</body></html>"""
+    p = Path(out_dir) / "backtest_report.html"
+    p.write_text(body, encoding="utf-8")
+    return p
+
+
 # ═════════════════════ 自测 ═════════════════════
 def _selftest() -> int:
     """引擎自测：调仓周期 / 整手 / 费用 / 原始价还原 / 端到端。"""
@@ -457,18 +579,33 @@ def main() -> int:
         "n_trades": int(len(trades)),
         "total_fee": float(trades["fee"].sum()) if len(trades) else 0.0,
     }
-    out = a.output_dir or (Path(a.project_dir) / "backtest_logs" if a.project_dir else ".")
-    out = Path(out); out.mkdir(parents=True, exist_ok=True)
+    # ★ 产物布局对齐技能（同 local_portfolio_backtest）：--output-dir = 策略目录（如 backtest_strategy）
+    #   数据 → <output-dir>/backtest_logs/；config.json 与 backtest_report.html → <output-dir>/
+    root = Path(a.output_dir) if a.output_dir else (
+        Path(a.project_dir) / "backtest_strategy" if a.project_dir else Path("."))
+    root = Path(root); root.mkdir(parents=True, exist_ok=True)
+    out = root / "backtest_logs"
+    out.mkdir(parents=True, exist_ok=True)
     daily.to_csv(out / "equity_curve.csv", index=False, encoding="utf-8-sig")
     trades.to_csv(out / "trades.csv", index=False, encoding="utf-8-sig")
     holdings.to_csv(out / "position_return_detail.csv", index=False, encoding="utf-8-sig")
     pd.DataFrame([metrics]).to_csv(out / "performance_metrics.csv", index=False, encoding="utf-8-sig")
-    (out / "config.json").write_text(json.dumps({
+    (root / "config.json").write_text(json.dumps({
         "engine": "weight-based (handle_data_weight_based 对标)",
         "rebalance_period": period.name, "period_days": period.days,
         "initial_cash": cfg.initial_cash, "buy_bps": cfg.buy_bps, "sell_bps": cfg.sell_bps,
         "min_cost": cfg.min_cost, "lot": cfg.lot}, ensure_ascii=False, indent=2), encoding="utf-8")
+    # ★ 技能「指标铁律」：净值/统计指标/可视化**由 trades 直接推算**（独立第二事实源），
+    #   并生成 backtest_report.html（另两个引擎同款产物）。
+    nav_tr, m_tr = nav_from_trades(market, trades, cfg.initial_cash)
+    nav_tr.to_csv(out / "nav_from_trades.csv", index=False, encoding="utf-8-sig")
+    pd.DataFrame([m_tr]).to_csv(out / "metrics_from_trades.csv", index=False, encoding="utf-8-sig")
+    rp = build_report(nav_tr, m_tr, trades, cfg, period, root, engine_metrics=metrics)
+
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
+    print(f"trades 口径: 净值 {m_tr['final_nav']:.4f} / 年化 {m_tr['annual_return']:.2%} / "
+          f"Sharpe {(m_tr['sharpe'] or 0):.3f} / 回撤 {m_tr['max_drawdown']:.2%} / 成交 {len(trades):,}")
+    print(f"报告: {rp}")
     return 0
 
 

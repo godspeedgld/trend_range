@@ -1,4 +1,4 @@
-"""strategy_001 · baseline（云端原版 / 恒反转，云端对齐口径）—— 权重引擎的**策略文件**。
+"""strategy_002 · 迭代一（选股层因子方向**随 regime 镜像**）—— 权重引擎的**策略文件**。
 
 按 skill 模板 `.claude/skills/skill-research-assistant/templates/weight_strategy.py`
 （**权重引擎**模板）的 4 个可替换点生成；策略逻辑复用在 `shared/`（只 import 不内联）。
@@ -14,15 +14,15 @@
   ④ 空仓                 稳定性过滤：本周 3 行业与上周**不完全相同** → exposure=0
                          （该周目标权重全为 0 → 引擎看到 weight=0 → 清仓）
 
-【与 `../backtest_regime_cloud_repro/strategy.py` 的唯一差别】`MODE`
-    `"baseline"` ← 本文件：**恒反转**（四因子方向恒取负，与 regime 无关）= 云端原版
-    `"regime"`     迭代一：选股层四因子方向随 regime 镜像（动量期取正 / 反转期取负）
+【与 `../backtest_baseline_cloud_repro/strategy.py` 的唯一差别】`MODE`
+    `"regime"`   ← 本文件：选股层四因子方向**随 regime 镜像**（动量期取正 / 反转期取负）
+    `"baseline"`   云端原版：恒取负（反转）
 
 【为什么用权重引擎】本策略对标云端 bigtrader `handle_data_weight_based`（每日 `order_target_percent`
-  对齐目标 + 卖掉目标外持仓）。实测**同一份 targets**：权重引擎 +260.0% / 夏普 0.904；
-  信号引擎走 5 接口那条路给不出这套绩效 ⇒ 必须用权重引擎 `local_weight_backtest.py`。
+  对齐目标 + 卖掉目标外持仓）。实测**同一份 targets**：权重引擎 +377.9% / 夏普 0.837，
+  信号引擎 +5 接口模板 −46.1% / −0.664 —— 差到**符号相反** ⇒ 必须用权重引擎 `local_weight_backtest.py`。
 
-运行：`python strategy.py`（产出 `targets_daily_baseline_indpre.parquet` 并打印引擎命令）
+运行：`python strategy.py`（产出 `targets_daily_regime_indpre.parquet` 并打印引擎命令）
 """
 from __future__ import annotations
 
@@ -46,10 +46,10 @@ from expand_targets_daily import expand_to_daily   # noqa: E402
 # ═══════════════════════════════════════════════
 # 本迭代参数
 # ═══════════════════════════════════════════════
-MODE = "baseline"                            # ← 与迭代一目录的唯一差别
+MODE = "regime"                              # ← 与 baseline 目录的唯一差别
 PANEL = CACHE / "signal_panel_weekly_indpre.parquet"     # 周频因子窗口 + prefactors 行业源（全市场）
 MARKET = CACHE / "engine_market_weekly_indpre_rawpx.parquet"   # 原始价行情（兼作交易日历）
-OUT = CACHE / "targets_daily_baseline_indpre.parquet"
+OUT = CACHE / "targets_daily_regime_indpre.parquet"
 
 
 # ═══════════════════════════════════════════════
@@ -128,7 +128,7 @@ def main() -> int:
     print("\n跑引擎（权重引擎）：")
     print(f"  python {engine} '{PROJ}' \\")
     print(f"      --market-data '{MARKET}' --targets '{OUT}' \\")
-    print(f"      --output-dir '{HERE / 'backtest_logs'}'")
+    print(f"      --output-dir '{HERE}'")
     return 0
 
 

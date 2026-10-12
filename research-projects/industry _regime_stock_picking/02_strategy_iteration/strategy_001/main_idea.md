@@ -64,8 +64,8 @@
 
 ## 对照设计（2026-10-12 重建为「云端对齐口径」）
 
-- `backtest_regime_cloud_repro/`（本版 = 迭代一）：动量期四因子**镜像（取正）**
-- `backtest_baseline_cloud_repro/`（基准 = 云端原版）：**恒反转**，与 regime 无关
+- `../strategy_002/backtest_strategy/`（本版 = 迭代一，云端对齐口径）：动量期四因子**镜像（取正）**
+- `../strategy_002/backtest_strategy_baseline/`（基准 = 云端原版）：**恒反转**，与 regime 无关
 - 两者**唯一差异 = 选股层方向**；行业层/稳定性过滤/持仓数/权重/成本全部相同
 - 口径 = **全市场池 + 周频因子窗口 + 原始价 + 权重引擎**（对标 bigtrader `handle_data_weight_based`，与云端逐值对齐）
 
