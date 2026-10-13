@@ -114,6 +114,50 @@ def industry_weights(cand: pd.DataFrame, syms: list) -> pd.Series:
     return inv / inv.sum()
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 迭代三（strategy_003）：**跨行业统一选股** —— 与基线唯一差别 = 排名池
+#   基线：每个行业内各自 rank(pct) → 每行业取前 N_PER_IND=2（共 3×2=6）
+#   本版：top3 行业的候选**合起来** rank(pct) → 全体取前 N_PICK_CROSS=6
+# ══════════════════════════════════════════════════════════════════════════
+N_PICK_CROSS = 6            # 迭代三：跨行业统一取多少只
+
+
+def pick_cross_industry(cand: pd.DataFrame, inds: list, dirs: dict, held: dict,
+                        n_pick: int = N_PICK_CROSS, buf_mult: float = BUF_MULT) -> pd.DataFrame:
+    """迭代三选股：把 top3 行业的**全部候选股放在一起**打复合分，取前 n_pick。
+
+    返回 DataFrame[symbol, ind_name]（带所属行业，仅供记录与权重映射）。
+
+    缓冲：类比基线的 BUF_MULT=3 —— 老仓仍在**全体前 n_pick×buf_mult = 18 名**内则保留
+          （保序：先老仓、后按排名补足；与基线同样的"先留后补"语义）。
+    ★ 两个「基线未指定、按类比落地」的口径（见 strategy_003/main_idea.md）：
+      ① 缓冲倍数沿用 BUF_MULT=3（即全体前 18 名）
+      ② 权重 = **全体 6 只**做 1/vol 归一（不再按行业分块、不再除 N_IND）
+    """
+    sub = cand[cand["ind_name"].isin(inds)].copy()
+    if sub.empty:
+        return pd.DataFrame(columns=["symbol", "ind_name"])
+    # 跨行业统一打分：**不分组**的 rank(pct)（基线的差别只在这里）
+    sub["score"] = pd.concat(
+        [sub[f].mul(dirs[f]).rank(pct=True) for f in FACTORS], axis=1).mean(axis=1)
+    sub = sub.dropna(subset=["score"])
+    if sub.empty:
+        return pd.DataFrame(columns=["symbol", "ind_name"])
+    sub = sub.sort_values(["score", "symbol"], ascending=[False, True])
+    ranked = sub["symbol"].tolist()
+    ind_of = dict(zip(sub["symbol"], sub["ind_name"]))
+    keep_n = int(round(n_pick * buf_mult))
+    top_keep = set(ranked[:keep_n])
+    picks = [s for s in held if s in top_keep][:n_pick]      # 先留老仓（保序）
+    for s in ranked:                                          # 再按排名补足
+        if len(picks) >= n_pick:
+            break
+        if s not in picks:
+            picks.append(s)
+    picks = picks[:n_pick]
+    return pd.DataFrame({"symbol": picks, "ind_name": [ind_of[s] for s in picks]})
+
+
 def build(mode: str, panel: pd.DataFrame, ind: pd.DataFrame, reg: pd.DataFrame):
     """信号日 → (weekly_plan, weekly_targets)。**纯函数、不读写文件**，供各迭代 strategy.py 复用。"""
     regi = reg.set_index("date")
@@ -150,17 +194,29 @@ def build(mode: str, panel: pd.DataFrame, ind: pd.DataFrame, reg: pd.DataFrame):
         #      只在满仓信号日之间铺权重 → 空仓周被"跨桥"，实际从不清仓；
         #   ② held（缓冲记忆）**跨空仓周延续** —— 云端 held 只在行业轮出时 pop，
         #      不因 exposure=0 清空。
-        targets = build_targets(cand, top3, dirs, positions)   # ★ 传 dict（保序），勿传 set
-        new_pos = {}
-        for ind_name, syms in targets.items():
-            if not syms:
-                continue
-            w = industry_weights(cand, syms)     # 行业内波动率倒数权重（见函数 docstring）
-            for s in syms:
-                new_pos[s] = ind_name
-                tgt_rows.append({"signal_date": t, "exec_date": exec_date,
-                                 "symbol": s, "ind_name": ind_name, "regime": regime,
-                                 "weight": float(exposure * w[s] / N_IND)})
+        if mode == "crossind":
+            # ★ 迭代三：跨行业统一选（strategy_003）—— 只改「排名池」，其余照基线
+            _sub = pick_cross_industry(cand, top3, dirs, positions)
+            new_pos = {}
+            if len(_sub):
+                w = industry_weights(cand, _sub["symbol"].tolist())   # 全体 1/vol 归一
+                for s, ind_name in zip(_sub["symbol"], _sub["ind_name"]):
+                    new_pos[s] = ind_name
+                    tgt_rows.append({"signal_date": t, "exec_date": exec_date,
+                                     "symbol": s, "ind_name": ind_name, "regime": regime,
+                                     "weight": float(exposure * w[s])})   # 6 只合计 = exposure
+        else:
+            targets = build_targets(cand, top3, dirs, positions)   # ★ 传 dict（保序），勿传 set
+            new_pos = {}
+            for ind_name, syms in targets.items():
+                if not syms:
+                    continue
+                w = industry_weights(cand, syms)     # 行业内波动率倒数权重（见函数 docstring）
+                for s in syms:
+                    new_pos[s] = ind_name
+                    tgt_rows.append({"signal_date": t, "exec_date": exec_date,
+                                     "symbol": s, "ind_name": ind_name, "regime": regime,
+                                     "weight": float(exposure * w[s] / N_IND)})
         positions = new_pos
         prev_top3 = top3
 
