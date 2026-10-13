@@ -1,0 +1,10 @@
+{
+  "engine": "weight-based (handle_data_weight_based 对标)",
+  "rebalance_period": "trading_days",
+  "period_days": 1,
+  "initial_cash": 500000.0,
+  "buy_bps": 3.0,
+  "sell_bps": 13.0,
+  "min_cost": 5.0,
+  "lot": 100
+}
