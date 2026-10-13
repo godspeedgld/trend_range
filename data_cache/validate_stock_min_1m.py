@@ -48,6 +48,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--year", type=int, help="只对某年做主键深检")
     ap.add_argument("--no-api", action="store_true", help="跳过 fresh API 样本比对")
+    ap.add_argument("--expect-start", type=int, default=2015,
+                    help="③ 左界期望年份（历史往前推后随之调；默认 2015）")
     a = ap.parse_args()
     t0 = time.time()
 
@@ -80,8 +82,12 @@ def main():
     n, d0, d1 = con.execute(
         f"SELECT count(*), min(date), max(date) FROM {TABLE}").fetchone()
     check("⑤ 行数非零", n > 0, f"{n:,} 行")
-    check("③ 日期范围", d0.startswith("2021") and d1 <= date.today().strftime("%Y%m%d"),
-          f"{d0} ~ {d1}（今日 {date.today()}）")
+    # ③ 日期范围：★ 2026-10-13 修 —— 原判据写死 `d0.startswith("2021")`（仓库当时只从 2021 起），
+    #   历史往前推后必假失败。改为：左界 ≤ 期望起点（--expect-start，默认 2015）、右界不越过今日。
+    _exp = f"{a.expect_start}0101"
+    check("③ 日期范围",
+          int(d0[:4]) <= a.expect_start and d1 <= date.today().strftime("%Y%m%d"),
+          f"{d0} ~ {d1}（今日 {date.today()}；期望起点年 ≤ {a.expect_start}）")
 
     # ④ 主键重复 —— 全表 2 亿行直接 groupby 太慢，默认只深检指定年/最新年
     years = [a.year] if a.year else [max(y for y, _ in have)]
