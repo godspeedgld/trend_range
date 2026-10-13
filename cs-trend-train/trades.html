@@ -222,14 +222,20 @@ const wan = n => (n==null||isNaN(n)) ? "—" : (n/10000).toFixed(1)+"万";
 const esc = s => String(s==null?"":s).replace(/[&<>"']/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const POS = "#ef232a", NEG = "#14b143";        // A 股口径：红涨绿跌
+// ★ 数据源（2026-10-13）：与 index.html 同一套 —— `?src=future` 走期货，缺省=股票（行为不变）
+const IS_FUT = (new URLSearchParams(location.search).get("src") === "future");
+const SRC = IS_FUT ? "future" : "stock";
+const withSrc = p => (SRC === "stock" || !p.startsWith("/api/"))
+  ? p : p + (p.includes("?") ? "&" : "?") + "src=" + SRC;
 let RAW = {}, NAMES = {}, rows0 = [], sortKey = "entry_date", sortDir = -1;
 
-async function api(p, o){ const r = await fetch(p,o), t = await r.text();
+async function api(p, o){ const r = await fetch(withSrc(p),o), t = await r.text();
   let j = null; try { j = JSON.parse(t); } catch(_) {}
   if (!r.ok) throw Object.assign(new Error((j&&j.err)||t), { status:r.status, body:j });
   return j!==null?j:t; }
 const post = (p, body) => api(p, { method:"POST", headers:{"Content-Type":"application/json"},
-                                   body: JSON.stringify(body) });
+                                   body: JSON.stringify(SRC === "stock" ? body
+                                                                        : { ...body, source: SRC }) });
 function toast(t, ok=true){ const m=$("#msg"); m.textContent=t;
   m.style.background = ok?"#2e5c2e":"#8c3a3a"; m.style.display="block";
   setTimeout(()=>m.style.display="none", 2600); }
@@ -315,8 +321,11 @@ const COLS = [
   ["_score","评分"], ["_sreason","理由","l"],
   ["entry_date","开仓日","l"],
   ["entry_source","开仓价来源","l"],
-  ["buy_price","开仓价"], ["stop_price","止损"], ["tp_price","止盈"], ["shares","股数"],
-  ["notional","开仓金额"], ["exit_date","平仓日","l"], ["exit_price","平仓价"], ["exit_reason","平仓原因","l"],
+  ["buy_price","开仓价"], ["stop_price","止损"], ["tp_price","止盈"],
+  ["shares", IS_FUT ? "手数" : "股数"],
+  ...(IS_FUT ? [["multiplier","乘数"], ["margin_used","保证金(元)"]] : []),
+  ["notional", IS_FUT ? "名义本金" : "开仓金额"],
+  ["exit_date","平仓日","l"], ["exit_price","平仓价"], ["exit_reason","平仓原因","l"],
   ["holding_days","持仓天数"], ["pnl","盈亏(元)"], ["ret_pct","收益率%"], ["R","R"],
   ["_tag","结果","l"], ["_note","备注","l"], ["_del","","l"]
 ];
@@ -344,6 +353,7 @@ function cell(r, k){
     case "R": return r.R==null ? '<span class="dim">—</span>'
       : `<span class="${r.R>0?"pos":(r.R<0?"neg":"")}">${fmt(r.R)}</span>`;
     case "notional": case "shares": case "holding_days": case "buy_price":
+    case "multiplier": case "margin_used":
     case "stop_price": case "tp_price": case "exit_price": return num(r[k]);
     case "_tag":
       if (r.status === "pending") return '<span class="tag pend">持仓中</span>';
@@ -382,7 +392,7 @@ function renderTable(rows){
     const dl = tr.querySelector("[data-del]");
     if (dl) dl.onclick = async () => {
       if (!window.confirm(`删除 ${r.symbol} 的这条交易记录？`)) return;
-      await fetch(`/api/trades?symbol=${r.symbol}&id=${r.id}`, {method:"DELETE"});
+      await fetch(withSrc(`/api/trades?symbol=${r.symbol}&id=${r.id}`), {method:"DELETE"});
       toast("已删除"); reload();
     };
   });
@@ -547,7 +557,7 @@ function paintNoteBody(el, n){
   body.querySelector("[data-del]").onclick = async e => {
     e.stopPropagation();
     if (!window.confirm(`删除这条心得？\n${n.title || n.content.slice(0, 20)}`)) return;
-    await fetch(`/api/notes?id=${n.id}`, { method: "DELETE" });
+    await fetch(withSrc(`/api/notes?id=${n.id}`), { method: "DELETE" });
     toast("心得已删除"); loadNotes();
   };
 }

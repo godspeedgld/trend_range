@@ -123,6 +123,12 @@
 </head>
 <body>
 <div id="top">
+  <div id="srcBox" style="display:flex;gap:4px;margin-right:10px">
+    <button id="srcStock" title="股票（A股全市场）"
+      style="padding:4px 10px;border-radius:4px">股票</button>
+    <button id="srcFuture" title="期货（主力连续·后复权）"
+      style="padding:4px 10px;border-radius:4px">期货</button>
+  </div>
   <div style="position:relative">
     <input id="sym" placeholder="代码/名称/拼音首字母" style="width:170px" value="601318.SH 中国平安">
     <div id="symList" style="display:none"></div>
@@ -238,7 +244,13 @@
 
 <script>
 const $ = s => document.querySelector(s);
-let chart, allBars = [], endIdx = 0, symbol = "601318.SH", symName = "中国平安";
+// ★ 数据源（2026-10-13）：stock=股票（默认）| future=期货。用 URL 参数 `?src=future` 切换，
+//   点切换按钮即**整页重载** —— 图表/叠加线/缓存全部重建，避免半途状态不一致。
+const SOURCE = (new URLSearchParams(location.search).get("src") === "future") ? "future" : "stock";
+const SRC_SYMBOL0 = { stock: "601318.SH", future: "RB_DOMINANT.SHF" };
+const SRC_NAME0   = { stock: "中国平安", future: "螺纹" };
+const UNIT = SOURCE === "future" ? "手" : "股";
+let chart, allBars = [], endIdx = 0, symbol = SRC_SYMBOL0[SOURCE], symName = SRC_NAME0[SOURCE];
 let drawing = false, lineOverlays = [], tradeOverlays = [];
 let settings = { risk_amount: 5000, show_lines: true, show_trades: false };
 let editingId = null;                     // 非空 = 面板处于「修改」模式
@@ -260,16 +272,20 @@ const dOf = ts => { const d=new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
 // timestamp → 该 bar 的日期字符串（直接查表，避免任何时区换算）
 const tsBar = ts => allBars.find(b => b.timestamp === ts);
+// ★ 给所有 /api/ 请求带上数据源（股票**不加参数**，保持与改动前完全一致）
+const withSrc = p => (SOURCE === "stock" || !p.startsWith("/api/"))
+  ? p : p + (p.includes("?") ? "&" : "?") + "src=" + SOURCE;
 // api：非 2xx 时抛出带 status/body 的错误，方便区分 409（同日撞车）做二次确认
 async function api(p, o){
-  const r = await fetch(p, o), txt = await r.text();
+  const r = await fetch(withSrc(p), o), txt = await r.text();
   let j = null; try { j = JSON.parse(txt); } catch(_) {}
   if (!r.ok) throw Object.assign(new Error((j && j.err) || txt || ("HTTP "+r.status)),
                                 { status: r.status, body: j });
   return j !== null ? j : txt;
 }
 const post = (p, body) => api(p, { method:"POST", headers:{"Content-Type":"application/json"},
-                                   body: JSON.stringify(body) });
+                                   body: JSON.stringify(SOURCE === "stock" ? body
+                                                                          : { ...body, source: SOURCE }) });
 
 // ── 自定义 overlay：价格处的三角标记（开仓红▲向上 / 平仓绿▼向下）──
 //   为什么不直接用内置 simpleAnnotation：它的三角**写死朝下**（是价格上方 50px 处的
@@ -445,7 +461,7 @@ $("#draw").onclick = () => {
     //   重新加载/播放时这条线会赖在图上不走（也不受 end_date ≤ 当前最后 bar 的过滤约束）
     onDrawEnd: e => { drawing = false; saveLine(e.overlay, myId); lineOverlays.push(myId); },
     onPressedMoveEnd: e => saveLine(e.overlay, myId),    // 整体拖动/端点拖动落定
-    onRemoved: () => { if (!suppressRemove) fetch(`/api/lines?symbol=${symbol}&id=${myId}`, {method:"DELETE"}); }
+    onRemoved: () => { if (!suppressRemove) fetch(withSrc(`/api/lines?symbol=${symbol}&id=${myId}`), {method:"DELETE"}); }
   });
 };
 // 点位 → 记录：v10 事件的 points 可能带 timestamp 或 dataIndex，两种都接；
@@ -493,7 +509,7 @@ async function renderOverlays(){
         points:[{timestamp:msOf(l.start_date), value:l.start_price},
                 {timestamp:msOf(l.end_date),   value:l.end_price}],
         onPressedMoveEnd: e => saveLine(e.overlay, lid),
-        onRemoved: () => { if (!suppressRemove) fetch(`/api/lines?symbol=${symbol}&id=${lid}`, {method:"DELETE"}); } });
+        onRemoved: () => { if (!suppressRemove) fetch(withSrc(`/api/lines?symbol=${symbol}&id=${lid}`), {method:"DELETE"}); } });
       lineOverlays.push(l.id);
     });
   }
@@ -694,7 +710,7 @@ async function previewTrade(){
   if (!$("#tBuy").value && ed > lastDate){
     box.className = "prev";
     box.innerHTML = `开仓日 <b>${ed}</b> 尚未揭示 → 开仓价 = 该日开盘价，`
-      + `股数要等揭示后才算得出（不提前偷看次日）。<br>想立刻知道股数就手填开仓价。`;
+      + `${UNIT}数要等揭示后才算得出（不提前偷看次日）。<br>想立刻知道${UNIT}数就手填开仓价。`;
     return;
   }
   try {
@@ -708,7 +724,10 @@ async function previewTrade(){
     box.innerHTML = `<b>${r.direction==="short"?"做空":"做多"}</b> · `
       + `开仓 <b>${fmt(r.buy_price)}</b>（${r.entry_source==="bar_open"?"当日开盘":"手填"}）· `
       + `每股风险 <b>${fmt(r.risk_per_share)}</b>（${fmt(r.risk_pct*100)}%）· `
-      + `可开 <b>${r.shares}</b> 股 · 开仓金额 ${wan(r.notional)} · 止损亏损 ${fmt(r.risk_amount,0)} 元`
+      + (SOURCE === "future"
+          ? `可开 <b>${r.shares}</b> 手（×${r.multiplier}）· 名义 ${wan(r.notional)} · `
+            + `占用保证金 ${wan(r.margin_used)}（费率 ${fmt(r.margin_rate,2)}%）· 止损亏损 ${fmt(r.risk_amount,0)} 元`
+          : `可开 <b>${r.shares}</b> 股 · 开仓金额 ${wan(r.notional)} · 止损亏损 ${fmt(r.risk_amount,0)} 元`)
       + (r._duplicate ? `<br>⚠ ${r.entry_date} 已有开仓记录，保存时会问是否覆盖` : "");
   } catch (e) {
     box.className = "prev err";
@@ -748,7 +767,7 @@ $("#tSave").onclick = async () => {
     editingId = r.id;
     $("#tSave").textContent = "修改";
     $("#tTitle").textContent = "修改交易";
-    toast(`已${r._action==="update"?"更新":"保存"}：${r.direction==="short"?"开空":"开仓"} ${fmt(r.buy_price)} × ${r.shares} 股 · `
+    toast(`已${r._action==="update"?"更新":"保存"}：${r.direction==="short"?"开空":"开仓"} ${fmt(r.buy_price)} × ${r.shares} ${UNIT} · `
           + (r.exit_date ? `${r.exit_reason} ${fmt(r.exit_price)} @ ${r.exit_date}` : "持仓中"));
     renderOverlays();
   } catch (e) {
@@ -966,7 +985,8 @@ $("#nSym").oninput = () => {
   }, 250);
 };
 $("#nSym").onblur = () => setTimeout(() => $("#nSymPop").style.display = "none", 180);
-$("#openStats").onclick = () => window.open(`trades.html?symbol=${encodeURIComponent(symbol)}`, "_blank");
+$("#openStats").onclick = () => window.open(
+  `trades.html?symbol=${encodeURIComponent(symbol)}` + (SOURCE === "future" ? "&src=future" : ""), "_blank");
 
 // ── 设置：显示开关 / 全局止损额度 / 清除当前标的 ──
 async function saveSettings(patch){
@@ -982,7 +1002,7 @@ $("#sClear").onclick = async () => {
   if (!window.confirm(`确定清除 ${symbol} ${symName} 的**全部**交易记录？\n不可恢复。`)) return;
   if (!window.confirm(`再确认一次：删除 ${symbol} 的所有交易记录（其他标的保留）。`)) return;
   try {
-    const r = await fetch(`/api/trades?symbol=${symbol}&all=1`, {method:"DELETE"}).then(x=>x.json());
+    const r = await fetch(withSrc(`/api/trades?symbol=${symbol}&all=1`), {method:"DELETE"}).then(x=>x.json());
     toast(`已清除 ${symbol} 的 ${r.removed} 条交易记录`);
     newTrade(); renderOverlays();
   } catch (e) { toast("清除失败：" + e.message, false); }
@@ -1024,6 +1044,15 @@ $("#load").onclick = async () => {
 
 
 
+
+// ★ 数据源切换（整页重载）+ 按数据源设置默认标的与按钮态
+$("#srcStock").onclick  = () => { if (SOURCE !== "stock")  location.search = ""; };
+$("#srcFuture").onclick = () => { if (SOURCE !== "future") location.search = "?src=future"; };
+$("#srcStock").style.background  = SOURCE === "stock"  ? "#2e5c2e" : "";
+$("#srcStock").style.color       = SOURCE === "stock"  ? "#fff"    : "";
+$("#srcFuture").style.background = SOURCE === "future" ? "#2e5c2e" : "";
+$("#srcFuture").style.color      = SOURCE === "future" ? "#fff"    : "";
+$("#sym").value = `${symbol} ${symName}`;
 
 loadSettings().then(() => { initChart(); loadAll(); });
 

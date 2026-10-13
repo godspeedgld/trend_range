@@ -6,8 +6,11 @@
   ③ 画线 / 交易记录 / 全局设置的读写（data/lines.json, data/trades.json, data/settings.json）
   ④ 交易出场判定：**只认用户提交的止损价 / 止盈价**，从开仓日当根起逐日判定，
      先止损后止盈（同日双触按止损计）；跳空越过触发价时按**当日开盘价**成交
-  ⑤ 按「等额止损」反算股数：止损额度 ÷ 每股风险，向下取整到 1 手（100 股）；
+  ⑤ 按「等额止损」反算仓位：止损额度 ÷ 每单位风险，向下取整到 1 手；
      一手止损超出额度时保底开一手，该笔止损额度按一手实际风险计（2026-10-09）
+  ⑥ ★ 数据源开关（2026-10-13）：URL 带 `?src=future` 走**期货**（主力连续·后复权，读 pandadata 仓库的
+     future_daily_post），缺省 = **股票**。两者**平行共存、互不影响**：记录/设置分文件
+     （lines_future.json 等），股票路径一字未改。期货仓位 = 额度 ÷ ((买−止损) × 合约乘数)
 
 启动：python cs-trend-train/server.py   →  http://127.0.0.1:8710
 """
@@ -36,9 +39,27 @@ NOTES_F = DATA / "notes.json"          # 交易心得（扁平列表，不按标
 SETTINGS_F = DATA / "settings.json"
 LOT = 100                                     # A 股 1 手 = 100 股
 DEFAULT_SETTINGS = {"risk_amount": 5000, "capital": 1000000,
-                    "show_lines": True, "show_trades": False}
+                    "show_lines": True, "show_trades": False,
+                    "future_risk_amount": 10000}   # ★ 期货：每次止损额度 ≤ 1 万
 # capital = 初始资金（仅用于统计页的 净值/年化 收益 计算，不影响仓位）
 FAT_TAIL_PCT = 30.0                           # 肥尾线：收益率 ≥ +30%（与 analysis_012/014 同口径）
+
+# ══ ★ 数据源开关（2026-10-13）：股票 stock（默认）/ 期货 future —— **平行共存、互不影响** ══
+#   期货数据在 pandadata 仓库；记录/设置用**后缀文件**（_future），股票的四个 json 路径一字不改。
+#   `source` 缺省/非法一律回落 stock ⇒ 股票那边行为与改动前完全一致。
+PD_WH = ROOT / "data_cache/pandadata_warehouse/warehouse.duckdb"
+FUT_SYMBOL0 = "RB_DOMINANT.SHF"               # 期货默认标的（螺纹钢主连）
+
+
+def norm_source(v) -> str:
+    return "future" if str(v or "").strip().lower() in ("future", "fut", "期货") else "stock"
+
+
+def src_paths(src: str) -> tuple:
+    """按数据源取四个 JSON 路径（期货加 _future 后缀）。"""
+    sfx = "_future" if src == "future" else ""
+    return (DATA / f"lines{sfx}.json", DATA / f"trades{sfx}.json",
+            DATA / f"notes{sfx}.json", DATA / f"settings{sfx}.json")
 
 # ── 开仓评分（2026-10-05 需求；10-06 多轮扩项；10-09 做多侧再扩：+突破类「牛市天际线」+其他项「是否历史最高」）──
 # 理由类单选 60 分（做多：突破/摸底互斥；做空：跌破/摸头互斥 —— 开仓逻辑只有一个）；
@@ -83,10 +104,14 @@ def _save(path: Path, obj: dict):
     os.replace(tmp, path)
 
 
-def get_settings() -> dict:
-    s = {**DEFAULT_SETTINGS, **_load(SETTINGS_F)}
+def get_settings(src: str = "stock") -> dict:
+    raw = _load(src_paths(src)[3])
+    base = dict(DEFAULT_SETTINGS)
+    if src == "future":                       # 期货默认风险额度 = 1 万
+        base["risk_amount"] = DEFAULT_SETTINGS["future_risk_amount"]
+    s = {**base, **raw}
     if not isinstance(s.get("risk_amount"), (int, float)) or s["risk_amount"] <= 0:
-        s["risk_amount"] = DEFAULT_SETTINGS["risk_amount"]
+        s["risk_amount"] = base["risk_amount"]
     return s
 
 
@@ -116,7 +141,59 @@ def _num(v):
 
 
 # ── 行情读取 + ATR14 ──
-def load_klines(symbol: str, start: str, end: str) -> list[dict]:
+def _load_klines_future(symbol: str, start: str, end: str) -> list[dict]:
+    """期货主连日线 —— 读**后复权**表 `future_daily_post`（主力连续换月的假跳空已用 adj_factor 抹平）。
+
+    与股票**同一输出形状**（klinecharts 直接吃）。差异：
+      · `adjust_factor` 在表里 ⇒ raw_close = close / adj_factor（未复权参考价）
+      · 表里没有 change_ratio ⇒ 用 close.pct_change() 现算
+    """
+    con = duckdb.connect(str(PD_WH), read_only=True)
+    df = con.execute(
+        "SELECT date, open, high, low, close, volume, amount, adj_factor "
+        "FROM future_daily_post WHERE symbol=? AND date>=? AND date<=? ORDER BY date",
+        [symbol, start, end]).df()
+    con.close()
+    if df.empty:
+        return []
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
+    if df.empty:
+        return []
+    df["change_ratio"] = df["close"].pct_change()
+    pc = df["close"].shift(1)
+    tr = pd.Series(np.maximum.reduce([df["high"] - df["low"],
+                                      (df["high"] - pc).abs(),
+                                      (df["low"] - pc).abs()]))
+    tr.iloc[0] = df["high"].iloc[0] - df["low"].iloc[0]
+    df["atr14"] = tr.ewm(alpha=1.0 / 14, adjust=False, min_periods=14).mean()
+    df["raw"] = df["close"] / df["adj_factor"]
+    return [{"timestamp": int(t.value // 10**6), "open": r.open, "high": r.high,
+             "low": r.low, "close": r.close, "volume": float(r.volume or 0),
+             "turnover": (None if pd.isna(r.amount) else round(r.amount / 1e8, 2)),
+             "change": (None if pd.isna(r.change_ratio) else round(r.change_ratio * 100, 2)),
+             "amount": (None if pd.isna(r.amount) else round(r.amount / 1e8, 2)),
+             "atr14": (None if pd.isna(r.atr14) else round(r.atr14, 4)),
+             "raw_close": round(r.raw, 3), "date": r.date.strftime("%Y-%m-%d")}
+            for r, t in zip(df.itertuples(), df["date"])]
+
+
+def future_meta_of(symbol: str) -> tuple:
+    """symbol（RB_DOMINANT.SHF）→ (合约乘数, 保证金率%, 中文名)；查不到 → (None, None, code)。"""
+    code = str(symbol).split("_")[0].upper()
+    try:
+        con = duckdb.connect(str(PD_WH), read_only=True)
+        row = con.execute("SELECT 乘数, 保证金率, 中文名 FROM future_meta WHERE code=?",
+                          [code]).fetchone()
+        con.close()
+    except Exception:
+        return None, None, code
+    return (row[0], row[1], row[2]) if row else (None, None, code)
+
+
+def load_klines(symbol: str, start: str, end: str, source: str = "stock") -> list[dict]:
+    if source == "future":
+        return _load_klines_future(symbol, start, end)
     con = duckdb.connect(str(WAREHOUSE), read_only=True)
     # XD/除权日的名称会变（如"XD中国平"），按主键取最长序列，再按名称众数过滤脏行
     df = con.execute(
@@ -203,10 +280,22 @@ def initials_variants(name: str, cap: int = 16) -> list[str]:
 _SYM_CACHE = None
 
 
-def symbol_index() -> list[tuple]:
-    """[(代码, 名称, 根数, 首字母变体)] —— 惰性缓存（仓库在一次会话里不变）"""
+def symbol_index(src: str = "stock") -> list[tuple]:
+    """[(代码, 名称, 根数, 首字母变体)] —— 按数据源惰性缓存（仓库在一次会话里不变）"""
     global _SYM_CACHE
     if _SYM_CACHE is None:
+        _SYM_CACHE = {}
+    if src in _SYM_CACHE:
+        return _SYM_CACHE[src]
+    if src == "future":
+        # 名称取品种表的中文名（螺纹/铁矿/焦煤…）⇒ 拼音检索照常可用；缺元数据回落短码
+        con = duckdb.connect(str(PD_WH), read_only=True)
+        rows = con.execute("""
+            SELECT f.symbol, coalesce(m.中文名, f.code) AS nm, count(*) AS c
+            FROM future_daily_post f LEFT JOIN future_meta m ON m.code = f.code
+            GROUP BY 1, 2""").fetchall()
+        con.close()
+    else:
         con = duckdb.connect(str(WAREHOUSE), read_only=True)
         # ★ 名称取**众数**而不是 any_value：除权日会出现 "XD中国平" 这类脏名，
         #   any_value 可能正好挑中它（那样按 "zgpa" 就搜不到中国平安）
@@ -214,12 +303,12 @@ def symbol_index() -> list[tuple]:
             "SELECT instrument, name, count(*) c FROM stock_bar1d GROUP BY instrument, name"
         ).fetchall()
         con.close()
-        best: dict[str, tuple] = {}
-        for sym, nm, c in rows:
-            if sym not in best or c > best[sym][1]:
-                best[sym] = (nm or "", int(c))
-        _SYM_CACHE = [(s, nm, c, initials_variants(nm)) for s, (nm, c) in best.items()]
-    return _SYM_CACHE
+    best: dict[str, tuple] = {}
+    for sym, nm, c in rows:
+        if sym not in best or c > best[sym][1]:
+            best[sym] = (nm or "", int(c))
+    _SYM_CACHE[src] = [(s, nm, c, initials_variants(nm)) for s, (nm, c) in best.items()]
+    return _SYM_CACHE[src]
 
 
 def _hit(q: str, sym: str, name: str, ivs: list[str]) -> bool:
@@ -248,18 +337,18 @@ def load_index_klines(symbol: str, start: str = "2015-01-01", end: str = "2099-0
             for r, t in zip(df.itertuples(), df["date"])]
 
 
-def search_symbols(q: str, limit: int = 20) -> list[dict]:
-    """按 代码/名称/拼音首字母 搜（全部标的）"""
+def search_symbols(q: str, limit: int = 20, source: str = "stock") -> list[dict]:
+    """按 代码/名称/拼音首字母 搜（该数据源的全部标的）"""
     q = (q or "").strip().lower()
-    hits = [(s, nm, n) for s, nm, n, ivs in symbol_index() if not q or _hit(q, s, nm, ivs)]
+    hits = [(s, nm, n) for s, nm, n, ivs in symbol_index(source) if not q or _hit(q, s, nm, ivs)]
     hits.sort(key=lambda r: -r[2])
     return [{"symbol": s, "name": nm, "bars": n} for s, nm, n in hits[:limit]]
 
 
-def trade_symbols(q: str, trades: dict) -> list[dict]:
+def trade_symbols(q: str, trades: dict, source: str = "stock") -> list[dict]:
     """有交易记录的标的（统计页标的筛选用），同样支持拼音首字母"""
     q = (q or "").strip().lower()
-    idx = {s: (nm, ivs) for s, nm, _n, ivs in symbol_index()}
+    idx = {s: (nm, ivs) for s, nm, _n, ivs in symbol_index(source)}
     out = []
     for sym, recs in trades.items():
         if not recs:
@@ -272,15 +361,15 @@ def trade_symbols(q: str, trades: dict) -> list[dict]:
     return out
 
 
-def symbol_names(syms: list[str]) -> dict:
+def symbol_names(syms: list[str], source: str = "stock") -> dict:
     if not syms:
         return {}
     want = set(syms)
-    return {s: nm for s, nm, _n, _ivs in symbol_index() if s in want}
+    return {s: nm for s, nm, _n, _ivs in symbol_index(source) if s in want}
 
 
 # ── 出场判定（只认用户提交的止损/止盈价）──
-def auto_exit(symbol: str, rec: dict) -> dict:
+def auto_exit(symbol: str, rec: dict, source: str = "stock") -> dict:
     """从**开仓日当根**起逐日判定出场（开盘已成交，当天盘中就可能打到止损）。
 
     规则（用户 2026-09-17 指定）：
@@ -290,7 +379,7 @@ def auto_exit(symbol: str, rec: dict) -> dict:
         做空相反：止损取 max、止盈取 min —— 都取对**自己更差**的成交价），
         否则会系统性高估收益（现实中跳空从来成交不到理论价）
     """
-    kl = load_klines(symbol, rec["entry_date"], "2099-01-01")
+    kl = load_klines(symbol, rec["entry_date"], "2099-01-01", source)
     i0 = next((i for i, b in enumerate(kl) if b["date"] == rec["entry_date"]), None)
     if i0 is None:                                   # 开仓日无行情（理论上已被 build_trade 拦掉）
         rec.update(exit_date=None, exit_price=None, exit_reason="pending", holding_days=None)
@@ -348,7 +437,7 @@ def default_score(direction: str) -> dict:
             "total": SCORE_REASON_PTS + 10 * len(SCORE_ITEMS[direction]), "_default": True}
 
 
-def build_trade(symbol: str, body: dict, settings: dict):
+def build_trade(symbol: str, body: dict, settings: dict, source: str = "stock"):
     """构造一条交易记录 → (rec, None) 或 (None, 错误 dict)。空串一律当"没填"。"""
     t = body.get("trade") or {}
     entry_date = str(t.get("entry_date") or "").strip()
@@ -359,12 +448,12 @@ def build_trade(symbol: str, body: dict, settings: dict):
         return None, {"err": "止损价必填（出场只认你提交的止损/止盈价）"}
     if tp is None:
         return None, {"err": "止盈价必填（出场只认你提交的止损/止盈价）"}
-    bars = load_klines(symbol, entry_date, entry_date)
+    bars = load_klines(symbol, entry_date, entry_date, source)
     if not bars:
         return None, {"err": f"{entry_date} 无行情（非交易日 / 停牌 / 超出库内范围）"}
     bar = bars[0]
     buy = _num(t.get("buy_price"))
-    source = "manual" if buy is not None else "bar_open"
+    entry_src = "manual" if buy is not None else "bar_open"   # 开仓价来源（与数据源 source 区分）
     if buy is None:
         buy = bar["open"]                     # 留空 = 用开仓时间那根的开盘价
     direction = t.get("direction") or "long"  # 做空（2026-09-30 加）：short = 做空
@@ -382,31 +471,49 @@ def build_trade(symbol: str, body: dict, settings: dict):
     if sc_err:
         return None, sc_err
     risk = _num(body.get("risk_amount")) or settings["risk_amount"]
-    rps = abs(buy - stop)                     # 每股风险（做多=买−止损，做空=止损−买，量纲同）
-    shares = int(math.floor(risk / rps / LOT) * LOT)   # 向下取整到整手（不向上，否则放大风险）
-    if shares < LOT:
-        # ★ 2026-10-09：一手止损超出全局额度时**保底开一手**，止损额度按实际（一手风险）计
-        #   —— 例：额度 5000、每股风险 80 → 1 手需 8000，则开 1 手、该笔 risk_amount=8000
-        shares = LOT
-        risk = round(rps * shares, 2)
+    rps = abs(buy - stop)                     # 每单位风险（做多=买−止损，做空=止损−买，量纲同）
+    mult, rate = 1, None
+    if source == "future":
+        # ★ 期货：**手数 = floor(风险额度 / 每手风险)**，每手风险 = |买−止损| × 合约乘数
+        #   （与股票同一个"等额止损"思路，只是把"每股"换成"每手 × 乘数"）
+        mult, rate, _nm = future_meta_of(symbol)
+        if not mult:
+            return None, {"err": f"{symbol} 缺合约乘数/保证金率（品种表 future_meta 未收录），"
+                                 f"无法反算手数 —— 补一行即可"}
+        lots = int(math.floor(risk / (rps * mult)))
+        if lots < 1:                          # 一手风险就超额度 → 保底 1 手，额度按实际计
+            lots = 1
+            risk = round(rps * mult, 2)
+        shares = lots
+    else:
+        shares = int(math.floor(risk / rps / LOT) * LOT)   # 向下取整到整手（不向上，否则放大风险）
+        if shares < LOT:
+            # ★ 2026-10-09：一手止损超出全局额度时**保底开一手**，止损额度按实际（一手风险）计
+            #   —— 例：额度 5000、每股风险 80 → 1 手需 8000，则开 1 手、该笔 risk_amount=8000
+            shares = LOT
+            risk = round(rps * shares, 2)
     rec = {"id": t.get("id") or uuid.uuid4().hex[:8],
            "direction": direction,
-           "entry_date": entry_date, "entry_source": source,
+           "entry_date": entry_date, "entry_source": entry_src,
            "buy_price": round(buy, 4), "stop_price": round(stop, 4), "tp_price": round(tp, 4),
-           "risk_amount": risk, "shares": shares,
+           "risk_amount": risk, "shares": shares, "source": source,
            "adj": "hfq",                                   # 备注口径（见 README 已知限制）
            "score": score,                                 # 开仓评分（理由 60 + 各项 0-10）
            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-    return auto_exit(symbol, rec), None
+    if source == "future":                                 # ★ 期货：记乘数 / 保证金率 / 占用保证金
+        rec["multiplier"] = mult
+        rec["margin_rate"] = round(float(rate), 4)
+        rec["margin_used"] = round(shares * mult * buy * float(rate) / 100.0, 2)
+    return auto_exit(symbol, rec, source), None
 
 
 # ── 交易心得（笔记）──
-def load_notes() -> list[dict]:
-    return _load(NOTES_F).get("notes", [])
+def load_notes(src: str = "stock") -> list[dict]:
+    return _load(src_paths(src)[2]).get("notes", [])
 
 
-def save_notes(lst: list[dict]):
-    _save(NOTES_F, {"notes": lst})
+def save_notes(lst: list[dict], src: str = "stock"):
+    _save(src_paths(src)[2], {"notes": lst})
 
 
 def build_note(body: dict):
@@ -450,8 +557,12 @@ def decorate(rec: dict) -> dict:
         out["legacy"] = True
     rps = abs(buy - stop) if (buy is not None and stop is not None) else None
     shares = rec.get("shares")
-    out.update(risk_per_share=rps, risk_pct=(rps / buy if rps and buy else None),
-               notional=(buy * shares if buy and shares else None),
+    mult = rec.get("multiplier") or 1               # ★ 期货：合约乘数；股票 = 1
+    out["multiplier"] = mult
+    out.update(risk_per_share=rps, risk_per_lot=(rps * mult if rps else None),
+               risk_pct=(rps / buy if rps and buy else None),
+               notional=(buy * shares * mult if buy and shares else None),
+               margin_used=rec.get("margin_used"), margin_rate=rec.get("margin_rate"),
                ret_pct=None, R=None, pnl=None, is_fat_tail=False)
     if ex is not None and buy is not None:
         out["ret_pct"] = (1 - ex / buy) * 100 if short else (ex / buy - 1) * 100
@@ -459,7 +570,8 @@ def decorate(rec: dict) -> dict:
         out["is_fat_tail"] = out["ret_pct"] >= FAT_TAIL_PCT
         # 老记录没有 shares → pnl 留 None（反填止损额度会凭空造出从未发生过的仓位）
         if shares:
-            out["pnl"] = ((buy - ex) if short else (ex - buy)) * shares
+            # ★ ×mult：股票的"股数"在期货里是**手数**，每手 = 合约乘数 个价格单位
+            out["pnl"] = ((buy - ex) if short else (ex - buy)) * shares * mult
         out["status"] = ("win" if (ex < buy if short else ex > buy)
                          else "loss" if (ex > buy if short else ex < buy) else "flat")
     else:
@@ -494,6 +606,7 @@ class H(BaseHTTPRequestHandler):
             self._send(200, b"", "image/x-icon")
             return
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        src = norm_source(q.get("source") or q.get("src"))   # ★ 数据源（缺省 = stock，行为不变）
         if u.path == "/api/symbols":
             # curl/浏览器默认 UTF-8；parse_qs 在 py3.13- 已按 latin-1 解 bytes，
             # 中文会变乱码 → 手动重解码
@@ -504,23 +617,36 @@ class H(BaseHTTPRequestHandler):
                     q["q"] = unquote(raw, encoding="utf-8", errors="strict")
                 except UnicodeDecodeError:
                     pass
-            self._send(200, search_symbols(q.get("q", "")))
+            self._send(200, search_symbols(q.get("q", ""), source=src))
         elif u.path == "/api/coverage":
-            con = duckdb.connect(str(WAREHOUSE), read_only=True)
-            row = con.execute("SELECT min(date), max(date) FROM stock_bar1d WHERE instrument=?",
-                              [q.get("symbol", "")]).fetchone()
-            total = con.execute("SELECT count(DISTINCT instrument) FROM stock_bar1d").fetchone()[0]
-            con.close()
-            self._send(200, {"in_db": row[0] is not None,
-                             "first": str(row[0])[:10] if row[0] else None,
-                             "last": str(row[1])[:10] if row[1] else None,
-                             "total": total})
+            if src == "future":      # ★ 期货：顺带把 乘数/保证金率/中文名 带回去（免得再加接口）
+                mult, rate, nm = future_meta_of(q.get("symbol", ""))
+                con = duckdb.connect(str(PD_WH), read_only=True)
+                row = con.execute("SELECT min(date), max(date) FROM future_daily_post WHERE symbol=?",
+                                  [q.get("symbol", "")]).fetchone()
+                total = con.execute("SELECT count(DISTINCT symbol) FROM future_daily_post").fetchone()[0]
+                con.close()
+                self._send(200, {"in_db": row[0] is not None,
+                                 "first": str(row[0])[:10] if row[0] else None,
+                                 "last": str(row[1])[:10] if row[1] else None,
+                                 "total": total, "name": nm,
+                                 "multiplier": mult, "margin_rate": rate})
+            else:
+                con = duckdb.connect(str(WAREHOUSE), read_only=True)
+                row = con.execute("SELECT min(date), max(date) FROM stock_bar1d WHERE instrument=?",
+                                  [q.get("symbol", "")]).fetchone()
+                total = con.execute("SELECT count(DISTINCT instrument) FROM stock_bar1d").fetchone()[0]
+                con.close()
+                self._send(200, {"in_db": row[0] is not None,
+                                 "first": str(row[0])[:10] if row[0] else None,
+                                 "last": str(row[1])[:10] if row[1] else None,
+                                 "total": total})
         elif u.path == "/api/klines":
             self._send(200, load_klines(q.get("symbol", ""),
                                         _ymd(q.get("start"), "2015-01-01"),
-                                        _ymd(q.get("end"), "2099-12-31")))
+                                        _ymd(q.get("end"), "2099-12-31"), source=src))
         elif u.path == "/api/lines":
-            self._send(200, _load(LINES_F).get(q.get("symbol", ""), []))
+            self._send(200, _load(src_paths(src)[0]).get(q.get("symbol", ""), []))
         elif u.path == "/api/indices":
             self._send(200, [{"symbol": s, "name": n} for s, n in INDICES])
         elif u.path == "/api/index_klines":
@@ -529,22 +655,22 @@ class H(BaseHTTPRequestHandler):
                                               _ymd(q.get("start"), "2015-01-01"),
                                               _ymd(q.get("end"), "2099-12-31")))
         elif u.path == "/api/notes":
-            lst = load_notes()
-            names = symbol_names(sorted({n.get("symbol", "") for n in lst}))
+            lst = load_notes(src)
+            names = symbol_names(sorted({n.get("symbol", "") for n in lst}), src)
             self._send(200, [{**n, "name": names.get(n.get("symbol", ""), "")} for n in lst])
         elif u.path == "/api/trade_symbols":
             # 统计页标的筛选：只列**有交易记录**的标的（带条数），支持拼音首字母
-            self._send(200, trade_symbols(q.get("q", ""), _load(TRADES_F)))
+            self._send(200, trade_symbols(q.get("q", ""), _load(src_paths(src)[1]), src))
         elif u.path == "/api/trades":
-            db = _load(TRADES_F)
+            db = _load(src_paths(src)[1])
             if q.get("all"):                    # 统计页：一次拿全部标的
                 self._send(200, {"trades": {s: [decorate(r) for r in rs]
                                             for s, rs in db.items() if rs},
-                                 "names": symbol_names([s for s, rs in db.items() if rs])})
+                                 "names": symbol_names([s for s, rs in db.items() if rs], src)})
             else:
                 self._send(200, [decorate(r) for r in db.get(q.get("symbol", ""), [])])
         elif u.path == "/api/settings":
-            self._send(200, get_settings())
+            self._send(200, get_settings(src))
         else:
             self._send(404, {"err": "not found"})
 
@@ -552,8 +678,11 @@ class H(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(n) or b"{}")
         path = urlparse(self.path).path
+        # ★ 数据源：优先 body（POST 的 fetch 把 source 塞进 JSON），其次 URL query；缺省 stock
+        _q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+        src = norm_source((body or {}).get("source") or _q.get("source") or _q.get("src"))
         if path == "/api/settings":
-            s = get_settings()
+            s = get_settings(src)
             for k, v in (body or {}).items():
                 if k in DEFAULT_SETTINGS and v is not None:
                     s[k] = v
@@ -564,13 +693,13 @@ class H(BaseHTTPRequestHandler):
                     s[num_key] = DEFAULT_SETTINGS[num_key]
                 if s[num_key] <= 0:
                     s[num_key] = DEFAULT_SETTINGS[num_key]
-            _save(SETTINGS_F, s)
+            _save(src_paths(src)[3], s)
             return self._send(200, s)
         if path == "/api/notes":
             note, err = build_note(body)
             if err:
                 return self._send(400, err)
-            lst = load_notes()
+            lst = load_notes(src)
             hit = next((i for i, n in enumerate(lst) if n.get("id") == note["id"]), None)
             if hit is None:
                 lst.append(note)
@@ -578,27 +707,27 @@ class H(BaseHTTPRequestHandler):
             else:
                 lst[hit] = note
                 action = "update"
-            save_notes(lst)
-            names = symbol_names([note["symbol"]])
+            save_notes(lst, src)
+            names = symbol_names([note["symbol"]], src)
             return self._send(200, {**note, "name": names.get(note["symbol"], ""),
                                     "_action": action})
         if path == "/api/trade_note":
             # 只改备注，不动其它字段（备注是独立编辑入口，不该触发交易重校验）
             symbol, rid = body.get("symbol", ""), body.get("id", "")
-            db = _load(TRADES_F)
+            db = _load(src_paths(src)[1])
             lst = db.get(symbol, [])
             hit = next((r for r in lst if r.get("id") == rid), None)
             if hit is None:
                 return self._send(404, {"err": "未找到该交易记录"})
             note = str(body.get("note") or "").strip()
             hit["note"] = note or None            # 清空 = 删除备注
-            _save(TRADES_F, db)
+            _save(src_paths(src)[1], db)
             return self._send(200, decorate(hit))
         if path == "/api/trade_score":
             # 只改评分，不动其它字段（与 /api/trade_note 同模式：独立编辑入口，
             # 不触发交易重校验 / 出场重判）。校验复用 build_score（含 ≥60 分门槛）。
             symbol, rid = body.get("symbol", ""), body.get("id", "")
-            db = _load(TRADES_F)
+            db = _load(src_paths(src)[1])
             hit = next((r for r in db.get(symbol, []) if r.get("id") == rid), None)
             if hit is None:
                 return self._send(404, {"err": "未找到该交易记录"})
@@ -606,13 +735,13 @@ class H(BaseHTTPRequestHandler):
             if err:
                 return self._send(400, err)
             hit["score"] = score
-            _save(TRADES_F, db)
+            _save(src_paths(src)[1], db)
             return self._send(200, decorate(hit))
         symbol = body.get("symbol", "")
         if not symbol:
             return self._send(400, {"err": "symbol required"})
         if path == "/api/lines":
-            db = _load(LINES_F)
+            db = _load(src_paths(src)[0])
             rec = body["line"]
             lst = db.setdefault(symbol, [])
             # 按 id upsert：命中 → 原地更新（拖动整体/端点），未命中 → 新建（画线）
@@ -633,14 +762,14 @@ class H(BaseHTTPRequestHandler):
             else:
                 lst.append(rec)
                 action = "create"
-            _save(LINES_F, db)
+            _save(src_paths(src)[0], db)
             self._send(200, {**rec, "_action": action})
         elif path == "/api/trades":
             q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
             dry = q.get("dry_run") in ("1", "true")
-            db = _load(TRADES_F)
+            db = _load(src_paths(src)[1])
             lst = db.setdefault(symbol, [])
-            rec, err = build_trade(symbol, body, get_settings())
+            rec, err = build_trade(symbol, body, get_settings(src), source=src)
             if err:
                 return self._send(400, err)
             # 唯一键 = 标的 + 开仓时间：同 id 命中 = 修改自己；同开仓日命中 = 撞车
@@ -676,7 +805,7 @@ class H(BaseHTTPRequestHandler):
                 lst.append(rec)
                 action = "create"
             db[symbol] = lst
-            _save(TRADES_F, db)
+            _save(src_paths(src)[1], db)
             self._send(200, {**decorate(rec), "_action": action})
         else:
             self._send(404, {"err": "not found"})
@@ -684,24 +813,25 @@ class H(BaseHTTPRequestHandler):
     def do_DELETE(self):
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        src = norm_source(q.get("source") or q.get("src"))
         symbol, rid = q.get("symbol", ""), q.get("id", "")
         if u.path == "/api/notes":
-            lst = load_notes()
+            lst = load_notes(src)
             n0 = len(lst)
             lst = [n for n in lst if n.get("id") != q.get("id", "")]
-            save_notes(lst)
+            save_notes(lst, src)
             return self._send(200, {"ok": True, "removed": n0 - len(lst)})
         if u.path == "/api/trades" and q.get("all"):
             # 清除整个标的 —— **独立分支**，不复用下面 `id != rid` 的逻辑：
             # 那条在 rid 为空时是 no-op（安全），一旦改成"空 id 即清空"，
             # 前端任何一次 id 丢失的 DELETE 都会静默清掉整个标的
-            db = _load(TRADES_F)
+            db = _load(src_paths(src)[1])
             n = len(db.get(symbol, []))
             db[symbol] = []
-            _save(TRADES_F, db)
+            _save(src_paths(src)[1], db)
             return self._send(200, {"ok": True, "removed": n})
         if u.path in ("/api/lines", "/api/trades"):
-            path = LINES_F if u.path == "/api/lines" else TRADES_F
+            path = src_paths(src)[0] if u.path == "/api/lines" else src_paths(src)[1]
             db = _load(path)
             db[symbol] = [r for r in db.get(symbol, []) if r["id"] != rid]
             _save(path, db)
