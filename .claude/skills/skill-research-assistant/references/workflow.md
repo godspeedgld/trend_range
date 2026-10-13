@@ -6,7 +6,7 @@
 
 | 能力 | 输出目录 | 产出 |
 |---|---|---|
-| 研报提取（**仓库根**） | `<仓库根>/research_report/` | `<slug>_main.md`（思想+指标+回测方法/结果，**不复现**） |
+| 研报提取（**仓库根**） | `<仓库根>/research_report/`（**可按主题分子目录**） | `<slug>_main.md`（思想+指标+回测方法/结果，**不复现**） |
 | └ 行业研报提取（子能力） | `<仓库根>/research_report/industry_research/` | `<slug>_main.md`（背景+核心观点+投资建议，多要点六要素） |
 | └ 因子研报提取（子能力） | `<仓库根>/research_report/factor_research/` | `<slug>_main.md`（背景+因子逻辑+分层构建+有效性验证+回测绩效） |
 | 数据分析 | `01_data_analysis/analysis_XXX/` | records.md / analysis.py / result_view.html |
@@ -42,6 +42,9 @@
    可复现性评估 / 与本工程关联。
    （核心是 **量化思路 · 量化指标 · 回测方法 · 回测结果** 四节，其余为上下文）
 3. **落盘**：`<仓库根>/research_report/<slug>_main.md`（**目录不存在则创建**）。
+   **允许按主题分子目录**（2026-10-13 用户确认）：同主题/同系列的研报可归到
+   `<仓库根>/research_report/<主题>/<slug>_main.md`（例 `行业轮动框架-广发/`）。
+   slug 命名与铁律不变；引用登记写**含子目录的完整相对路径**。
 4. **登记引用**：若该研报被后续分析/策略引用，在 `04_delivery/final_report.md` 的
    「引用研报」节追加一行（**只能追加，不得改写历史条目**）。
 

@@ -11,7 +11,7 @@
 
 | 能力 | 输出目录 | 产出 |
 |---|---|---|
-| **研报提取**（**仓库根**） | `<仓库根>/research_report/` | `<slug>_main.md` —— 思想·指标·回测方法/结果 |
+| **研报提取**（**仓库根**） | `<仓库根>/research_report/`（**可按主题分子目录**） | `<slug>_main.md` —— 思想·指标·回测方法/结果 |
 | └ **行业研报提取**（子能力） | `<仓库根>/research_report/industry_research/` | `<slug>_main.md` —— 背景·核心观点·投资建议（多要点六要素） |
 | └ **因子研报提取**（子能力） | `<仓库根>/research_report/factor_research/` | `<slug>_main.md` —— 背景·因子逻辑·分层构建·有效性验证·回测绩效 |
 | **数据分析** | `<工程>/01_data_analysis/analysis_XXX/` | records.md / analysis.py / result_view.html |
@@ -86,6 +86,9 @@ python scripts/pdf_extract.py <pdf> [--pages 3-22] [--dpi 150]
 > **不需要复现回测**——原文数字如实记为「原文口径，未复现验证」。
 
 **落盘**：`<仓库根>/research_report/<slug>_main.md`（目录不存在则创建）。
+**允许按主题分子目录**（2026-10-13 用户确认）：同一主题/系列的研报可归到一个子目录下，
+如 `<仓库根>/research_report/<主题>/<slug>_main.md`（例：`行业轮动框架-广发/…`）。
+命名与铁律不变；**引用登记时写完整相对路径**（含子目录），保证可检索。
 **不要**写进任何工程的 `01_data_analysis/` 或工程根——研报是公共文献库。
 
 **铁律**：① 只提取不复现 ② 严禁脑补（原文未明确写「原文未明确」）③ 现象与思路分开记
