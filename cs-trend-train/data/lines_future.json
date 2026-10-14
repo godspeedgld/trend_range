@@ -1,0 +1,100 @@
+{
+ "RB_DOMINANT.SHF": [
+  {
+   "id": "lnmv7ijtuz",
+   "start_date": "2010-02-01",
+   "start_price": 4130.0929709387165,
+   "end_date": "2011-04-16",
+   "end_price": 4146.004853751172,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv7imden",
+   "start_date": "2010-07-14",
+   "start_price": 3529.3861087144087,
+   "end_date": "2011-09-22",
+   "end_price": 3805.730728793247,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv7io14z",
+   "start_date": "2011-10-19",
+   "start_price": 3248.905681651616,
+   "end_date": "2012-04-25",
+   "end_price": 3573.0749858907525,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv7j71nm",
+   "start_date": "2011-09-27",
+   "start_price": 3643.8670626243834,
+   "end_date": "2013-08-06",
+   "end_price": 3591.4674871829643,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv7ja2oa",
+   "start_date": "2012-09-06",
+   "start_price": 2710.5960893725023,
+   "end_date": "2013-12-31",
+   "end_price": 2811.185795038897,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv7jd4zu",
+   "start_date": "2014-09-24",
+   "start_price": 1867.1630678119857,
+   "end_date": "2015-03-26",
+   "end_price": 1866.656070117627,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv7k3rrx",
+   "start_date": "2016-04-21",
+   "start_price": 2093.873532542623,
+   "end_date": "2016-10-31",
+   "end_price": 2000.6448748900439,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv7k4a3h",
+   "start_date": "2016-06-02",
+   "start_price": 1488.2955008168065,
+   "end_date": "2016-10-12",
+   "end_price": 1726.1139821477104,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv7k88o5",
+   "start_date": "2016-12-08",
+   "start_price": 2564.5580197041086,
+   "end_date": "2017-07-11",
+   "end_price": 2743.5549941143718,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv7k8dbw",
+   "start_date": "2016-11-07",
+   "start_price": 2020.6822535991005,
+   "end_date": "2017-06-27",
+   "end_price": 2328.816646682484,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv7kanvo",
+   "start_date": "2017-07-03",
+   "start_price": 2758.701299523439,
+   "end_date": "2019-02-25",
+   "end_price": 2770.9291946049534,
+   "adj": "hfq"
+  },
+  {
+   "id": "lnmv7kdz69",
+   "start_date": "2017-08-08",
+   "start_price": 3273.146134485195,
+   "end_date": "2019-01-15",
+   "end_price": 3257.7721465296772,
+   "adj": "hfq"
+  }
+ ]
+}

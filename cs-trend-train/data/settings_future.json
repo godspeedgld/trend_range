@@ -1,0 +1,7 @@
+{
+ "risk_amount": 10000.0,
+ "capital": 1000000.0,
+ "show_lines": true,
+ "show_trades": true,
+ "future_risk_amount": 10000
+}
