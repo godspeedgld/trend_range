@@ -1,10 +1,15 @@
-"""按【周频口径】计算 QuantSkills 两个因子库 → 本地宽表 + 合并视图（BigQuant 仓库）。
+"""按【指定频率】计算 QuantSkills 两个因子库 → 本地宽表 + 合并视图（BigQuant 仓库）。
 
-产物（Parquet + DuckDB 视图，与既有表同构）：
-  factor_dir_1w/year=YYYY/part-*.parquet        directional 296 因子（宽表）
-  factor_volstat_1w/year=YYYY/part-*.parquet    volume-stat  216 因子（宽表）
-  v_factor_1w                                   合并视图：两表按 (date, instrument) join → 512 列（一次访问）
-列 = date, instrument, <base>_<w>w_<transform> …（一行一只股一个周频信号日）
+产物（Parquet + DuckDB 视图，与既有表同构；`--freq` 决定后缀 1w / 1d）：
+  factor_dir_1w|1d/year=YYYY/part-*.parquet        directional 296 因子（宽表）
+  factor_volstat_1w|1d/year=YYYY/part-*.parquet    volume-stat  216 因子（宽表）
+  v_factor_1w|1d                                   合并视图：两表按 (date, instrument) join → 512 列
+列 = date, instrument, <base>_<w>w_<transform> …（**列名/结构两频率完全一致**，只有频率不同）
+
+★ 两个频率的**唯一差别**是喂给库的行集（库按**行数**滚窗口）：
+    --freq 1w（默认）：只保留**全局周频信号日**的行（云端 `date IN (信号日)` 下推的效果）
+                       ⇒ 窗口 5/7/10 = 5/7/10 **周**
+    --freq 1d        ：全部**日线**行（同样只剔停牌）⇒ 窗口 5/7/10 = 5/7/10 **个交易日**
 
 ════════════════════ 口径（关键，已与用户确认，别改）════════════════════
 ① 周频 = **全局**「每周最后一个交易日」的截面快照（`signal_dates(cal)`），**不是把一周的价量聚合**、
@@ -59,7 +64,15 @@ LIBS = {
     "dir": SKILLS / "skill-quant-factor-directional-alpha-main/factors",
     "volstat": SKILLS / "skill-quant-factor-volume-stat-alpha-main/factors",
 }
-TABLE = {"dir": "factor_dir_1w", "volstat": "factor_volstat_1w"}
+FREQ = "1w"                                   # 由 --freq 设置：1w（周频快照）| 1d（日频）
+
+
+def _tbl(lib: str) -> str:
+    return f"factor_{lib}_{FREQ}"
+
+
+def _view() -> str:
+    return f"v_factor_{FREQ}"
 EXPECT = {"dir": 296, "volstat": 216}
 START = "2015-01-01"
 END = None                    # None = 库内最新
@@ -179,6 +192,13 @@ def load_bars(symbols: list[str] | None = None) -> pd.DataFrame:
     return df.sort_values(["instrument", "date"]).reset_index(drop=True)
 
 
+def to_freq(bars: pd.DataFrame, sd: list) -> pd.DataFrame:
+    """按 FREQ 采样：1d = 原样全部日线行；1w = 只保留全局周频信号日（见 to_weekly）。"""
+    if FREQ == "1d":
+        return bars.sort_values(["instrument", "date"]).reset_index(drop=True)
+    return to_weekly(bars, sd)
+
+
 def to_weekly(bars: pd.DataFrame, sd: list) -> pd.DataFrame:
     """周频采样：**只保留「日期 ∈ 全局周频信号日」的行**（= 云端 `date IN (信号日)` 的下推效果）。
 
@@ -228,7 +248,7 @@ def _worker(arg):
 def compute_and_ingest(weekly: pd.DataFrame, specs: list[dict], lib: str, jobs: int) -> dict:
     """逐标的算 → 流式落盘（float32+zstd，按年分区）→ 建基础视图。返回登记信息。"""
     combos = build_combos(specs)
-    table = TABLE[lib]
+    table = _tbl(lib)
     tdir = ROOT / table
     if tdir.exists():
         if tdir.parent != ROOT:
@@ -282,18 +302,19 @@ def compute_and_ingest(weekly: pd.DataFrame, specs: list[dict], lib: str, jobs: 
 
 # ═══════════════════ ④ 合并视图 ═══════════════════
 def create_combined_view() -> None:
-    """v_factor_1w = dir ⋈ volstat（按 date, instrument）——「一次访问全部 512 个因子」。
+    """v_factor_{FREQ} = dir ⋈ volstat（按 date, instrument）——「一次访问全部 512 个因子」。
     ★ 显式 EXCLUDE 掉 read_parquet 带出的 year 列，避免 join 后重名。"""
+    view, td, tv = _view(), _tbl("dir"), _tbl("volstat")
     con = duckdb.connect(str(DB))
-    con.execute("""
-        CREATE OR REPLACE VIEW v_factor_1w AS
+    con.execute(f"""
+        CREATE OR REPLACE VIEW {view} AS
         SELECT d.* EXCLUDE(year), v.* EXCLUDE(date, instrument, year)
-        FROM factor_dir_1w d JOIN factor_volstat_1w v USING (date, instrument)
+        FROM {td} d JOIN {tv} v USING (date, instrument)
     """)
-    r = con.execute("SELECT count(*), count(*) FROM v_factor_1w").fetchone()
-    ncol = len(con.execute("DESCRIBE v_factor_1w").fetchall())
+    r = con.execute(f"SELECT count(*) FROM {view}").fetchone()
+    ncol = len(con.execute(f"DESCRIBE {view}").fetchall())
     con.close()
-    print(f"  → v_factor_1w: {r[0]:,} 行 × {ncol} 列（= 512 因子 + date/instrument）")
+    print(f"  → {view}: {r[0]:,} 行 × {ncol} 列（= 512 因子 + date/instrument）")
 
 
 # ═══════════════════ ⑤ _meta.json 登记 ═══════════════════
@@ -302,20 +323,23 @@ def update_meta(infos: list[dict]) -> None:
     m = json.loads(mp.read_text(encoding="utf-8"))
     m.setdefault("tables", {})
     now = pd.Timestamp.now().isoformat()
+    cal = ("周频=全局每周最后交易日快照；窗口 5/7/10 = 周" if FREQ == "1w"
+           else "日频=全部日线（仅剔停牌）；窗口 5/7/10 = 交易日")
     for it in infos:
         m["tables"][it["table"]] = {
             "source": "QuantSkills 因子库（directional 296 / volume-stat 216）",
-            "kind": "factor_wide_weekly",
+            "kind": f"factor_wide_{FREQ}",
             "primary_key": ["date", "instrument"],
             "rows": it["rows"], "factors": it["factors"],
             "date_column": "date", "partition_keys": ["year"],
             "storage": "parquet/year=YYYY/part-*.parquet (float32, zstd)",
-            "caliber": "周频=每自然周最后一个交易日；价格=后复权 stock_bar1d.close；值=原始因子值；池=全市场 .SH/.SZ",
-            "built_by": "build_factor_weekly.py", "last_refresh_at": now,
+            "caliber": f"{cal}；价格=后复权 stock_bar1d.close；值=原始因子值；池=全市场 .SH/.SZ",
+            "built_by": "build_factor_weekly.py --freq " + FREQ, "last_refresh_at": now,
         }
-    if {"factor_dir_1w", "factor_volstat_1w"} <= set(m["tables"]):
-        m["tables"]["v_factor_1w"] = {
-            "kind": "view_combined", "source": "factor_dir_1w ⋈ factor_volstat_1w USING(date, instrument)",
+    if {_tbl("dir"), _tbl("volstat")} <= set(m["tables"]):
+        m["tables"][_view()] = {
+            "kind": "view_combined",
+            "source": f"{_tbl('dir')} ⋈ {_tbl('volstat')} USING(date, instrument)",
             "columns": 514, "note": "512 因子一次访问", "last_refresh_at": now,
         }
     mp.write_text(json.dumps(m, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -326,9 +350,13 @@ def update_meta(infos: list[dict]) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--lib", default="both", choices=["dir", "volstat", "both"])
+    ap.add_argument("--freq", default="1w", choices=["1w", "1d"],
+                    help="1w=周频快照（默认，原行为）；1d=日频（全部日线行）")
     ap.add_argument("--symbols", type=int, default=0, help="只取前 N 只（冒烟用）")
     ap.add_argument("--jobs", type=int, default=1)
     a = ap.parse_args()
+    global FREQ
+    FREQ = a.freq
     libs = ["dir", "volstat"] if a.lib == "both" else [a.lib]
 
     t0 = time.time()
@@ -343,15 +371,19 @@ def main() -> int:
             f"ORDER BY instrument LIMIT {a.symbols}").fetchall()]
         con.close()
     bars = load_bars(syms)
-    sd = signal_dates(load_calendar())
-    weekly = to_weekly(bars, sd)
-    print(f"日线 {len(bars):,} 行 / {bars['instrument'].nunique():,} 只 → 周频 {len(weekly):,} 行 / "
-          f"{weekly['date'].nunique()} 个信号日 (全局信号日 {len(sd)} 个，"
-          f"{sd[0].date()}~{sd[-1].date()})")
+    sd = signal_dates(load_calendar()) if FREQ == "1w" else []
+    framed = to_freq(bars, sd)
+    if FREQ == "1w":
+        print(f"日线 {len(bars):,} 行 / {bars['instrument'].nunique():,} 只 → 周频 {len(framed):,} 行 / "
+              f"{framed['date'].nunique()} 个信号日 (全局信号日 {len(sd)} 个，"
+              f"{sd[0].date()}~{sd[-1].date()})")
+    else:
+        print(f"日线 {len(bars):,} 行 / {bars['instrument'].nunique():,} 只 → **日频** {len(framed):,} 行 / "
+              f"{framed['date'].nunique()} 个交易日 ({framed['date'].min().date()}~{framed['date'].max().date()})")
 
     infos = []
     for lib in libs:
-        infos.append(compute_and_ingest(weekly, load_specs(lib), lib, max(1, a.jobs)))
+        infos.append(compute_and_ingest(framed, load_specs(lib), lib, max(1, a.jobs)))
 
     if a.lib == "both":
         create_combined_view()

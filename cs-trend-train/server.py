@@ -40,7 +40,8 @@ SETTINGS_F = DATA / "settings.json"
 LOT = 100                                     # A 股 1 手 = 100 股
 DEFAULT_SETTINGS = {"risk_amount": 5000, "capital": 1000000,
                     "show_lines": True, "show_trades": False,
-                    "future_risk_amount": 10000}   # ★ 期货：每次止损额度 ≤ 1 万
+                    "future_risk_amount": 10000,   # ★ 期货：每次止损额度 ≤ 1 万
+                    "indicators": ["d_turn"]}      # ★ 指标辅助：已选指标 id（默认换手率）
 # capital = 初始资金（仅用于统计页的 净值/年化 收益 计算，不影响仓位）
 FAT_TAIL_PCT = 30.0                           # 肥尾线：收益率 ≥ +30%（与 analysis_012/014 同口径）
 
@@ -398,6 +399,151 @@ def symbol_names(syms: list[str], source: str = "stock") -> dict:
 
 
 # ── 出场判定（只认用户提交的止损/止盈价）──
+
+# ══ ★ 指标辅助（2026-10-14）：目录 / 当前值 / 横截面排名 —— 只认 factor_catalog ══
+_IND_CACHE = None                                # {id: row(dict)}
+
+
+def _ind_cat() -> dict:
+    """惰性加载指标目录（factor_catalog.parquet）。"""
+    global _IND_CACHE
+    if _IND_CACHE is None:
+        fp = ROOT / "data_cache/bigquant_warehouse/factor_catalog.parquet"
+        df = pd.read_parquet(fp)
+        _IND_CACHE = {r["id"]: r for r in df.to_dict("records")}
+    return _IND_CACHE
+
+
+def _ind_duck() -> duckdb.DuckDBPyConnection:
+    return duckdb.connect(str(WAREHOUSE), read_only=True)
+
+
+def _ind_date(r: dict, d: str) -> str:
+    """把前端日期（或 latest）解析成该指标的取数日。
+
+    · 因子类（catalog.table = v_factor_1w|1d）→ ≤d 的最近**该频率**日期（周频落到信号日、日频落到交易日）
+    · 基础类（stock_bar1d 现算）→ ≤d 的最近交易日
+    """
+    src = r.get("table") or "stock_bar1d"
+    extra = "WHERE date<=?" if d != "latest" else ""
+    con = _ind_duck()
+    try:
+        row = con.execute(f"SELECT max(date) FROM {src} {extra}", [d] if extra else []).fetchone()
+        return str(row[0])[:10] if row and row[0] else None
+    finally:
+        con.close()
+
+
+def ind_catalog(q="", typ="", freq="", category="") -> list[dict]:
+    """指标清单（弹窗数据）：搜索/类型/频率/分类过滤。返回全字段，前端渲染。"""
+    q = (q or "").strip().lower()
+    out = []
+    for r in _ind_cat().values():
+        if q and not any(q in str(r.get(k) or "").lower() for k in ("id", "name", "formula", "explain", "purpose")):
+            continue
+        if typ and r["type"] != typ:
+            continue
+        if freq and r["freq"] != freq:
+            continue
+        if category and r["category"] != category:
+            continue
+        out.append({"id": r["id"], "name": r["name"], "formula": r["formula"],
+                    "explain": r["explain"], "purpose": r["purpose"],
+                    "category": r["category"], "freq": r["freq"], "type": r["type"],
+                    "status": r["status"], "table": r.get("table")})
+    # 待建排最后，其余按分类+名称
+    out.sort(key=lambda r: (r["status"] == "待建", r["category"], r["name"]))
+    return out
+
+
+def ind_value(symbol: str, ids: list, d: str) -> list[dict]:
+    """3.1：当前标的在指定日期（防前视：前端传主图揭示末日；或 latest）的各指标值。"""
+    cat = _ind_cat()
+    out = []
+    for cid in ids:
+        r = cat.get(cid)
+        if not r or r.get("status") != "ok":
+            continue
+        dd = _ind_date(r, d)
+        val, as_of = None, None
+        if dd:
+            con = _ind_duck()
+            try:
+                if r.get("table"):           # ★ 因子类（周频或日频，同一段代码）
+                    row = con.execute(f'SELECT date, "{r["column"]}" FROM {r["table"]} '
+                                      "WHERE instrument=? AND date<=? ORDER BY date DESC LIMIT 1",
+                                      [symbol, dd]).fetchone()
+                else:
+                    lb = int(r["lookback"] or 5)
+                    row = con.execute(
+                        f"SELECT date, ({r['expr']}) AS v FROM stock_bar1d WHERE instrument=? "
+                        f"AND date>=CAST(? AS DATE) - INTERVAL {lb} DAY AND date<=CAST(? AS DATE) "
+                        "ORDER BY date DESC LIMIT 1",
+                        [symbol, dd, dd]).fetchone()
+                if row and row[1] is not None and not pd.isna(row[1]):
+                    val, as_of = round(float(row[1]), 4), str(row[0])[:10]
+            finally:
+                con.close()
+        out.append({"id": cid, "name": r["name"], "freq": r["freq"],
+                    "value": val, "as_of": as_of, "threshold": r.get("threshold")})
+    return out
+
+
+def _ind_base_sql(r: dict, dd: str) -> str:
+    """指定日期上该指标的横截面底表（symbol, name, v）。"""
+    if r.get("table"):                       # ★ 因子类：周频 v_factor_1w / 日频 v_factor_1d
+        col, tbl = r["column"], r["table"]
+        return (f'SELECT f.instrument AS symbol, s.name AS name, f."{col}" AS v '
+                f"FROM {tbl} f JOIN stock_bar1d s "
+                "ON s.instrument=f.instrument AND s.date=f.date "
+                f"WHERE f.date=DATE '{dd}' AND f.\"{col}\" IS NOT NULL")
+    lb = int(r["lookback"] or 5)
+    return (f"WITH t AS (SELECT instrument AS symbol, name, date, ({r['expr']}) AS v "
+            f"FROM stock_bar1d WHERE date>=DATE '{dd}' - INTERVAL {lb} DAY AND date<=DATE '{dd}') "
+            f"SELECT symbol, name, v FROM t WHERE date=DATE '{dd}' AND v IS NOT NULL")
+
+
+def ind_rank(cid: str, d: str, order: str = "desc", limit: int = 5) -> dict:
+    """3.2：某指标在指定日期的全市场横截面排名（带名称，供加载按钮）。
+
+    order="both" → **一次扫描**同时给出降序前 N 与升序前 N（前端「每因子一组」的用法）；
+    两端用 row_number() 在同一遍里算，避免扫两遍全市场。
+    """
+    r = _ind_cat().get(cid)
+    if not r or r.get("status") != "ok":
+        return {"err": f"未知或未建指标: {cid}"}
+    n = int(limit)
+    dd = _ind_date(r, d)
+    out = {"id": cid, "name": r["name"], "date": dd, "order": order}
+    if not dd:
+        return {**out, "rows": [], "rows_desc": [], "rows_asc": []}
+    con = _ind_duck()
+    try:
+        if order == "both":
+            q = (f"WITH b AS ({_ind_base_sql(r, dd)}) SELECT symbol, name, v, "
+                 "row_number() OVER (ORDER BY v DESC) rd, "
+                 "row_number() OVER (ORDER BY v ASC) ra FROM b")
+            desc, asc = [], []
+            for sym, nm, v, rd, ra in con.execute(q).fetchall():
+                row = {"symbol": sym, "name": nm, "value": round(float(v), 4)}
+                if rd <= n:
+                    desc.append({**row, "rank": rd})
+                if ra <= n:
+                    asc.append({**row, "rank": ra})
+            # ★ 必须按 rank 排序：row_number 的行序 = 表自然序，直接 append 会得到 5,4,3,2,1
+            desc.sort(key=lambda x: x["rank"])
+            asc.sort(key=lambda x: x["rank"])
+            return {**out, "rows_desc": desc, "rows_asc": asc}
+        direction = "ASC" if order == "asc" else "DESC"
+        rows = []
+        for i, (sym, nm, v) in enumerate(con.execute(
+                f"{_ind_base_sql(r, dd)} ORDER BY v {direction} NULLS LAST LIMIT {n}").fetchall(), 1):
+            rows.append({"symbol": sym, "name": nm, "value": round(float(v), 4), "rank": i})
+        return {**out, "rows": rows}
+    finally:
+        con.close()
+
+
 def auto_exit(symbol: str, rec: dict, source: str = "stock") -> dict:
     """从**开仓日当根**起逐日判定出场（开盘已成交，当天盘中就可能打到止损）。
 
@@ -736,6 +882,20 @@ class H(BaseHTTPRequestHandler):
                                  "names": symbol_names([s for s, rs in db.items() if rs], src)})
             else:
                 self._send(200, [decorate(r) for r in db.get(q.get("symbol", ""), [])])
+        elif u.path == "/api/ind/catalog":
+            # ★ 指标辅助仅股票模式（期货无因子库）；期货下返回空清单，前端面板本就隐藏
+            self._send(200, ind_catalog(q.get("q", ""), q.get("type", ""),
+                                        q.get("freq", ""), q.get("category", ""))
+                       if src == "stock" else [])
+        elif u.path == "/api/ind/value":
+            ids = [x for x in (q.get("ids") or "").split(",") if x]
+            self._send(200, ind_value(q.get("symbol", ""), ids, q.get("date", "latest"))
+                       if src == "stock" else [])
+        elif u.path == "/api/ind/rank":
+            r = (ind_rank(q.get("id", ""), q.get("date", "latest"),
+                          q.get("order", "desc"), int(q.get("limit", 30) or 30))
+                 if src == "stock" else {"rows": []})
+            self._send(200, r)
         elif u.path == "/api/settings":
             self._send(200, get_settings(src))
         else:
