@@ -49,14 +49,6 @@
    "adj": "hfq"
   },
   {
-   "id": "lnmu6ew2c8",
-   "start_date": "2021-07-23",
-   "start_price": 142.90156625655456,
-   "end_date": "2022-02-22",
-   "end_price": 135.90621504306793,
-   "adj": "hfq"
-  },
-  {
    "id": "lnmu6ewvlo",
    "start_date": "2022-03-04",
    "start_price": 127.81731159605933,
@@ -568,6 +560,16 @@
    "start_price": 1756.8433212152695,
    "end_date": "2026-05-21",
    "end_price": 1920.017915511169,
+   "adj": "hfq"
+  }
+ ],
+ "002202.SZ": [
+  {
+   "id": "lnmv83ktpc",
+   "start_date": "2015-06-30",
+   "start_price": 81.69423152435536,
+   "end_date": "2015-12-04",
+   "end_price": 82.42168380917478,
    "adj": "hfq"
   }
  ]

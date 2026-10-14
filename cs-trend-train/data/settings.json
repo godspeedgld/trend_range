@@ -5,8 +5,9 @@
  "show_trades": true,
  "future_risk_amount": 10000,
  "indicators": [
-  "ema_gap_10w_compress",
-  "efficiency_7w_confirm_volume",
-  "trend_strength_7w_confirm_volume"
+  "dual_ema_gap_10w_compress__1d",
+  "breakout_10w_confirm_volume__1d",
+  "volume_ratio_5w_rank__1d",
+  "range_ratio_10w_rank__1d"
  ]
 }
