@@ -480,12 +480,16 @@ def ind_value(symbol: str, ids: list, d: str) -> list[dict]:
                         f"AND date>=CAST(? AS DATE) - INTERVAL {lb} DAY AND date<=CAST(? AS DATE) "
                         "ORDER BY date DESC LIMIT 1",
                         [symbol, dd, dd]).fetchone()
-                if row and row[1] is not None and not pd.isna(row[1]):
+                # ★ np.isfinite 同时挡 NaN 和 ±inf（pd.isna(inf)=False —— inf 混进 JSON
+                #   会让 allow_nan=False 的 _send 抛异常、杀掉连接 = 副图空白）
+                if row and row[1] is not None and np.isfinite(row[1]):
                     val, as_of = round(float(row[1]), 4), str(row[0])[:10]
             finally:
                 con.close()
+        m = float(r.get("dis_em") or 1)          # ★ 显示倍率 dis_em（不改存储；形态四件套 ×100）
         out.append({"id": cid, "name": r["name"], "freq": r["freq"],
-                    "value": val, "as_of": as_of, "threshold": r.get("threshold")})
+                    "value": (round(val * m, 4) if val is not None else None),
+                    "as_of": as_of, "threshold": r.get("threshold")})
     return out
 
 
@@ -501,6 +505,46 @@ def _ind_base_sql(r: dict, dd: str) -> str:
     return (f"WITH t AS (SELECT instrument AS symbol, name, date, ({r['expr']}) AS v "
             f"FROM stock_bar1d WHERE date>=DATE '{dd}' - INTERVAL {lb} DAY AND date<=DATE '{dd}') "
             f"SELECT symbol, name, v FROM t WHERE date=DATE '{dd}' AND v IS NOT NULL")
+
+
+def ind_series(symbol: str, cid: str) -> dict:
+    """某标的的**整条**指标序列（date→value），供 K 线副图画线。
+
+    与 ind_value 的区别：那个只取指定日期的**一个值**（含防前视），这个取**全历史**给图上画曲线。
+    三种来源（stock_bar1d 现算 / v_factor_1w / v_factor_1d）都支持，靠 catalog 的 table 字段分派。
+    """
+    r = _ind_cat().get(cid)
+    if not r or r.get("status") != "ok":
+        return {"err": f"未知或未建指标: {cid}"}
+    con = _ind_duck()
+    try:
+        if r.get("table"):
+            rows = con.execute(f'SELECT date, "{r["column"]}" FROM {r["table"]} '
+                               "WHERE instrument=? ORDER BY date", [symbol]).fetchall()
+        else:
+            rows = con.execute(f"SELECT date, ({r['expr']}) AS v FROM stock_bar1d "
+                               "WHERE instrument=? ORDER BY date", [symbol]).fetchall()
+    finally:
+        con.close()
+    em, clip = r.get("dis_em"), r.get("disp_clip")
+    m = float(em) if (em is not None and np.isfinite(em)) else 1.0
+    # ★ 守卫必须 isfinite：`float(nan) if nan else None` 不会兜底（nan 是 truthy）——
+    #   曾让 c=nan 把整个序列毒成 NaN（JSON allow_nan=False 崩、副图空白）
+    c = float(clip) if (clip is not None and np.isfinite(clip)) else None
+    data = {}
+    for d, v in rows:
+        if v is None:
+            continue
+        try:
+            if not np.isfinite(v):           # ★ 挡 NaN 和 ±inf（inf 会让 JSON 序列化崩）
+                continue
+        except (TypeError, ValueError):
+            continue
+        x = float(v) * m
+        if c is not None:
+            x = max(-c, min(c, x))
+        data[str(d)[:10]] = round(x, 6)
+    return {"id": cid, "name": r["name"], "freq": r["freq"], "data": data}
 
 
 def ind_rank(cid: str, d: str, order: str = "desc", limit: int = 5) -> dict:
@@ -524,8 +568,11 @@ def ind_rank(cid: str, d: str, order: str = "desc", limit: int = 5) -> dict:
                  "row_number() OVER (ORDER BY v DESC) rd, "
                  "row_number() OVER (ORDER BY v ASC) ra FROM b")
             desc, asc = [], []
+            m = float(r.get("dis_em") or 1)
             for sym, nm, v, rd, ra in con.execute(q).fetchall():
-                row = {"symbol": sym, "name": nm, "value": round(float(v), 4)}
+                if not np.isfinite(v):
+                    continue
+                row = {"symbol": sym, "name": nm, "value": round(float(v) * m, 4)}
                 if rd <= n:
                     desc.append({**row, "rank": rd})
                 if ra <= n:
@@ -536,9 +583,13 @@ def ind_rank(cid: str, d: str, order: str = "desc", limit: int = 5) -> dict:
             return {**out, "rows_desc": desc, "rows_asc": asc}
         direction = "ASC" if order == "asc" else "DESC"
         rows = []
-        for i, (sym, nm, v) in enumerate(con.execute(
-                f"{_ind_base_sql(r, dd)} ORDER BY v {direction} NULLS LAST LIMIT {n}").fetchall(), 1):
-            rows.append({"symbol": sym, "name": nm, "value": round(float(v), 4), "rank": i})
+        m = float(r.get("dis_em") or 1)
+        for sym, nm, v in con.execute(
+                f"{_ind_base_sql(r, dd)} ORDER BY v {direction} NULLS LAST LIMIT {n}").fetchall():
+            if not np.isfinite(v):
+                continue
+            rows.append({"symbol": sym, "name": nm, "value": round(float(v) * m, 4),
+                         "rank": len(rows) + 1})
         return {**out, "rows": rows}
     finally:
         con.close()
@@ -891,6 +942,9 @@ class H(BaseHTTPRequestHandler):
             ids = [x for x in (q.get("ids") or "").split(",") if x]
             self._send(200, ind_value(q.get("symbol", ""), ids, q.get("date", "latest"))
                        if src == "stock" else [])
+        elif u.path == "/api/ind/series":
+            self._send(200, ind_series(q.get("symbol", ""), q.get("id", ""))
+                       if src == "stock" else {"data": {}})
         elif u.path == "/api/ind/rank":
             r = (ind_rank(q.get("id", ""), q.get("date", "latest"),
                           q.get("order", "desc"), int(q.get("limit", 30) or 30))

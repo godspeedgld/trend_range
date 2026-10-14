@@ -73,7 +73,11 @@ def _tbl(lib: str) -> str:
 
 def _view() -> str:
     return f"v_factor_{FREQ}"
-EXPECT = {"dir": 296, "volstat": 216}
+EXPECT = {"dir": 296, "volstat": 216, "ext": 288}
+# ★ 扩展因子（2026-10-14）：库 factor.py 实现了 33 个 base，现成 512 个 SPEC 只用了 21 个；
+#   剩下 12 个（上影/下影/日内/跳空/振幅/ATR/波动/RSI/KD/回撤…）代码在、没因子。
+#   SPEC 由 build_factor_ext_specs.py 生成（同命名网格），计算**复用同一个 factor.py**。
+EXT_SPECS = ROOT / "factor_specs_ext.json"      # ROOT 在本文件更早定义
 START = "2015-01-01"
 END = None                    # None = 库内最新
 FLUSH = 400                   # 每 N 只股落一次盘
@@ -115,7 +119,14 @@ def _load_module(path: str):
 
 # ═══════════════════ ① 库 SPEC ═══════════════════
 def load_specs(lib: str) -> list[dict]:
-    """读该库每个因子目录的 SPEC（base/transform/params）——只读元数据，不跑计算。"""
+    """读该库每个因子目录的 SPEC（base/transform/params）——只读元数据，不跑计算。
+
+    lib="ext" → 读 `factor_specs_ext.json`（库里没出厂的 12 个 base，见文件头）。
+    """
+    if lib == "ext":
+        specs = json.loads(EXT_SPECS.read_text(encoding="utf-8"))["specs"]
+        assert len(specs) == EXPECT["ext"], f"ext SPEC 数 {len(specs)} ≠ {EXPECT['ext']}"
+        return specs
     specs = []
     for d in sorted(LIBS[lib].glob("R*")):
         fp = d / "scripts" / "factor.py"
@@ -349,7 +360,7 @@ def update_meta(infos: list[dict]) -> None:
 # ═══════════════════ main ═══════════════════
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--lib", default="both", choices=["dir", "volstat", "both"])
+    ap.add_argument("--lib", default="both", choices=["dir", "volstat", "both", "ext"])
     ap.add_argument("--freq", default="1w", choices=["1w", "1d"],
                     help="1w=周频快照（默认，原行为）；1d=日频（全部日线行）")
     ap.add_argument("--symbols", type=int, default=0, help="只取前 N 只（冒烟用）")

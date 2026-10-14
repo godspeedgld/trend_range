@@ -277,6 +277,10 @@
       <select id="imCat"><option value="">分类:全部</option></select>
       <input id="imQ" placeholder="搜索 名称/公式/解释/用途" style="flex:1;min-width:150px">
     </div>
+    <div style="padding:6px 10px;border-bottom:1px solid #3a3f4b;background:#1b1e24">
+      <div style="color:#9aa3b2;font-size:11px;margin-bottom:3px">已选（点 × 取消选取）</div>
+      <div id="imPicked" style="display:flex;flex-wrap:wrap;gap:4px;max-height:76px;overflow:auto"></div>
+    </div>
     <div id="imList" style="overflow:auto;flex:1;padding:4px 10px"></div>
     <div style="padding:8px 10px;display:flex;gap:8px;align-items:center;border-top:1px solid #3a3f4b">
       <span id="imCount" style="color:#9aa3b2">已选 0 个</span>
@@ -451,7 +455,7 @@ async function loadAll(){
   let i = d1ok ? allBars.findIndex(b => b.date > d1raw) : -1;
   endIdx = Math.max(1, i === -1 ? allBars.length : i);
   newTrade();                              // 切标的 → 面板回到「新建」并刷新默认开仓日
-  refresh(); renderOverlays(); indPanelOn() && indRefresh();
+  refresh(); renderOverlays(); indPanelOn() && indRefresh(); indApplyShown();
   status(`${symName} · 视图截至 ${allBars[endIdx-1].date}（库内共 ${allBars.length} 根，至 ${allBars[allBars.length-1].date}）`);
   refreshMacroIfOpen();
 }
@@ -1130,9 +1134,81 @@ async function indCatalog(force){
 const indNameOf = id => (indCat || []).find(r => r.id === id)?.name || id;
 
 function indChips(){
-  $("#indChips").innerHTML = indSel.map(id =>
-    `<span style="background:#2e323c;border:1px solid #3a3f4b;border-radius:10px;
-      padding:1px 8px;font-size:12px">${indNameOf(id)}</span>`).join("");
+  // chip 上两个动作：◉/○ = 在该因子副图里**显示/隐藏**；× = 移除该指标
+  $("#indChips").innerHTML = indSel.map(id => {
+    const on = indShown.has(id);
+    return `<span class="chip" data-id="${id}" style="background:#2e323c;border:1px solid #3a3f4b;
+      border-radius:10px;padding:1px 8px;font-size:12px">
+      <b class="chipeye" style="color:${on ? "#e8c35a" : "#7a8494"};cursor:pointer"
+         title="${on ? "隐藏" : "在副图显示"}该因子">${on ? "◉" : "○"}</b>
+      ${indNameOf(id)}
+      <b class="chipx" style="color:#9aa3b2;cursor:pointer" title="移除该指标">×</b></span>`;
+  }).join("");
+}
+
+// ── ★ 因子副图（2026-10-14）：所有"已显示"的因子画在**同一个副图**里，默认折线 ──
+const indShown = new Set();          // 正在副图显示的因子 id
+const IND_SERIES = {};               // id → {date: value}（当前标的的整条序列）
+// （曾试过"所有因子共用一个副图"：不传 paneId 才是**每因子一个副图**，各自独立 Y 轴 —— 见 README 说明）
+
+function indRegIndicator(){
+  // v10 契约：calc(dataList, indicator) 返回**按 figure key 索引的对象数组**
+  klinecharts.registerIndicator({
+    name: "FACTOR", shortName: "因子", series: "normal", precision: 4,
+    figures: [{ key: "v", title: "值: ", type: "line" }],
+    calc: (dataList, indicator) => {
+      const id = (indicator.calcParams || [])[0];
+      return dataList.map(b => {
+        const raw = b["f_" + id];
+        return { v: (raw === undefined || raw === null || raw === "") ? null : Number(raw) };
+      });
+    },
+  });
+}
+
+function indAttachSeries(id){
+  const m = IND_SERIES[id] || {};
+  allBars.forEach(b => { b["f_" + id] = (m[b.date] === undefined ? null : m[b.date]); });
+}
+
+async function indToggleShow(id){
+  if (indShown.has(id)) {                              // 隐藏：只摘掉这一个因子
+    indShown.delete(id);
+    chart.removeIndicator({ id: "f_" + id });
+  } else {                                             // 显示：拉整条序列 → 挂到 bar 上 → 建指标
+    if (!IND_SERIES[id]) {
+      const r = await api(`/api/ind/series?symbol=${symbol}&id=${id}`);
+      IND_SERIES[id] = r.data || {};
+    }
+    indAttachSeries(id);
+    indShown.add(id);
+    refresh();                                          // 让 getBars 重新喂（含新字段）
+    chart.createIndicator({ name: "FACTOR", id: "f_" + id, calcParams: [id] });
+  }
+  indChips();
+}
+
+// 换标的后：已显示的因子要重拉序列并重建副图
+async function indApplyShown(){
+  if (!indShown.size) return;
+  for (const id of indShown) chart.removeIndicator({ id: "f_" + id });   // 先摘掉旧的
+  for (const id of indShown) {
+    const r = await api(`/api/ind/series?symbol=${symbol}&id=${id}`);
+    IND_SERIES[id] = r.data || {};
+    indAttachSeries(id);
+  }
+  refresh();
+  for (const id of indShown)
+    chart.createIndicator({ name: "FACTOR", id: "f_" + id, calcParams: [id] });
+}
+async function indRemove(id){
+  indSel = indSel.filter(x => x !== id);
+  if (indShown.has(id)) {                       // ★ 正在副图显示的，一并摘掉
+    indShown.delete(id);
+    try { chart.removeIndicator({ id: "f_" + id }); } catch(_) {}
+  }
+  try { await post("/api/settings", { indicators: indSel }); } catch(_) {}
+  indRefresh();
 }
 
 async function indRefresh(){
@@ -1174,8 +1250,18 @@ async function indRefresh(){
 }
 
 // 选取弹窗
+let imSel = [];                    // ★ 弹窗内的**待定选择**（数组保序）；确定时才提交给 indSel
 async function indModalOpen(){
   const list = await indCatalog();
+  imSel = indSel.slice();          // 以当前已选为起点（不再"清空重来"）
+  const pickedArea = () => {
+    $("#imPicked").innerHTML = imSel.length
+      ? imSel.map(id => `<span class="impick" data-id="${id}"
+            style="background:#2e323c;border:1px solid #3a3f4b;border-radius:10px;
+                   padding:1px 8px;font-size:12px;cursor:pointer"
+            title="点击取消选取">${indNameOf(id)} ×</span>`).join("")
+      : '<span style="color:#7a8494;font-size:12px">（还没选）</span>';
+  };
   const render = () => {
     const q = $("#imQ").value.trim(), typ = $("#imType").value,
           fq = $("#imFreq").value, ct = $("#imCat").value;
@@ -1185,7 +1271,7 @@ async function indModalOpen(){
           .some(x => (x||"").toLowerCase().includes(q.toLowerCase()))));
     $("#imList").innerHTML = rows.map(r => `
       <label style="display:block;padding:6px 8px;border-bottom:1px solid #2b2f38;${r.status!=="ok"?"opacity:.45":""}">
-        <div><input type="checkbox" class="imCk" data-id="${r.id}" ${indSel.includes(r.id)?"checked":""}
+        <div><input type="checkbox" class="imCk" data-id="${r.id}" ${imSel.includes(r.id)?"checked":""}
           ${r.status!=="ok"?"disabled":""}> <b>${r.name}</b>
           <span style="color:#9aa3b2;font-size:11px">[${r.category}·${r.freq}频·${r.type}
           ${r.status!=="ok"?"·"+r.status:""}]</span></div>
@@ -1193,15 +1279,30 @@ async function indModalOpen(){
         <div style="font-size:12px">解释：${r.explain}</div>
         <div style="font-size:12px">用途：${r.purpose}</div>
       </label>`).join("") || '<div style="padding:20px;color:#9aa3b2">无匹配指标</div>';
-    $("#imCount").textContent = `已选 ${indSel.length} 个（清单 ${rows.length} / ${list.length}）`;
+    pickedArea();
+    $("#imCount").textContent = `已选 ${imSel.length} 个（清单 ${rows.length} / ${list.length}）`;
   };
   render();
   ["imType","imFreq","imCat"].forEach(x => $("#"+x).onchange = render);
   $("#imQ").oninput = render;
+  // ★ 勾选/取消：实时进 imSel（不再等"确定"，也不会被筛选重渲染冲掉）
+  $("#imList").onchange = e => {
+    const id = e.target.dataset.id; if (!id) return;
+    if (e.target.checked) { if (!imSel.includes(id)) imSel.push(id); }
+    else imSel = imSel.filter(x => x !== id);
+    pickedArea();
+    $("#imCount").textContent = `已选 ${imSel.length} 个`;
+  };
+  // ★ 已选区点 × → 取消选取（并同步勾掉清单里的框）
+  $("#imPicked").onclick = e => {
+    const t = e.target.closest(".impick"); if (!t) return;
+    imSel = imSel.filter(x => x !== t.dataset.id);
+    render();
+  };
   $("#indModal").style.display = "block";
   $("#imCancel").onclick = () => $("#indModal").style.display = "none";
   $("#imOk").onclick = async () => {
-    indSel = [...document.querySelectorAll(".imCk:checked")].map(c => c.dataset.id);
+    indSel = imSel.slice();                      // ★ 提交待定选择（保序），不再整体覆盖
     try { await post("/api/settings", { indicators: indSel }); } catch(_) {}
     $("#indModal").style.display = "none";
     indRefresh();
@@ -1210,6 +1311,7 @@ async function indModalOpen(){
 
 function indInit(){
   if (SOURCE === "future"){ $("#indToggle").style.display = "none"; return; }
+  indRegIndicator();
   if (settings.indicators && settings.indicators.length) indSel = settings.indicators.slice();
   $("#indToggle").onclick = () => {
     const w = $("#indWin");
@@ -1222,6 +1324,11 @@ function indInit(){
   };
   $("#indClose").onclick = () => $("#indWin").style.display = "none";
   $("#indPick").onclick = indModalOpen;
+  $("#indChips").onclick = e => {                 // ◉ → 显示/隐藏副图；× → 移除
+    const t = e.target.closest(".chip"); if (!t) return;
+    if (e.target.closest(".chipeye")) indToggleShow(t.dataset.id);
+    else if (e.target.closest(".chipx")) indRemove(t.dataset.id);
+  };
   $("#indLatest").onchange = e => { indLatest = e.target.checked; indRefresh(); };
   // 3.2 加载：换标的，开始日期不变，结束=最新（全揭示）
   $("#indRank").addEventListener("click", e => {
