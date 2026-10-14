@@ -273,7 +273,9 @@ async function symSearch(){
   box.innerHTML = r.length
     ? r.map(x => `<div data-s="${x.symbol}">${x.symbol} ${x.name||""} <span class="n">${x.n} 笔</span>`
         + (picked.includes(x.symbol) ? ' <span class="n">已选</span>' : "") + "</div>").join("")
-    : `<div class="none">无匹配标的（只有有交易记录的标的才可筛选）</div>`;
+    : (Object.keys(RAW).length
+        ? `<div class="none">无匹配标的（只有有交易记录的标的才可筛选）</div>`
+        : `<div class="none">尚无${IS_FUT ? "期货" : "股票"}交易记录 —— 先在主图提交一笔交易再看统计</div>`);
   box.style.display = r.length ? "block" : "none";
 }
 $("#fSymQ").addEventListener("input", () => { clearTimeout(symTimer); symTimer = setTimeout(symSearch, 200); });
@@ -323,7 +325,10 @@ const COLS = [
   ["entry_source","开仓价来源","l"],
   ["buy_price","开仓价"], ["stop_price","止损"], ["tp_price","止盈"],
   ["shares", IS_FUT ? "手数" : "股数"],
-  ...(IS_FUT ? [["multiplier","乘数"], ["margin_used","保证金(元)"]] : []),
+  ...(IS_FUT ? [["multiplier","乘数"], ["margin_used","保证金(元)"],
+                ["entry_dominant","开仓合约","l"], ["real_buy_price","真实开仓价"],
+                ["real_exit_price","真实平仓价"], ["exit_dominant","平仓合约","l"],
+                ["roll_pts","换月价差"]] : []),
   ["notional", IS_FUT ? "名义本金" : "开仓金额"],
   ["exit_date","平仓日","l"], ["exit_price","平仓价"], ["exit_reason","平仓原因","l"],
   ["holding_days","持仓天数"], ["pnl","盈亏(元)"], ["ret_pct","收益率%"], ["R","R"],
@@ -354,6 +359,7 @@ function cell(r, k){
       : `<span class="${r.R>0?"pos":(r.R<0?"neg":"")}">${fmt(r.R)}</span>`;
     case "notional": case "shares": case "holding_days": case "buy_price":
     case "multiplier": case "margin_used":
+    case "real_buy_price": case "real_exit_price": case "roll_pts":
     case "stop_price": case "tp_price": case "exit_price": return num(r[k]);
     case "_tag":
       if (r.status === "pending") return '<span class="tag pend">持仓中</span>';

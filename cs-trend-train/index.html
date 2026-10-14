@@ -337,7 +337,11 @@ function initChart(){
         { title:"close",  value:"{close}"  },
         { title:"volume", value:"{volume}" },
         { title:"成交额(亿)：", value:"{turnover}" },
-        { title:"收益率：",     value:"{change}" }
+        { title:"收益率：",     value:"{change}" },
+        ...(SOURCE === "future" ? [
+          { title:"真实价：",   value:"{raw_close}" },
+          { title:"主力合约：", value:"{dominant}" }
+        ] : [])
       ] } }
     },
     grid: { horizontal:{show:true,color:"#26292f",style:"dashed",dashedValue:[2,3]},
@@ -725,8 +729,9 @@ async function previewTrade(){
       + `开仓 <b>${fmt(r.buy_price)}</b>（${r.entry_source==="bar_open"?"当日开盘":"手填"}）· `
       + `每股风险 <b>${fmt(r.risk_per_share)}</b>（${fmt(r.risk_pct*100)}%）· `
       + (SOURCE === "future"
-          ? `可开 <b>${r.shares}</b> 手（×${r.multiplier}）· 名义 ${wan(r.notional)} · `
-            + `占用保证金 ${wan(r.margin_used)}（费率 ${fmt(r.margin_rate,2)}%）· 止损亏损 ${fmt(r.risk_amount,0)} 元`
+          ? `可开 <b>${r.shares}</b> 手（×${r.multiplier}）· 真实价 ${fmt(r.real_buy_price,1)}`
+            + `（${r.entry_dominant || ""}）· 名义 ${wan(r.notional)} · `
+            + `保证金 ${wan(r.margin_used)}（${fmt(r.margin_rate,2)}%）· 止损 ${fmt(r.risk_amount,0)} 元`
           : `可开 <b>${r.shares}</b> 股 · 开仓金额 ${wan(r.notional)} · 止损亏损 ${fmt(r.risk_amount,0)} 元`)
       + (r._duplicate ? `<br>⚠ ${r.entry_date} 已有开仓记录，保存时会问是否覆盖` : "");
   } catch (e) {
@@ -767,7 +772,9 @@ $("#tSave").onclick = async () => {
     editingId = r.id;
     $("#tSave").textContent = "修改";
     $("#tTitle").textContent = "修改交易";
-    toast(`已${r._action==="update"?"更新":"保存"}：${r.direction==="short"?"开空":"开仓"} ${fmt(r.buy_price)} × ${r.shares} ${UNIT} · `
+    toast(`已${r._action==="update"?"更新":"保存"}：${r.direction==="short"?"开空":"开仓"} `
+      + (SOURCE === "future" ? `${fmt(r.real_buy_price,1)}(${r.entry_dominant||""})` : `${fmt(r.buy_price)}`)
+      + ` × ${r.shares} ${UNIT} · `
           + (r.exit_date ? `${r.exit_reason} ${fmt(r.exit_price)} @ ${r.exit_date}` : "持仓中"));
     renderOverlays();
   } catch (e) {

@@ -150,7 +150,7 @@ def _load_klines_future(symbol: str, start: str, end: str) -> list[dict]:
     """
     con = duckdb.connect(str(PD_WH), read_only=True)
     df = con.execute(
-        "SELECT date, open, high, low, close, volume, amount, adj_factor "
+        "SELECT date, open, high, low, close, volume, amount, adj_factor, dominant_id "
         "FROM future_daily_post WHERE symbol=? AND date>=? AND date<=? ORDER BY date",
         [symbol, start, end]).df()
     con.close()
@@ -174,8 +174,37 @@ def _load_klines_future(symbol: str, start: str, end: str) -> list[dict]:
              "change": (None if pd.isna(r.change_ratio) else round(r.change_ratio * 100, 2)),
              "amount": (None if pd.isna(r.amount) else round(r.amount / 1e8, 2)),
              "atr14": (None if pd.isna(r.atr14) else round(r.atr14, 4)),
-             "raw_close": round(r.raw, 3), "date": r.date.strftime("%Y-%m-%d")}
+             "raw_close": round(r.raw, 3), "date": r.date.strftime("%Y-%m-%d"),
+             # ★ 真实价映射（2026-10-14）：adjf=当日复权因子（真实价=复权价÷adjf）；
+             #   dominant=当日主力合约号（如 RB2410）。股票 bars 无这两个键。
+             "adjf": round(float(r.adj_factor), 6),
+             "dominant": r.dominant_id}
             for r, t in zip(df.itertuples(), df["date"])]
+
+
+def _fut_pts_real(kl: list, i0: int, i1: int, p_in: float, p_out: float) -> tuple:
+    """★ 换月价差折算（用户 2026-10-14 指定口径）。返回 (seg_sum, roll_pts)，**真实价格**口径。
+
+    真实点差 = Σ各段 (段末复权价 − 段首复权价) ÷ 段因子   —— 段 = 相邻两次换月之间，
+    等价于用户公式：naive(平真实 − 开真实) − Σ(远月换月价 − 近月换月价)。  ← 2026-10-14 用户勘误：无内层负号
+    实测 RB 2024-08-05→11-06（跨 9-02 换月）：-145 + 169 = +24 点（naive 是 35.28 复权点 ✗）。
+    p_in/p_out = 实际成交的**复权**价（i0/i1 两端），段边界用当日 close。
+    """
+    bs = [i0]
+    for k in range(i0 + 1, i1 + 1):        # 换月日 = dominant 变化那天（该日复权收益=0）
+        if kl[k].get("dominant") and kl[k - 1].get("dominant")                 and kl[k]["dominant"] != kl[k - 1]["dominant"]:
+            bs.append(k)
+    if bs[-1] != i1:
+        bs.append(i1)
+    seg = 0.0
+    for a, b in zip(bs[:-1], bs[1:]):
+        f = kl[a].get("adjf") or 1.0
+        pa = p_in if a == i0 else kl[a]["close"]
+        pb = p_out if b == i1 else kl[b]["close"]
+        seg += (pb - pa) / f
+    naive = (p_out / (kl[i1].get("adjf") or 1.0)
+             - p_in / (kl[i0].get("adjf") or 1.0))      # 平真实 − 开真实（用户例 = 120−100 = 20）
+    return seg, naive - seg
 
 
 def future_meta_of(symbol: str) -> tuple:
@@ -386,6 +415,7 @@ def auto_exit(symbol: str, rec: dict, source: str = "stock") -> dict:
         return rec
     stop, tp = rec["stop_price"], rec["tp_price"]
     short = rec.get("direction") == "short"
+    i_exit = None
     for i in range(i0, len(kl)):
         b = kl[i]
         if (b["high"] >= stop) if short else (b["low"] <= stop):
@@ -393,14 +423,28 @@ def auto_exit(symbol: str, rec: dict, source: str = "stock") -> dict:
             rec.update(exit_date=b["date"],
                        exit_price=max(stop, b["open"]) if short else min(stop, b["open"]),
                        exit_reason="止损", holding_days=i - i0 + 1)
-            return rec
+            i_exit = i
+            break
         if (b["low"] <= tp) if short else (b["high"] >= tp):
             rec.update(exit_date=b["date"],
                        exit_price=min(tp, b["open"]) if short else max(tp, b["open"]),
                        exit_reason="止盈", holding_days=i - i0 + 1)
-            return rec
-    # 两根线都没打到 → 一直持仓（统计里单列，不计入胜率/盈亏比）
-    rec.update(exit_date=None, exit_price=None, exit_reason="pending", holding_days=None)
+            i_exit = i
+            break
+    if i_exit is None:
+        # 两根线都没打到 → 一直持仓（统计里单列，不计入胜率/盈亏比）
+        rec.update(exit_date=None, exit_price=None, exit_reason="pending", holding_days=None)
+        return rec
+    if source == "future":
+        # ★ 真实映射 + 换月价差折算（2026-10-14）：真实平仓价 = 复权价 ÷ 当日因子；
+        #   pts_real = 分段真实点差（已扣 Σ(远月换月价−近月换月价)，含方向符号）；
+        #   roll_pts = naive(平真实−开真实) − pts_real = 换月总共吃掉的价差（正=逆风）。
+        f1 = kl[i_exit].get("adjf") or 1.0
+        seg, roll = _fut_pts_real(kl, i0, i_exit, rec["buy_price"], rec["exit_price"])
+        rec["real_exit_price"] = round(rec["exit_price"] / f1, 2)
+        rec["exit_dominant"] = kl[i_exit].get("dominant")
+        rec["roll_pts"] = round(roll, 2)
+        rec["pts_real"] = round(-seg if short else seg, 2)
     return rec
 
 
@@ -474,16 +518,20 @@ def build_trade(symbol: str, body: dict, settings: dict, source: str = "stock"):
     rps = abs(buy - stop)                     # 每单位风险（做多=买−止损，做空=止损−买，量纲同）
     mult, rate = 1, None
     if source == "future":
-        # ★ 期货：**手数 = floor(风险额度 / 每手风险)**，每手风险 = |买−止损| × 合约乘数
-        #   （与股票同一个"等额止损"思路，只是把"每股"换成"每手 × 乘数"）
+        # ★ 期货：**手数 = floor(风险额度 / 每手真实风险)**（2026-10-14 改真实价口径）
+        #   每手真实风险 = |真实买−真实止损| × 合约乘数；真实价 = 复权价 ÷ 开仓日因子。
+        #   （此前用复权价直算，会把当前 RB 的手数算少 ~1.47 倍、金额虚高 ~1.47 倍）
         mult, rate, _nm = future_meta_of(symbol)
         if not mult:
             return None, {"err": f"{symbol} 缺合约乘数/保证金率（品种表 future_meta 未收录），"
                                  f"无法反算手数 —— 补一行即可"}
-        lots = int(math.floor(risk / (rps * mult)))
+        f0 = bars[0].get("adjf") or 1.0
+        real_buy, real_stop, real_tp = buy / f0, stop / f0, tp / f0
+        rps_real = abs(real_buy - real_stop)
+        lots = int(math.floor(risk / (rps_real * mult)))
         if lots < 1:                          # 一手风险就超额度 → 保底 1 手，额度按实际计
             lots = 1
-            risk = round(rps * mult, 2)
+            risk = round(rps_real * mult, 2)
         shares = lots
     else:
         shares = int(math.floor(risk / rps / LOT) * LOT)   # 向下取整到整手（不向上，否则放大风险）
@@ -500,10 +548,14 @@ def build_trade(symbol: str, body: dict, settings: dict, source: str = "stock"):
            "adj": "hfq",                                   # 备注口径（见 README 已知限制）
            "score": score,                                 # 开仓评分（理由 60 + 各项 0-10）
            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-    if source == "future":                                 # ★ 期货：记乘数 / 保证金率 / 占用保证金
+    if source == "future":                                 # ★ 期货：乘数/费率/真实价/合约号/保证金(真实)
         rec["multiplier"] = mult
         rec["margin_rate"] = round(float(rate), 4)
-        rec["margin_used"] = round(shares * mult * buy * float(rate) / 100.0, 2)
+        rec["real_buy_price"] = round(real_buy, 2)
+        rec["real_stop_price"] = round(real_stop, 2)
+        rec["real_tp_price"] = round(real_tp, 2)
+        rec["entry_dominant"] = bars[0].get("dominant")
+        rec["margin_used"] = round(shares * mult * real_buy * float(rate) / 100.0, 2)
     return auto_exit(symbol, rec, source), None
 
 
@@ -559,21 +611,36 @@ def decorate(rec: dict) -> dict:
     shares = rec.get("shares")
     mult = rec.get("multiplier") or 1               # ★ 期货：合约乘数；股票 = 1
     out["multiplier"] = mult
+    if rec.get("source") == "future":               # ★ 期货改真实价口径（2026-10-14）
+        rb, rs = rec.get("real_buy_price"), rec.get("real_stop_price")
+        rps = abs(rb - rs) if (rb is not None and rs is not None) else None
+        buy_ref = rb if rb is not None else buy     # 百分比/名义的分母也用真实价
+    else:
+        buy_ref = buy
     out.update(risk_per_share=rps, risk_per_lot=(rps * mult if rps else None),
-               risk_pct=(rps / buy if rps and buy else None),
-               notional=(buy * shares * mult if buy and shares else None),
+               risk_pct=(rps / buy_ref if rps and buy_ref else None),
+               notional=(buy_ref * shares * mult if buy_ref and shares else None),
                margin_used=rec.get("margin_used"), margin_rate=rec.get("margin_rate"),
                ret_pct=None, R=None, pnl=None, is_fat_tail=False)
     if ex is not None and buy is not None:
-        out["ret_pct"] = (1 - ex / buy) * 100 if short else (ex / buy - 1) * 100
-        out["R"] = ((buy - ex) if short else (ex - buy)) / rps if rps else None
-        out["is_fat_tail"] = out["ret_pct"] >= FAT_TAIL_PCT
-        # 老记录没有 shares → pnl 留 None（反填止损额度会凭空造出从未发生过的仓位）
-        if shares:
-            # ★ ×mult：股票的"股数"在期货里是**手数**，每手 = 合约乘数 个价格单位
-            out["pnl"] = ((buy - ex) if short else (ex - buy)) * shares * mult
-        out["status"] = ("win" if (ex < buy if short else ex > buy)
-                         else "loss" if (ex > buy if short else ex < buy) else "flat")
+        pts_real = rec.get("pts_real")              # ★ 期货：出场时已按真实价+换月折算好的点差
+        if rec.get("source") == "future" and pts_real is not None:
+            out["ret_pct"] = pts_real / buy_ref * 100
+            out["R"] = pts_real / rps if rps else None
+            out["is_fat_tail"] = out["ret_pct"] >= FAT_TAIL_PCT
+            if shares:
+                out["pnl"] = pts_real * shares * mult      # 真实点差 × 手数 × 乘数（真钱）
+            out["status"] = "win" if pts_real > 0 else ("loss" if pts_real < 0 else "flat")
+        else:
+            out["ret_pct"] = (1 - ex / buy) * 100 if short else (ex / buy - 1) * 100
+            out["R"] = ((buy - ex) if short else (ex - buy)) / rps if rps else None
+            out["is_fat_tail"] = out["ret_pct"] >= FAT_TAIL_PCT
+            # 老记录没有 shares → pnl 留 None（反填止损额度会凭空造出从未发生过的仓位）
+            if shares:
+                # ★ ×mult：股票的"股数"在期货里是**手数**，每手 = 合约乘数 个价格单位
+                out["pnl"] = ((buy - ex) if short else (ex - buy)) * shares * mult
+            out["status"] = ("win" if (ex < buy if short else ex > buy)
+                             else "loss" if (ex > buy if short else ex < buy) else "flat")
     else:
         out["status"] = "pending"                 # 持仓中：不计入统计
     return out
