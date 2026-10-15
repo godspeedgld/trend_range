@@ -172,7 +172,7 @@ def main():
     print(f"\n随机对照分布: 中位 {rnd['final_nav'].median():.4f} / P95 {np.percentile(rnd['final_nav'],95):.4f}")
     print(f"真实闸门 {df.iloc[0]['final_nav']:.4f} 的分位: "
           f"{sps.percentileofscore(rnd['final_nav'], df.iloc[0]['final_nav'], kind='mean'):.0f}%")
-    ov = len(set(gate_weeks) & bear_gated)
+    ov = len(set(gate_weeks) & set(bear_gated))
     print(f"量能闸 {len(gate_weeks)} 周 ∩ 熊市闸 {len(bear_gated)} 周 = {ov} 周（重叠率 {ov/max(1,len(gate_weeks)):.0%}）")
 
 
