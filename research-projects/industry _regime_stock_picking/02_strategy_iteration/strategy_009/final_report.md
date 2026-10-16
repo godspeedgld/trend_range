@@ -165,5 +165,10 @@ nav **3.7601** / Sharpe **1.1473** / 回撤 −0.2170 —— **比真实规则�
 | `shared/_cache/industry_cluster_weekly_K*_complete_w*.parquet` | 标签缓存（本次生成 9 组） |
 | `shared/_cache/sig_weekly_cluster009_K7.parquet` / `meta_cluster009_K7.parquet` | 簇约束版全开表与元数据 |
 
+> ⚠ **与技能约定的偏差（明示）**：本迭代**未建** `backtest_strategy/` 与 `backtest_strategy_baseline/`
+> 两个目录——因为它是**被否**的迭代，没有"被采用的目标产物"需要交付运行副本；主矩阵（3×2）与四道对照
+> 的全部数字在 `matrix.csv` / `matrix_live.csv` / `ctrl_*.csv`（按 .gitignore **不入库**，
+> 可用 `python matrix_and_controls.py <mode>` 逐值复跑）。若要与其他迭代目录结构对齐，可后补。
+
 > 迭代铁律遵守说明：strategy_001~008 的全部产物**未做任何修改**；`shared/build_weekly_targets.py`
 > 等冻结件**零改动**（通过 monkeypatch 复用）；本迭代所有改动都是**新增文件**。
