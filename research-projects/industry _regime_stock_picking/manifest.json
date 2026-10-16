@@ -57,6 +57,16 @@
       "id": "analysis_011",
       "idea": "四因子分 regime 检验 + ★动量周头部预检(更新)：①动量周扛大旗=换手比+乖离MA20(跨regime稳)；②liq_amount动量周池内IC不显著(t−1.1)但**头部预检证砍掉它头部崩**(三因子−0.33%/周,对基线胜率34%)——正交分散≠IC,迭代五教训头部重演；③动量周翻方向(+1)IC全负；④**用户设想一漏斗(动量+1选10→拥挤−1选2)头部+0.11% vs 基线+0.56%(−0.43%/周)被否**——第一步买最强是亏损源(纯动量−0.11%),拥挤度过滤有效(+0.22pp)但救不回；⑤结论：动量周因子层所有改动方向头部全输四因子恒反转(第三次验证)⇒**因子层线关闭,存活方向=行业层009反向闸门**",
       "created_at": "2026-10-15"
+    },
+    {
+      "id": "analysis_016",
+      "idea": "★方向A（反转周在场率）落地检验=**清洁负结果**：① 机制假说成立——稳定性过滤要求「排序不变」，反转期定义就是「排序在重排」，动量周它是有效保护（名单变了 −0.268% vs 没变 +0.749%，差1.02pp）、反转周只是过度保守（挡掉的195周平均 **+0.411%** 正收益）；② **但不构成 alpha**：三条候选规则（≥1相同/≥2相同/≥2相同且不拥挤）在随机对照里落 **20~50 分位**（R3=中位，R2 35%/R4 20% 低于中位）⇒ 净值提升全是「更多暴露」的平凡效应；③ **五条规则无一守住风险调整**（Sharpe 全 < 基线 0.873，最好的 R3=0.713；R4 净值 3.19 反低于基线 3.60）——算术原因=新增周单周 Sharpe≈0.77 < 策略 0.87。⇒ **方向A 关闭，不建议立项 strategy_008**。★口径：新增「混合口径 nav_hyb」= 冻结引擎实际收益为基数、只替换新增周（扣清仓滞后残差）——**R0 自检逐值回到冻结基线 3.6001（差0.000%）**",
+      "created_at": "2026-10-16"
+    },
+    {
+      "id": "analysis_017",
+      "idea": "strategy_008 镜像闸门的**年度归因**（引擎口径 + 年块反事实，自检 3.6001/4.5663/4.5535 逐值）：**H1 成立、H2 被否** —— 被关的 23 个反转周在 **2017~2022 平均 +0.08%**（几乎为零、胜率 60%）= **白关**（只是损失复利路径），在 **2023~2026 平均 −1.03%**（胜率 38.5%）= 有效；而两段的**信号特征完全同档**（sc_max 4.30 vs 4.23、sc_mean 3.30 vs 3.46、T 水平、创业板牛市占比 70% vs 69%）⇒ **不是触发结构不同，是同样的信号、不同的结果（时变性）**。**规则方向两段都对**（保留组 +1.80% / +1.97%），失败只在被关组。**★不是 008 独有**：007 动量闸门被关周在 **2017 +1.23% / 2019 +2.25%** 也是正的（同样误关，被 2018/2022/2024 盖过）⇒ **「量能确认」类信号存在时变性**。**⇒ 阈值网格(todo#1)大概率救不了**（问题不在阈值刀尖），应转向闸门有效期或写明分段定位。★附带修正：final_report §5-② 初版年度表用了  两年窗口（如 2018 记 24.02%，实为 −2.45%），已按年内口径改正",
+      "created_at": "2026-10-16"
     }
   ],
   "strategy_iterations": [
@@ -181,6 +191,16 @@
       "n_trades": 4224,
       "metrics_source": "权重引擎 trades 口径（metrics_from_trades.csv）",
       "created_at": "2026-10-15"
+    },
+    {
+      "id": "strategy_008",
+      "idea": "★镜像闸门（承接 strategy_007）：在其两个 exposure 条件后追加「反转周 AND top3 的 sc_max>=3 → 空仓」，其余一字不动。机制=量能方向必须与价格方向一致（动量周买强需**有**量能；反转周买最弱行业需**缩量**，top3 内任一行业仍放量说明出清未完）。引擎口径 **4.5535x / 年化17.56% / 波动13.39% / Sharpe 1.2754 / 回撤−18.36% / 3,488笔** vs 007 的 4.5663x/17.60%/15.16%/1.1449/−22.52%/4,224笔 ⇒ **净值持平(−0.3%)，Sharpe +0.1305、回撤浅4.16pp、波动−1.77pp、成交−17.4%、费用−23.3%**。**三道对照全过**：①随机周空仓30种子→nav 与 Sharpe **均100分位**（随机关周的Sharpe中位仅1.0857 < 007 ⇒ 排除「少在场」）；②安慰剂反向（关sc_max最低23周）→3.3651/0.9782 远差于基线；③留一23次→**22/23次Sharpe仍>007**。自检：对照=007逐值回4.5663。⚠改善集中在2023~2025（2017~2022让出收益）；阈值sc_max>=3 为样本内选出（缓解：与 sc_mean>=2 同平台、>=4 回落，呈两档结构非单点）。方向A（反转周在场率）未并入（未过自身随机门槛90分位<P95，且属性质改变），留待 strategy_009",
+      "annual_return": 0.17556,
+      "sharpe": 1.2754,
+      "max_drawdown": -0.18357,
+      "n_trades": 3488,
+      "metrics_source": "metrics_from_trades.csv（引擎 trades 口径）",
+      "created_at": "2026-10-16"
     }
   ],
   "data_check": {
@@ -190,7 +210,7 @@
     "stock_bars": "stock_bar1d 3,474 只 / 828 万行 / 16 列",
     "backtest_window": "2016-12-23 ~ 2026-08-21"
   },
-  "status": "strategy_001 完成（2026-10-12 重建为**云端对齐口径**）—— 迭代一 = 高收益·高风险（收益↑ 但夏普↓/回撤↑）；旧口径的「被否」结论已修正",
+  "status": "strategy_008 完成（2026-10-16）：镜像闸门 = 风险侧改进（净值持平、Sharpe 1.1449→1.2754、回撤 −22.52%→−18.36%），三道对照全过。当前最优 = strategy_008；收益最优同前 = strategy_007（4.5663x）。2026-10-16 引擎级复核确认 strategy_007 坚固（阈值平台 + 非长假代理 + 留一）；方向A（反转周在场率）未过随机门槛，留待 strategy_009",
   "backtest_engine": ".claude/skills/skill-research-assistant/scripts/local_weight_backtest.py（权重引擎，对标 bigtrader handle_data_weight_based 三层：调仓模板/调仓周期/order_target_percent）。旧口径曾用 local_portfolio_backtest.py（开仓池/平仓池 5 接口），其产物已删",
   "backtest_command": "python .claude/skills/skill-research-assistant/scripts/local_weight_backtest.py 'research-projects/industry _regime_stock_picking' --market-data 'research-projects/industry _regime_stock_picking/shared/_cache/engine_market_weekly_indpre_rawpx.parquet' --targets 'research-projects/industry _regime_stock_picking/shared/_cache/targets_daily_regime_indpre.parquet' --output-dir 'research-projects/industry _regime_stock_picking/02_strategy_iteration/strategy_002/backtest_strategy'  （baseline 用同命令、--targets 换 targets_daily_baseline_indpre.parquet、输出换 strategy_002/backtest_strategy_baseline）",
   "known_caliber_gaps": [
