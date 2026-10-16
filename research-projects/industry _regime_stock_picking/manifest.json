@@ -216,6 +216,23 @@
       "n_trades": 3488,
       "metrics_source": "metrics_from_trades.csv（引擎 trades 口径）",
       "created_at": "2026-10-16"
+    },
+    {
+      "id": "strategy_009",
+      "idea": "★行业聚类「同簇替换」分散约束（承接 strategy_008；首个动「选哪 3 个行业」的迭代）：唯一改动=当本周 top3 三行业落在**同一个聚类簇**（K=7+余弦+全链+252 日滚动窗，逐周动态无前视）时，保留前两名、**末位换成簇外同键最优**行业；触发 47/494 周（9.5%），其余 447 周一字不动；选股因子/缓冲/权重/成本/007/008 闸门全不动。前置 analysis_020 预检 G0~G5 全过、方法复现原文 3/3。**★结论=被否，四重独立否证**：①**3×2 主矩阵每行都更差**——基线 3.6001→2.7789、007 4.5663→3.9285、**008 4.5535→3.6601（Sharpe 1.2754→1.1110、回撤 −18.36%→−21.75%、nav −0.89x）**，预登记判据（Sharpe>1.2754 且 DD 不浅于 −18.36%）两项全负；唯一正确方向=波动三行都略降（13.39→13.25），即「拆同质暴露」机制方向对但幅度太小；②**参数网格 K{5,6,7}×窗{126,252,504} 九组合无一在任一维度胜过 008**（最好 K=7/w504 也仅 Sharpe 1.2167/DD −28.8%）⇒ 排除「K 选错」，且不随触发面单调⇒连暴露效应都不是；③**随机替换臂 50 种子：真实落 6 分位**（nav 3.6601 vs 随机中位 3.8770/P95 4.1170；Sharpe 1.1110 vs 1.1798/1.2219）⇒ 94% 随机替换更好=**携带负信息**；④**留一 47 次：Sharpe 0/47 超过 008、nav 47/47 更低**⇒ 非单周驱动、损失分散（对照 008 的留一 22/23 通过）；⑤安慰剂反向（故意换成同簇 38 周）=3.7601/1.1473 **比真实规则还好** ⇒ 方向性彻底不成立。**★必报诊断**：exposure 差异 15~22 周（改 top3 ⇒ 打断稳定性过滤链 ⇒ 凭空多空仓周；稳定性过滤贡献 +1.23x）⇒ 事前标注的「与闸门非严格正交」被实证；**隔离版**（只在「原规则本会满仓」的周替换，触发降到 15 周）=3.8770/1.1798/−21.70%，**仍全面劣于 008 ⇒ 「分散本身」不产生收益**。**机制**：行业动量信息在「板块之间」（020-C 表：板块内 IC 仅全截面一半）⇒ 把腿挪到板块外=挪向信息更少一侧；触发面 77% 落反转侧（该侧已有 016/019 两轮阴性）。**分层关闭理由（勿合并成「聚类无用」）**：重排形态=IC 腰斩 / 分散约束=本迭代引擎全行变差 / 放宽在场=早已被 016+019 关闭。**保留中间件**：shared/build_cluster_labels.py + analysis_020/labels_K*.parquet（10 组逐周标签，可用于板块中性化等）。**★脚手架 bug 与修复**：maker 内 `orig = B.pick_industries` 在二次打补丁时会把「已打补丁的函数」当原始函数 ⇒ 约束层层叠加（grid 的 K=7 触发数 47→192、nav 2.63），四个对照模式全被污染；改为模块导入时固定 `ORIG_PICK`。主矩阵与自检未受影响（列1 走 A.build_sig_full 自绑原函数、列2 用首次构建的 parquet，三行自检逐值 ✓）。",
+      "verdict": "被否（预登记判据：Sharpe > 1.2754 且回撤不深于 −18.36% —— 两项全负）",
+      "annual_return": 0.148534,
+      "sharpe": 1.110995,
+      "max_drawdown": -0.217517,
+      "n_trades": 3336,
+      "baseline": {
+        "id": "strategy_008",
+        "nav": 4.5535,
+        "sharpe": 1.2754,
+        "max_drawdown": -0.18362
+      },
+      "metrics_source": "权重引擎 trades 口径（metrics_from_trades.csv；matrix.csv 主矩阵）",
+      "created_at": "2026-10-16"
     }
   ],
   "data_check": {
@@ -225,7 +242,7 @@
     "stock_bars": "stock_bar1d 3,474 只 / 828 万行 / 16 列",
     "backtest_window": "2016-12-23 ~ 2026-08-21"
   },
-  "status": "strategy_008 完成（2026-10-16）：镜像闸门 = 风险侧改进（净值持平、Sharpe 1.1449→1.2754、回撤 −22.52%→−18.36%），三道对照全过。当前最优 = strategy_008；收益最优同前 = strategy_007（4.5663x）。2026-10-16 引擎级复核确认 strategy_007 坚固（阈值平台 + 非长假代理 + 留一）。★2026-10-16 analysis_019 = **方向A（反转周在场率）引擎终审：清洁关闭，不立项 strategy_009** —— 50 种子随机对照 Sharpe 92 分位 < P95、留一仅 41/112 > 007、单关 2024-09-20 一周 nav −2.5x；且 A 与 B 不可叠加（008+A 逐值=007+A）。收益侧前沿点（B后叠A 6.0629/1.2344/−20.76%）仅记录不动用。",
+  "status": "★当前最优 = strategy_008（4.5535x / Sharpe 1.2754 / 回撤 −18.36%）；收益最优 = strategy_007（4.5663x）。2026-10-16 收工：analysis_019 = 方向A（反转周在场率）引擎终审**清洁关闭**；analysis_020 = 行业聚类（广发之十）可行性预检**事前门槛 G0~G5 全过**；**strategy_009（聚类「同簇替换」分散约束）= 被否（四重独立否证：3×2 主矩阵每行都差 / 网格 9 组合无一胜 / 随机臂 6 分位 / 留一 0-47，且安慰剂反向更优）⇒ 「用聚类重组行业」这条线关闭，但分层理由须分开记（重排=IC 腰斩、约束=引擎实测全负、放宽在场=016+019 已关）**。可复用中间件：shared/build_cluster_labels.py + analysis_020 的 10 组逐周标签。待办：008 阈值网格（017 已降级为低优先）、云端多段归因、拉 2015 前行业数据补齐拥挤度窗口（用户下周做）。",
   "backtest_engine": ".claude/skills/skill-research-assistant/scripts/local_weight_backtest.py（权重引擎，对标 bigtrader handle_data_weight_based 三层：调仓模板/调仓周期/order_target_percent）。旧口径曾用 local_portfolio_backtest.py（开仓池/平仓池 5 接口），其产物已删",
   "backtest_command": "python .claude/skills/skill-research-assistant/scripts/local_weight_backtest.py 'research-projects/industry _regime_stock_picking' --market-data 'research-projects/industry _regime_stock_picking/shared/_cache/engine_market_weekly_indpre_rawpx.parquet' --targets 'research-projects/industry _regime_stock_picking/shared/_cache/targets_daily_regime_indpre.parquet' --output-dir 'research-projects/industry _regime_stock_picking/02_strategy_iteration/strategy_002/backtest_strategy'  （baseline 用同命令、--targets 换 targets_daily_baseline_indpre.parquet、输出换 strategy_002/backtest_strategy_baseline）",
   "known_caliber_gaps": [
