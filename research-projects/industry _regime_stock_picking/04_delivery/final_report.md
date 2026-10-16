@@ -52,6 +52,7 @@ regime 该管「买哪个行业」，不该管「买什么样的股」。
 | `property_tier2_stabilization_caitong_20260915` | 地产空间分化（核心城市土储） | 财通证券 | 2026-09-15 | `research_report/industry_research/property_tier2_stabilization_caitong_20260915_main.md` | （背景，暂无引用） |
 | `earnings_prosperity_rotation_bohai_20210930` | 业绩景气度行业轮动 | 渤海证券 | 2021-09-30 | `research_report/earnings_prosperity_rotation_bohai_20210930_main.md` | （研报提取，暂无引用） |
 | `qrf_distribution_etf_rotation_yinhe_20251222` | QRF 分布预测 + 科技类 ETF 轮动 | 银河证券 | 2025-12-22 | `research_report/qrf_distribution_etf_rotation_yinhe_20251222_main.md` | （研报提取，暂无引用） |
+| `expectation_improvement_bottom_feature_guangfa_20220225` | 考虑预期改善及底部特征的行业轮动策略（重构量化行业轮动框架·微观篇） | 广发证券 | 2022-02-25 | `research_report/行业轮动框架-广发/expectation_improvement_bottom_feature_guangfa_20220225_main.md` | **analysis_018**（本地检验「长期底部 + 短期动量」两因子：**熊市不可行**、「长期底部」在牛市是减分项；另两个因子本地无数据未测） |
 
 > 另：strategy_001 承接**用户云端 BigQuant 策略**（非研报，无提取文件）。
 
