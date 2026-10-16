@@ -42,7 +42,18 @@
    "real_exit_price": 4018.0,
    "exit_dominant": "RB1305",
    "roll_pts": -0.0,
-   "pts_real": 230.0
+   "pts_real": 230.0,
+   "dyn_exit_date": "2013-02-18",
+   "dyn_exit_price": 3448.164613142104,
+   "dyn_exit_reason": "吊灯",
+   "dyn_holding_days": 38,
+   "dyn_init_line": 3120.3441,
+   "dyn_atr_missing": false,
+   "dyn_real_exit_price": 4061.56,
+   "dyn_exit_dominant": "RB1305",
+   "dyn_roll_pts": 0.0,
+   "dyn_pts_real": 273.56,
+   "dyn_tp": true
   },
   {
    "id": "c16d84bf",
@@ -85,7 +96,18 @@
    "real_exit_price": 3600.73,
    "exit_dominant": "RB1810",
    "roll_pts": -221.0,
-   "pts_real": -84.73
+   "pts_real": -84.73,
+   "dyn_exit_date": "2018-04-26",
+   "dyn_exit_price": 3070.0,
+   "dyn_exit_reason": "止损",
+   "dyn_holding_days": 32,
+   "dyn_init_line": 3110.7064,
+   "dyn_atr_missing": false,
+   "dyn_real_exit_price": 3600.73,
+   "dyn_exit_dominant": "RB1810",
+   "dyn_roll_pts": -221.0,
+   "dyn_pts_real": -84.73,
+   "dyn_tp": true
   },
   {
    "id": "d7d75d68",
@@ -129,7 +151,18 @@
    "real_exit_price": 3753.21,
    "exit_dominant": "RB1810",
    "roll_pts": 0.0,
-   "pts_real": -94.79
+   "pts_real": -94.79,
+   "dyn_exit_date": "2018-06-19",
+   "dyn_exit_price": 3200.0,
+   "dyn_exit_reason": "止损",
+   "dyn_holding_days": 4,
+   "dyn_init_line": 3149.4667,
+   "dyn_atr_missing": false,
+   "dyn_real_exit_price": 3753.21,
+   "dyn_exit_dominant": "RB1810",
+   "dyn_roll_pts": 0.0,
+   "dyn_pts_real": -94.79,
+   "dyn_tp": true
   }
  ]
 }

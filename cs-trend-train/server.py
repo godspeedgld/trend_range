@@ -6,6 +6,10 @@
   ③ 画线 / 交易记录 / 全局设置的读写（data/lines.json, data/trades.json, data/settings.json）
   ④ 交易出场判定：**只认用户提交的止损价 / 止盈价**，从开仓日当根起逐日判定，
      先止损后止盈（同日双触按止损计）；跳空越过触发价时按**当日开盘价**成交
+  ④' ★ 双止盈（2026-10-16 用户指定）：在静态口径之外**新增第二套、完全独立的动态止盈（吊灯）**——
+     共用同一个固定止损价，出场价 = 参考价 ∓ 2×ATR14（做多参考 = 开仓以来 max(每日最低价)，
+     做空参考 = 开仓以来 max(每日最高价)）；ATR 取 **t−1 日**防未来，固定止盈价**不参与**动态。
+     两套结果并行落库（`exit_*` / `dyn_*`），统计页可切换口径
   ⑤ 按「等额止损」反算仓位：止损额度 ÷ 每单位风险，向下取整到 1 手；
      一手止损超出额度时保底开一手，该笔止损额度按一手实际风险计（2026-10-09）
   ⑥ ★ 数据源开关（2026-10-13）：URL 带 `?src=future` 走**期货**（主力连续·后复权，读 pandadata 仓库的
@@ -20,7 +24,7 @@ import json
 import math
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -645,6 +649,141 @@ def auto_exit(symbol: str, rec: dict, source: str = "stock") -> dict:
     return rec
 
 
+# ══ ★ 动态止盈（吊灯）：第二套止盈口径，与静态 auto_exit **完全独立**（2026-10-16 用户指定）══
+#   静态 = 固定止损 + 固定止盈价；动态 = 固定止损 + 吊灯线。两套共用同一个止损价，
+#   固定止盈价**不参与**动态模拟（只作存档与静态口径用）。
+#   做多：参考 = 开仓以来「每日最低价」的最大值；出场价 = 参考 − K×ATR14；low ≤ 出场价 → 出场
+#   做空：参考 = 开仓以来「每日最高价」的最大值；出场价 = 参考 + K×ATR14；high ≥ 出场价 → 出场
+#   · ATR 防未来：判定第 t 根用 **atr14[t−1]**；该值为 None → **本根跳过吊灯判定**（绝不当 0）
+#   · 跳空取更差成交价、同日双触按止损 —— 全部沿用静态口径
+#   · ⚠ 做空口径的已知特征（用户确认接受）：参考价取「最高价的最大值」⇒ 出场线只随**新高上移**、
+#     不随下跌下移，等价于「入场后最高价 + K×ATR」的一条**固定线**，不具备盈利方向的跟踪性。
+#     若要改成跟踪式做空，只需把该分支的参考换成 min(low)（一行）。
+CHANDELIER_K = 2.0        # 出场价 = 参考价 ∓ K × ATR14
+DYN_WARM_DAYS = 400       # ★ 载入起点往前推的日历天数。必须预热：auto_exit 是「从开仓日载入」
+                          #   ⇒ i0=0，若照抄，吊灯要的 atr14[i0−1] 会变成 **Python 负索引**
+                          #   取到序列**末根**（未来 ATR，既算错又泄露未来）。
+# ★ 参照价口径（2026-10-16 加，供 A/B 对比；默认仍 = 用户当初的字面口径）：
+#   False = 「现行」= 用户 2026-10-16 字面口径
+#             做多 参考 = max(每日最低价) − K×ATR；做空 参考 = max(每日最高价) + K×ATR
+#             ⚠ 做空的这条线只随**新高上移**、不随下跌下移 ⇒ 不具跟踪性
+#   True  = 「标准吊灯」（教科书口径，多空对称、双向都跟踪）
+#             做多 参考 = max(每日最高价) − K×ATR；做空 参考 = min(每日最低价) + K×ATR
+#   —— 改这里（或调用时传 standard=）即可切换；切换后需 `python backfill_dyn.py --force` 重算历史
+CHANDELIER_STANDARD = False
+
+
+
+def _warm_start(entry_date: str, days: int = DYN_WARM_DAYS) -> str:
+    """吊灯判定的 K 线载入起点 = 开仓日往前 days 个日历日（凑够 ATR14 预热 + 开仓日前一根）。"""
+    try:
+        return (datetime.strptime(str(entry_date)[:10], "%Y-%m-%d")
+                - timedelta(days=days)).strftime("%Y-%m-%d")
+    except (ValueError, TypeError):
+        return str(entry_date)
+
+
+def chandelier_exit(symbol: str, rec: dict, source: str = "stock",
+                    standard: bool | None = None, k: float | None = None) -> dict:
+    """动态止盈（吊灯）—— 与 auto_exit 独立，返回 dyn_* 结果字段（不修改入参 rec）。
+
+    standard=None → 用模块开关 `CHANDELIER_STANDARD`；也可显式传 True/False 做 A/B 对比。
+    k=None → 用模块 `CHANDELIER_K`；显式传值可做倍数敏感性分析。
+    """
+    std = CHANDELIER_STANDARD if standard is None else bool(standard)
+    K = CHANDELIER_K if k is None else float(k)
+    pend = {"dyn_exit_date": None, "dyn_exit_price": None, "dyn_exit_reason": "pending",
+            "dyn_holding_days": None, "dyn_init_line": None, "dyn_atr_missing": False}
+    ed = str(rec.get("entry_date") or "")
+    if not ed:
+        return dict(pend)
+    kl = load_klines(symbol, _warm_start(ed), "2099-01-01", source)
+    i0 = next((i for i, b in enumerate(kl) if b["date"] == ed), None)
+    if i0 is None:
+        return dict(pend)
+    stop = rec.get("stop_price")
+    short = (rec.get("direction") or "long") == "short"      # 老记录无 direction → 做多
+    # 参照价取「最高价」还是「最低价」：做多 标准→high / 现行→low；做空 标准→low / 现行→high
+    use_high = (not short and std) or (short and not std)
+    agg_min = short and std                                  # 只有「标准做空」取 min(low)
+    # 入场时的吊灯初始出场价：**进循环前先算**（只用到开仓根与 t−1 的 ATR ⇒ 预览可显示，
+    # 且开仓日即被止损的笔也能拿到 —— 否则那条路径 break 在算线之前，会留下 None）
+    atr0 = kl[i0 - 1].get("atr14") if i0 > 0 else None
+    init_line = None
+    if atr0 is not None:
+        ref0 = kl[i0]["high"] if use_high else kl[i0]["low"]
+        init_line = ref0 + K * atr0 if short else ref0 - K * atr0
+    ref, atr_missing = None, False
+    i_exit = reason = px = None
+    for i in range(i0, len(kl)):
+        b = kl[i]
+        # ① 固定止损（与静态 auto_exit 同序同价；跳空取对己更差的成交价）
+        if (b["high"] >= stop) if short else (b["low"] <= stop):
+            i_exit, reason = i, "止损"
+            px = max(stop, b["open"]) if short else min(stop, b["open"])
+            break
+        # ② 吊灯：参考价随当日 K 线推进（含当日）
+        #    现行 = 做多 max(low) / 做空 max(high)；标准 = 做多 max(high) / 做空 min(low)
+        v = b["high"] if use_high else b["low"]
+        if ref is None:
+            ref = v
+        elif agg_min:
+            ref = min(ref, v)
+        else:
+            ref = max(ref, v)
+        atr_prev = kl[i - 1].get("atr14") if i > 0 else None   # ★ 防未来：用 t−1 的 ATR
+        if atr_prev is None:                                   # ATR 缺失 → 跳过本根（不当 0）
+            atr_missing = True
+            continue
+        line = ref + K * atr_prev if short else ref - K * atr_prev
+        if (b["high"] >= line) if short else (b["low"] <= line):
+            i_exit, reason = i, "吊灯"
+            px = max(line, b["open"]) if short else min(line, b["open"])
+            break
+    res = dict(pend, dyn_atr_missing=atr_missing,
+               dyn_init_line=(None if init_line is None else round(init_line, 4)))
+    if i_exit is None:
+        return res
+    # ★ 出场价**不四舍五入**：与静态 auto_exit 同款（它也是直接写 min/max 的原始 float）
+    #   ⇒「静态止损 ⇒ 动态止损的日期与价格逐值相等」成为可断言的硬不变量（跳空价也不丢精度）
+    res.update(dyn_exit_date=kl[i_exit]["date"], dyn_exit_price=px,
+               dyn_exit_reason=reason, dyn_holding_days=i_exit - i0 + 1)
+    if source == "future":                                     # 复用静态同款真实价 + 换月折算
+        f1 = kl[i_exit].get("adjf") or 1.0
+        seg, roll = _fut_pts_real(kl, i0, i_exit, rec["buy_price"], px)
+        res.update(dyn_real_exit_price=round(px / f1, 2),
+                   dyn_exit_dominant=kl[i_exit].get("dominant"),
+                   dyn_roll_pts=round(roll, 2),
+                   dyn_pts_real=round(-seg if short else seg, 2))
+    return res
+
+
+def apply_dyn(symbol: str, rec: dict, source: str = "stock", enabled: bool = True) -> dict:
+    """把动态口径结果合并进 rec（原地更新并返回）。enabled=False ⇒ dyn_* 逐字段镜像静态。"""
+    if enabled:
+        rec.update(chandelier_exit(symbol, rec, source))
+    else:
+        rec.update(dyn_exit_date=rec.get("exit_date"), dyn_exit_price=rec.get("exit_price"),
+                   dyn_exit_reason=rec.get("exit_reason"), dyn_holding_days=rec.get("holding_days"),
+                   dyn_init_line=None, dyn_atr_missing=False)
+        for k in ("real_exit_price", "exit_dominant", "roll_pts", "pts_real"):   # 仅期货会有
+            if k in rec:
+                rec["dyn_" + k] = rec[k]
+    rec["dyn_tp"] = bool(enabled)
+    return rec
+
+
+def _bool(v, default: bool = True) -> bool:
+    """表单布尔容错：True/1/"1"/"true"/"on"/"yes" → True；"" / None → default。"""
+    if v is None or v == "":
+        return default
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    return str(v).strip().lower() in ("1", "true", "on", "yes", "y", "checked")
+
+
 def build_score(direction: str, raw) -> tuple[dict | None, dict | None]:
     """校验并归一化开仓评分 → (score, None) 或 (None, 错误)。
     理由必须是对应方向的合法选项（突破/摸底 或 跌破/摸头 互斥，天然由单选保证）；
@@ -753,7 +892,10 @@ def build_trade(symbol: str, body: dict, settings: dict, source: str = "stock"):
         rec["real_tp_price"] = round(real_tp, 2)
         rec["entry_dominant"] = bars[0].get("dominant")
         rec["margin_used"] = round(shares * mult * real_buy * float(rate) / 100.0, 2)
-    return auto_exit(symbol, rec, source), None
+    rec = auto_exit(symbol, rec, source)
+    # ★ 双止盈（2026-10-16）：静态结果已就位 → 再跑**独立**的动态（吊灯）口径；
+    #   未勾选「动态止盈」⇒ dyn_* 逐字段镜像静态结果（用户指定：不勾选则动态=静态）
+    return apply_dyn(symbol, rec, source, enabled=_bool(t.get("dyn_tp"), True)), None
 
 
 # ── 交易心得（笔记）──
@@ -782,6 +924,30 @@ def build_note(body: dict):
             "entry_date": entry_date, "title": str(n.get("title") or "").strip(),
             "content": content,
             "created_at": n.get("created_at") or now, "updated_at": now}, None
+
+
+def _metrics(ex, pts_real, short: bool, buy, buy_ref, rps, shares, mult, is_fut: bool) -> dict:
+    """给定出场价（或期货真实点差）→ 派生 (R, ret_pct, pnl, status, is_fat_tail)。
+
+    ★ 静态/动态两套口径共用本函数，**逐字节复刻**原 decorate 内联逻辑
+      （含 pending 时 is_fat_tail=False、ret_pct=None；老记录无 shares → pnl 留 None）。
+    ex 为 None 或 buy 为 None ⇒ 持仓中（pending，不计入统计）。
+    """
+    if ex is None or buy is None:
+        return dict(R=None, ret_pct=None, pnl=None, is_fat_tail=False, status="pending")
+    if is_fut and pts_real is not None:                # 期货：真实价 + 换月折算后的点差
+        ret_pct = pts_real / buy_ref * 100
+        return dict(R=(pts_real / rps if rps else None), ret_pct=ret_pct,
+                    pnl=(pts_real * shares * mult if shares else None), is_fat_tail=ret_pct >= FAT_TAIL_PCT,
+                    status=("win" if pts_real > 0 else ("loss" if pts_real < 0 else "flat")))
+    ret_pct = (1 - ex / buy) * 100 if short else (ex / buy - 1) * 100
+    # ★ ×mult：股票的"股数"在期货里是**手数**，每手 = 合约乘数 个价格单位
+    return dict(R=(((buy - ex) if short else (ex - buy)) / rps if rps else None),
+                ret_pct=ret_pct,
+                pnl=(((buy - ex) if short else (ex - buy)) * shares * mult if shares else None),
+                is_fat_tail=ret_pct >= FAT_TAIL_PCT,
+                status=("win" if (ex < buy if short else ex > buy)
+                        else "loss" if (ex > buy if short else ex < buy) else "flat"))
 
 
 def decorate(rec: dict) -> dict:
@@ -817,29 +983,18 @@ def decorate(rec: dict) -> dict:
     out.update(risk_per_share=rps, risk_per_lot=(rps * mult if rps else None),
                risk_pct=(rps / buy_ref if rps and buy_ref else None),
                notional=(buy_ref * shares * mult if buy_ref and shares else None),
-               margin_used=rec.get("margin_used"), margin_rate=rec.get("margin_rate"),
-               ret_pct=None, R=None, pnl=None, is_fat_tail=False)
-    if ex is not None and buy is not None:
-        pts_real = rec.get("pts_real")              # ★ 期货：出场时已按真实价+换月折算好的点差
-        if rec.get("source") == "future" and pts_real is not None:
-            out["ret_pct"] = pts_real / buy_ref * 100
-            out["R"] = pts_real / rps if rps else None
-            out["is_fat_tail"] = out["ret_pct"] >= FAT_TAIL_PCT
-            if shares:
-                out["pnl"] = pts_real * shares * mult      # 真实点差 × 手数 × 乘数（真钱）
-            out["status"] = "win" if pts_real > 0 else ("loss" if pts_real < 0 else "flat")
-        else:
-            out["ret_pct"] = (1 - ex / buy) * 100 if short else (ex / buy - 1) * 100
-            out["R"] = ((buy - ex) if short else (ex - buy)) / rps if rps else None
-            out["is_fat_tail"] = out["ret_pct"] >= FAT_TAIL_PCT
-            # 老记录没有 shares → pnl 留 None（反填止损额度会凭空造出从未发生过的仓位）
-            if shares:
-                # ★ ×mult：股票的"股数"在期货里是**手数**，每手 = 合约乘数 个价格单位
-                out["pnl"] = ((buy - ex) if short else (ex - buy)) * shares * mult
-            out["status"] = ("win" if (ex < buy if short else ex > buy)
-                             else "loss" if (ex > buy if short else ex < buy) else "flat")
-    else:
-        out["status"] = "pending"                 # 持仓中：不计入统计
+               margin_used=rec.get("margin_used"), margin_rate=rec.get("margin_rate"))
+    is_fut = rec.get("source") == "future"
+    # ── 静态口径（字段名保持不动：R / ret_pct / pnl / status / is_fat_tail）──
+    out.update(_metrics(ex, rec.get("pts_real"), short, buy, buy_ref, rps, shares, mult, is_fut))
+    # ── 动态口径（吊灯）：独立一套 dyn_* 派生量（★ 与静态互不影响）──
+    if ("dyn_exit_reason" in rec) or ("dyn_tp" in rec):
+        dyn_ex, dyn_pts = rec.get("dyn_exit_price"), rec.get("dyn_pts_real")
+    else:                              # 未回填的老记录 → 读时镜像静态（前端切动态不空白）
+        dyn_ex, dyn_pts = ex, rec.get("pts_real")
+    d = _metrics(dyn_ex, dyn_pts, short, buy, buy_ref, rps, shares, mult, is_fut)
+    out.update(dyn_R=d["R"], dyn_ret_pct=d["ret_pct"], dyn_pnl=d["pnl"],
+               dyn_status=d["status"], dyn_is_fat_tail=d["is_fat_tail"])
     return out
 
 

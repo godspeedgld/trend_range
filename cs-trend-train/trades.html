@@ -147,6 +147,9 @@
   <div class="f"><label>状态</label><select id="fSt">
     <option value="">全部</option><option value="closed">已平仓</option>
     <option value="pending">持仓中</option></select></div>
+  <div class="f"><label>止盈口径</label><select id="fMode">
+    <option value="static" selected>静态（固定价）</option>
+    <option value="dyn">动态（吊灯）</option></select></div>
   <button id="fAll" class="pri">全部</button>
   <button id="reload" class="pri">刷新</button>
 </div>
@@ -177,6 +180,14 @@
     · <b>肥尾率</b> = 收益率 ≥ +30% 的占比（与 analysis_012/014 的 <code>is_tail = ret &gt;= 0.3</code> 同口径）<br>
     · <b>夏普</b> = 平均R / R标准差，再乘 <code>√(252 / 平均持仓天数)</code> 年化；同时给出不年化的「逐笔夏普」<br>
     · <b>净值曲线</b> = 累计 R（左轴），副轴是累计盈亏（元，虚线，只统计有股数的笔）<br>
+    · <b>止盈口径（左上「止盈口径」下拉，默认静态）</b>：<b>静态</b> = 提交的固定止盈价；
+      <b>动态（吊灯）</b> = 独立另一套 —— 共用同一个止损价，出场价 = 参考价 ∓ 2×ATR14
+      （做多参考 = 开仓以来「每日最低价」的最大值，做空 = 开仓以来「每日最高价」的最大值；
+      ATR 取<b>前一交易日</b>防未来），逐日拖移，同日双触按止损计。<b>切口径后清单表与全部统计一起变</b>：
+      已平仓笔数、胜率、盈亏比、期望R、净值、夏普、平均持仓都会变
+      （某笔可能"静态持仓中、动态已平仓"，反之亦然）；
+      清单表里的「<b>止盈价</b>」列**始终是提交时那个静态价（存档值）**、不随口径变，
+      「平仓日/平仓价/平仓原因」列则随口径变（动态口径下出现 `吊灯`）<br>
     · <b>不计交易成本</b>；跳空越过止损/止盈时按当日开盘价成交（已在后端处理）
   </div>
 </div>
@@ -228,6 +239,25 @@ const SRC = IS_FUT ? "future" : "stock";
 const withSrc = p => (SRC === "stock" || !p.startsWith("/api/"))
   ? p : p + (p.includes("?") ? "&" : "?") + "src=" + SRC;
 let RAW = {}, NAMES = {}, rows0 = [], sortKey = "entry_date", sortDir = -1;
+
+// ── ★ 止盈口径（2026-10-16）：static = 提交的固定止盈价（默认，保持历史结论不变）─────────
+//   dyn = 吊灯（参考价 ∓ 2×ATR14 逐日拖移，独立于固定止盈价，共用同一个止损价）
+//   做法：`filtered()` 里把选定口径的字段**改名成规范名**（exit_*/R/ret_pct/pnl/status/…），
+//   下游 过滤 / 清单表 / 统计 / 排序 / 格式化**一行都不用改**，切口径即整体切换。
+let MODE = "static";
+function pick(r, mode){
+  if (mode !== "dyn") return r;                 // 静态 = 规范名，原样返回
+  const o = { ...r };
+  o.exit_date = r.dyn_exit_date; o.exit_price = r.dyn_exit_price;
+  o.exit_reason = r.dyn_exit_reason; o.holding_days = r.dyn_holding_days;
+  o.R = r.dyn_R; o.ret_pct = r.dyn_ret_pct; o.pnl = r.dyn_pnl;
+  o.status = r.dyn_status; o.is_fat_tail = r.dyn_is_fat_tail;
+  if (r.dyn_real_exit_price != null){           // 期货：真实价/换月口径一并切换
+    o.real_exit_price = r.dyn_real_exit_price; o.exit_dominant = r.dyn_exit_dominant;
+    o.roll_pts = r.dyn_roll_pts; o.pts_real = r.dyn_pts_real;
+  }
+  return o;
+}
 
 async function api(p, o){ const r = await fetch(withSrc(p),o), t = await r.text();
   let j = null; try { j = JSON.parse(t); } catch(_) {}
@@ -303,7 +333,8 @@ document.addEventListener("click", e => {                    // 点别处收浮�
 function filtered(){
   const syms = selected(), d0 = $("#fD0").value, d1 = $("#fD1").value;
   const res = $("#fRes").value, st = $("#fSt").value;
-  return rows0.filter(r => {
+  // ★ 先按选定口径映射字段（静态/动态吊灯），下游过滤与渲染因此整体随口径切换
+  return rows0.map(r => pick(r, MODE)).filter(r => {
     if (syms.length && !syms.includes(r.symbol)) return false;
     const ed = r.entry_date || "";
     if (d0 && ed < d0) return false;
@@ -669,7 +700,8 @@ const statOn = () => $("#pane-stat").classList.contains("on");
 function apply(){
   const rows = filtered();
   lastRows = rows;
-  $("#scope").textContent = `${rows.length} 笔（全库 ${rows0.length} 笔 · ${Object.keys(RAW).length} 个标的）`;
+  $("#scope").textContent = `${rows.length} 笔（全库 ${rows0.length} 笔 · ${Object.keys(RAW).length} 个标的）`
+    + ` · 止盈口径：${MODE === "dyn" ? "动态（吊灯）" : "静态（固定价）"}`;
   renderTable(rows);
   // ★ Plotly 在 display:none 的容器里量不到尺寸，会画成 0×0。所以统计页签不可见时
   //   只标脏、不画，切过去再画（比事后 dispatch resize 稳）
@@ -682,6 +714,8 @@ $("#tabs").addEventListener("click", e => {
   if (b.dataset.p === "stat" && statDirty){ renderStats(lastRows); statDirty = false; }
 });
 ["#fD0","#fD1","#fRes","#fSt"].forEach(s => $(s).addEventListener("change", apply));
+// 止盈口径切换：先更新 MODE 再重画（清单表与统计页同时切换）
+$("#fMode").addEventListener("change", () => { MODE = $("#fMode").value; apply(); });
 $("#fAll").onclick = () => { picked = []; $("#fSymQ").value = ""; renderChips(); apply(); };
 $("#reload").onclick = reload;
 // 日期默认：开仓日 ≥ 2015-01-01（库起点）、≤ 今天。等价于「不过滤」，

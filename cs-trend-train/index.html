@@ -188,6 +188,8 @@
   <input id="tStop" type="number" step="0.01" placeholder="必填（须低于开仓价）">
   <label class="f">止盈价 *</label>
   <input id="tTp" type="number" step="0.01" placeholder="必填（须高于开仓价）">
+  <label class="ck" style="margin:2px 0 8px"><input type="checkbox" id="tDyn" checked>
+    动态止盈（吊灯 · 参考价 ∓ 2×ATR14）</label>
   <label class="f">开仓评分 *（理由 60 分 + 其余各项各 0-10，≥60 即可保存）</label>
   <div id="tScore">—</div>
   <div id="tPrev">—</div>
@@ -195,7 +197,11 @@
   <button id="tNew" class="alt">＋ 新建一笔</button>
   <div class="hint">出场只认你提交的止损/止盈价：从开仓日当根逐日判定，同日双触按止损计，
     跳空越过触发价按当日开盘价成交。<b>做空时方向反过来</b>：止损价须<b>高于</b>开仓价、
-    止盈价须<b>低于</b>开仓价，价格<b>跌破止盈</b>才算止盈。</div>
+    止盈价须<b>低于</b>开仓价，价格<b>跌破止盈</b>才算止盈。<br>
+    <b>动态止盈（勾选时，默认勾选）</b>：另跑一套<b>独立</b>的吊灯口径，与上面这套固定价<b>无关</b>——
+    共用同一个止损价，出场价 = 参考价 ∓ 2×ATR14（做多参考 = 开仓以来「每日最低价」的最大值，
+    做空 = 开仓以来「每日最高价」的最大值；ATR 用<b>前一交易日</b>的值防未来），逐日拖移，
+    同日双触按止损计。<b>不勾选 ⇒ 动态结果 = 静态结果</b>。两套结果都存进记录，统计页可切换。</div>
 </div>
 
 <!-- 交易心得面板：佐证标的 + 开仓日期 + 标题 + 内容 -->
@@ -610,6 +616,7 @@ function newTrade(){
   $("#tTitle").textContent = "提交交易";
   $("#tSave").textContent = "保存";
   ["#tBuy","#tStop","#tTp"].forEach(s => $(s).value = "");
+  $("#tDyn").checked = true;                 // ★ 动态止盈：默认选中（用户 2026-10-16 指定）
   $("input[name=tDir][value=long]").checked = true;
   dirPlaceholders();
   pendingScore = defaultScore("long");       // 评分回默认：三头突破 60 分（已达提交线）
@@ -644,6 +651,7 @@ function setEditing(rec){
   $("#tBuy").value  = rec.buy_price ?? "";
   $("#tStop").value = rec.stop_price ?? "";
   $("#tTp").value   = rec.tp_price ?? "";
+  $("#tDyn").checked = rec.dyn_tp !== false;   // 老记录无该字段 → 视为勾选（与提交默认一致）
   $("input[name=tDir][value=" + (rec.direction || "long") + "]").checked = true;
   dirPlaceholders();
   // 评分载入：库里有 → 载入（可改，即「修改之前的评分选择」）；历史记录没有 → 默认口径
@@ -751,6 +759,8 @@ $("#tScore").onclick = () => openScoreModal();
 let prevTimer;
 function schedulePreview(){ clearTimeout(prevTimer); prevTimer = setTimeout(previewTrade, 250); }
 ["#tDate","#tBuy","#tStop","#tTp"].forEach(s => $(s).addEventListener("input", schedulePreview));
+// 勾选框用 change（不是 input）；切动态/静态会改变"吊灯初始出场价"那一行
+$("#tDyn").addEventListener("change", schedulePreview);
 async function previewTrade(){
   const box = $("#tPrev");
   const ed = $("#tDate").value;
@@ -772,7 +782,8 @@ async function previewTrade(){
     const r = await post("/api/trades?dry_run=1", { symbol,
       trade:{ entry_date:ed, direction:getDir(), buy_price:$("#tBuy").value,
               stop_price:$("#tStop").value,
-              tp_price:$("#tTp").value, id: editingId || undefined,
+              tp_price:$("#tTp").value, dyn_tp: $("#tDyn").checked,
+              id: editingId || undefined,
               score: scorePayload() },
       risk_amount: settings.risk_amount });
     box.className = r._duplicate ? "prev warn" : "prev";
@@ -784,6 +795,14 @@ async function previewTrade(){
             + `（${r.entry_dominant || ""}）· 名义 ${wan(r.notional)} · `
             + `保证金 ${wan(r.margin_used)}（${fmt(r.margin_rate,2)}%）· 止损 ${fmt(r.risk_amount,0)} 元`
           : `可开 <b>${r.shares}</b> 股 · 开仓金额 ${wan(r.notional)} · 止损亏损 ${fmt(r.risk_amount,0)} 元`)
+      // ★ 动态止盈（吊灯）：只给"入场时的初始出场价"——**不显示最终在哪天/哪个价出场**，
+      //   否则「决定 → 保存 → 看结果」的训练闭环就失效了（与上方"未来遮蔽"同一原则）。
+      //   开仓日尚未揭示（ed > lastDate）时同样不显示：该线要用当日 low/high。
+      + (($("#tDyn").checked && ed <= lastDate && r.dyn_init_line != null)
+          ? `<br>动态止盈（吊灯）：初始出场价 <b>${fmt(r.dyn_init_line)}</b>`
+            + `（做${r.direction==="short"?"空":"多"}参考价 ${fmt(r.buy_price)} `
+            + `${r.direction==="short"?"+":"−"} 2×ATR 口径，逐日拖移）· 最终出场日/价保存后见清单`
+          : ($("#tDyn").checked ? "" : `<br>动态止盈未勾选 ⇒ 动态结果将<b>等于</b>静态结果`))
       + (r._duplicate ? `<br>⚠ ${r.entry_date} 已有开仓记录，保存时会问是否覆盖` : "");
   } catch (e) {
     box.className = "prev err";
@@ -806,6 +825,7 @@ $("#tSave").onclick = async () => {
     trade:{ id: editingId || undefined, entry_date: ed, direction: getDir(),
             buy_price: $("#tBuy").value,
             stop_price: $("#tStop").value, tp_price: $("#tTp").value,
+            dyn_tp: $("#tDyn").checked,
             score: scorePayload() } });
   $("#tSave").disabled = true;
   try {
